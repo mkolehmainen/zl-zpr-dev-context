@@ -590,8 +590,8 @@ fn check_shared_context(ctx: &Ctx, manifest: &Manifest, report: &mut Report) {
 /// under the context checkout (spec §7). A reference is any token starting with
 /// the manifest's documentation root; tokens are split on whitespace and on the
 /// punctuation that surrounds a Markdown link, so `[x](docs/A.md)` yields
-/// `docs/A.md`. This is the counterpart of §4.4's rewriting: exactly the
-/// references that rewriting left alone are the ones reported here.
+/// `docs/A.md`. Deliberately independent of §4.4's rewrite list, which names
+/// only directories and so cannot say which document beneath one is missing.
 fn broken_doc_references(body: &str, context: &Path, docs_root: &str) -> Vec<String> {
     let prefix = format!("{docs_root}/");
     let mut broken: Vec<String> = Vec::new();

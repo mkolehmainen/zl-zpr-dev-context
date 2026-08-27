@@ -74,7 +74,7 @@ pub fn plan(ctx: &Ctx, manifest: &Manifest) -> Result<Vec<RepoPlan>> {
     // context path may well have arrived as `--context .`.
     let context_dir = absolute(&ctx.context);
     let docs_dir = context_dir.join(&manifest.documentation.root);
-    let rewrites = doc_rewrites(&docs_dir, &manifest.documentation.root)?;
+    let rewrites = context_rewrites(&context_dir)?;
     let shared_body = rewrite_doc_references(&shared, &rewrites);
 
     let sha = git::head_short(&ctx.context).unwrap_or_else(|_| UNKNOWN_SHA.to_string());
@@ -175,49 +175,51 @@ fn render_claude() -> String {
     )
 }
 
-/// Pairs each real file under the documentation root with its absolute path,
-/// keyed by the manifest-relative path used in the shared context. Longest
-/// relative path first, so [`rewrite_doc_references`] prefers the longer match.
-fn doc_rewrites(docs_dir: &Path, docs_root: &str) -> Result<Vec<(String, String)>> {
+/// Pairs each top-level directory of the context checkout with its absolute
+/// path, keyed by the directory reference used in the shared context
+/// (`docs/`, `skills/`). Longest key first, so [`rewrite_doc_references`]
+/// prefers the longer match.
+///
+/// The trailing slash is part of the key on purpose: keyed on `docs` alone,
+/// the English word "docs" in prose would be rewritten to a path. Keying on
+/// the directory rather than on each document also covers `docs/`, `skills/`,
+/// and every path beneath them with one entry apiece.
+fn context_rewrites(context_dir: &Path) -> Result<Vec<(String, String)>> {
     let mut rewrites = Vec::new();
-    collect_docs(docs_dir, docs_root, &mut rewrites)?;
-    rewrites.sort_by_key(|(relative, _)| std::cmp::Reverse(relative.len()));
-    Ok(rewrites)
-}
-
-/// Recursive `read_dir` walk (no `walkdir` dependency, per §6.1). A missing
-/// documentation directory simply yields no rewrites; `validate` reports the
-/// dangling references that result.
-fn collect_docs(dir: &Path, prefix: &str, out: &mut Vec<(String, String)>) -> Result<()> {
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match std::fs::read_dir(context_dir) {
         Ok(entries) => entries,
-        Err(_) => return Ok(()),
+        // A missing context directory yields zero rewrites rather than an
+        // error; `plan` has already failed to read the shared context by then.
+        Err(_) => return Ok(rewrites),
     };
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
-        let relative = format!("{prefix}/{name}");
-        let path = entry.path();
-        if path.is_dir() {
-            collect_docs(&path, &relative, out)?;
-        } else {
-            out.push((relative, path.to_string_lossy().to_string()));
+        // `.git`, `.claude`: never referenced, and rewriting them would be
+        // surprising.
+        if name.starts_with('.') || !entry.path().is_dir() {
+            continue;
         }
+        rewrites.push((
+            format!("{name}/"),
+            format!("{}/", entry.path().to_string_lossy()),
+        ));
     }
-    Ok(())
+    rewrites.sort_by_key(|(relative, _)| std::cmp::Reverse(relative.len()));
+    Ok(rewrites)
 }
 
-/// Replaces each manifest-relative documentation path with its absolute path
-/// (spec §4.4). Literal replacement driven by the directory listing, so a
-/// reference to a nonexistent document is left untouched for `validate` to
-/// report.
+/// Replaces each context-relative directory reference with its absolute path
+/// (spec §4.4), which carries every path beneath it with it. Literal
+/// replacement driven by the directory listing, so a reference under a
+/// directory that does not exist in the context checkout is left untouched.
 ///
 /// A single left-to-right scan, rather than a `replace` per rewrite: replacing
 /// `docs/A.md.old` first and then `docs/A.md` would otherwise rewrite the
 /// substring inside the path it had just produced.
 fn rewrite_doc_references(body: &str, rewrites: &[(String, String)]) -> String {
-    // ponytail: O(body * rewrites) scan; build a prefix trie if docs/ ever grows
-    // to the point where this shows up in a profile.
+    // ponytail: O(body * rewrites) scan; build a prefix trie if the context
+    // checkout ever grows enough top-level directories to show up in a profile.
     let mut out = String::with_capacity(body.len());
     let mut rest = body;
     'scan: while !rest.is_empty() {
@@ -336,17 +338,19 @@ repositories:
         }
     }
 
-    /// Rewrites for a documentation tree built from `(relative name, ...)`
-    /// entries under a temporary `docs/`.
+    /// Rewrites for a context checkout containing `docs/` plus `skills/`, with
+    /// `docs/` populated from `names`.
     fn rewrites_for(names: &[&str]) -> (tempfile::TempDir, Vec<(String, String)>) {
         let tmp = tempfile::tempdir().unwrap();
         let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(tmp.path().join("skills")).unwrap();
+        std::fs::create_dir_all(&docs).unwrap();
         for name in names {
             let path = docs.join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "body\n").unwrap();
         }
-        let rewrites = doc_rewrites(&docs, "docs").unwrap();
+        let rewrites = context_rewrites(tmp.path()).unwrap();
         (tmp, rewrites)
     }
 
@@ -359,24 +363,33 @@ repositories:
     }
 
     #[test]
-    fn leaves_nonexistent_doc_reference_untouched() {
-        let (_tmp, rewrites) = rewrites_for(&["EXAMPLE.md"]);
-        let out = rewrite_doc_references("see docs/GONE.md", &rewrites);
-        assert_eq!(out, "see docs/GONE.md");
-    }
-
-    #[test]
-    fn rewrites_longest_path_first() {
-        let (tmp, rewrites) = rewrites_for(&["A.md", "A.md.old"]);
-        let out = rewrite_doc_references("docs/A.md and docs/A.md.old", &rewrites);
+    fn rewrites_directory_reference_to_absolute_path() {
+        let (tmp, rewrites) = rewrites_for(&["EXAMPLE.md"]);
+        let out = rewrite_doc_references("`docs/` and `skills/`", &rewrites);
         assert_eq!(
             out,
             format!(
-                "{} and {}",
-                tmp.path().join("docs/A.md").display(),
-                tmp.path().join("docs/A.md.old").display()
+                "`{}/` and `{}/`",
+                tmp.path().join("docs").display(),
+                tmp.path().join("skills").display()
             )
         );
+    }
+
+    /// The trailing slash is what distinguishes a directory reference from the
+    /// same word in prose.
+    #[test]
+    fn leaves_bare_directory_word_untouched() {
+        let (_tmp, rewrites) = rewrites_for(&["EXAMPLE.md"]);
+        let out = rewrite_doc_references("the docs describe skills in detail", &rewrites);
+        assert_eq!(out, "the docs describe skills in detail");
+    }
+
+    #[test]
+    fn leaves_reference_under_unknown_directory_untouched() {
+        let (_tmp, rewrites) = rewrites_for(&["EXAMPLE.md"]);
+        let out = rewrite_doc_references("see notes/GONE.md", &rewrites);
+        assert_eq!(out, "see notes/GONE.md");
     }
 
     #[test]
@@ -386,6 +399,16 @@ repositories:
         assert_eq!(
             out,
             tmp.path().join("docs/arch/DESIGN.md").display().to_string()
+        );
+    }
+
+    #[test]
+    fn skips_dot_directories() {
+        let (_tmp, rewrites) = rewrites_for(&["EXAMPLE.md"]);
+        assert!(
+            rewrites
+                .iter()
+                .all(|(relative, _)| !relative.starts_with('.'))
         );
     }
 

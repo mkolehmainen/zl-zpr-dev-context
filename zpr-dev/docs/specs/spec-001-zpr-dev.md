@@ -197,7 +197,7 @@ derived from the filesystem and from `git`. There is no
 
 ```text
 Inputs:   zpr-dev-context/AGENTS.md          (required)
-          zpr-dev-context/docs/*.md          (for reference rewriting)
+          zpr-dev-context/*/                 (for reference rewriting)
           <repo>/AGENTS.repo.md              (optional)
 
 Outputs:  <repo>/AGENTS.md                   (generated)
@@ -239,33 +239,50 @@ whitespace in the source files.
 See [AGENTS.md](./AGENTS.md) for shared ZPR development context.
 ```
 
-### 4.4 Documentation reference rewriting
+### 4.4 Context reference rewriting
 
-The shared `AGENTS.md` refers to documentation as `docs/VISA_SERVICE.md`,
-which is correct relative to the context repository but wrong once the text is
-embedded in `zpr-core/AGENTS.md` — an agent would look in `zpr-core/docs/`.
+The shared `AGENTS.md` refers to the context checkout's own contents
+relatively — `docs/VISA_SERVICE.md`, or the directories `docs/` and `skills/`
+— which is correct there but wrong once the text is embedded in
+`zpr-core/AGENTS.md`, where an agent would look in `zpr-core/docs/`.
 
-`zpr-dev` therefore enumerates the actual files under
-`<context>/<documentation.root>/` and, for each one, replaces occurrences of
-its manifest-relative path with its absolute path:
+`zpr-dev` therefore enumerates the **top-level directories** of the context
+checkout and replaces occurrences of each directory reference with its
+absolute path:
 
 ```text
+docs/
+  -> /home/mathias/src/zpr/zpr-dev-context/docs/
+
 docs/VISA_SERVICE.md
   -> /home/mathias/src/zpr/zpr-dev-context/docs/VISA_SERVICE.md
 ```
 
+Keying on the directory rather than on each enumerated document is what makes
+both lines above work from one entry: the second is just the first with a tail
+left in place. Dot-directories (`.git`, `.claude`) are skipped.
+
+The **trailing slash is part of the key**. Keyed on `docs` alone, the English
+word "docs" in prose would be rewritten to a path.
+
 This is a literal string replacement driven by the directory listing, not a
-pattern match. Consequently it can only ever rewrite a reference that
-resolves to a real file, and a reference to a nonexistent document is left
-untouched — where `validate` will report it (§7).
+pattern match. A reference under a directory that does not exist in the
+context checkout is left untouched; a reference to a nonexistent document
+under a directory that does exist becomes an absolute path that also does not
+exist. Either way `validate` reports it (§7), because that check tests each
+reference against the filesystem independently (§7's `broken_doc_references`)
+rather than against this rewrite list.
 
 The replacement is **one left-to-right scan**, not one `String::replace` per
-document. Sequential replacement is wrong, not merely slow: rewriting
-`docs/A.md.old` first produces `/abs/docs/A.md.old`, and a subsequent
-`docs/A.md` pass then matches the substring inside the path it just emitted.
-The scan tries the rewrite list longest-relative-path-first at each position
-and skips past whatever it emitted. A missing documentation directory yields
-zero rewrites rather than an error.
+directory. The scan tries the rewrite list longest-key-first at each position
+and skips past whatever it emitted, so a rewrite can never match inside a path
+it has just produced. A missing context directory yields zero rewrites rather
+than an error.
+
+Only the shared body is rewritten. `AGENTS.repo.md` is embedded verbatim,
+where `docs/` correctly means the repository's own `docs/`. The corollary is
+that the shared `AGENTS.md` must not use a bare `docs/` to mean "each
+repository's own docs".
 
 ### 4.5 Staleness
 
@@ -613,9 +630,9 @@ A documentation reference is any token in the raw `AGENTS.md` that begins with
 punctuation and stripping a leading `./` and a trailing sentence period. It
 must resolve to an existing path — **a directory counts**, so a mention of
 `docs/` naming the documentation directory is not a broken reference. This
-check is deliberately not built on §4.4's rewrite list: that list contains only
-paths that exist, so it cannot name what is missing. The two are exact
-complements — the references §4.4 leaves untouched are the ones reported here.
+check is deliberately not built on §4.4's rewrite list: that list names
+directories that exist, so it cannot say which document beneath one is
+missing.
 
 Output form:
 
@@ -692,8 +709,9 @@ Cases:
 
 In `generate.rs`:
 
-- Documentation reference rewriting, including that a reference to a
-  nonexistent document is left untouched.
+- Context reference rewriting: documents, directory references, that a bare
+  directory word in prose is left untouched, and that a reference under an
+  unknown directory is left untouched.
 - Header rendering, including SHA placement and the omission of the
   repository-specific section when `AGENTS.repo.md` is absent.
 
