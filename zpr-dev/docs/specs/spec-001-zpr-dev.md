@@ -1,13 +1,18 @@
 # SPEC-001: `zpr-dev` v0.1 Design
 
-Status: draft for review
-Date: 2026-08-27
+Status: implemented — v0.1 complete
+Date: 2026-08-27 (revised after implementation)
 Parent spec: `../../../docs/ZPR_DEV_CONTEXT_SPEC.md`
 
 This document specifies the first implementation of the `zpr-dev` tool. It
 narrows the parent spec to a buildable v0.1 and records the decisions made
 during design. Where this document and the parent spec disagree, this
 document governs v0.1.
+
+All eleven implementation steps of `spec-001-plan.md` have landed. This
+revision folds the plan's `Landed` notes back into the spec, so the text below
+describes the tool **as built** rather than as originally designed. The plan
+remains the record of *why* each deviation was made.
 
 ---
 
@@ -67,6 +72,13 @@ design decision made here; each can be added without restructuring.
 5. **Generated-file drift is a warning, not an error, in `validate`.** A
    hand-edited generated file and a merely stale one are indistinguishable on
    disk; neither should fail validation outright.
+6. **"Dirty" means tracked-file changes only.** Because generated files are
+   left untracked (§1.4.3), counting untracked files would make every synced
+   repository permanently `modified` and would make `update --all` skip every
+   repository for `local modifications`. `is_dirty` therefore runs
+   `git status --porcelain --untracked-files=no`. No safety is lost: an
+   untracked file that a fast-forward would clobber still makes
+   `git merge --ff-only` refuse, which is reported as `cannot fast-forward`.
 
 ---
 
@@ -167,7 +179,9 @@ zpr-utils         Non-ZPR-specific utilities used by ZPR
 zpr-dev-tools     Development tools for the ZPR project
 ```
 
-All ten default to branch `main`.
+All ten default to branch `main`. The shipped `workspace.yaml` omits
+`default_branch` entirely and relies on the serde default, so each entry is two
+lines plus a descriptive comment.
 
 ### 3.3 Local state
 
@@ -210,7 +224,13 @@ If `AGENTS.repo.md` is absent, the `# Repository-Specific Context` heading is
 omitted entirely rather than emitted empty.
 
 The `Source:` comment carries the short commit SHA of the context checkout's
-`HEAD`.
+`HEAD`, or `unknown` when `HEAD` cannot be read. Rendering does not fail in
+that case, because `validate` reaches its own diagnostics through
+`generate::plan` and must not be blocked by a broken context checkout.
+
+Each section body is trimmed and emitted with exactly one trailing newline, so
+the byte-for-byte staleness comparison of §4.5 does not depend on trailing
+whitespace in the source files.
 
 ### 4.3 Rendered `CLAUDE.md`
 
@@ -238,6 +258,14 @@ This is a literal string replacement driven by the directory listing, not a
 pattern match. Consequently it can only ever rewrite a reference that
 resolves to a real file, and a reference to a nonexistent document is left
 untouched — where `validate` will report it (§7).
+
+The replacement is **one left-to-right scan**, not one `String::replace` per
+document. Sequential replacement is wrong, not merely slow: rewriting
+`docs/A.md.old` first produces `/abs/docs/A.md.old`, and a subsequent
+`docs/A.md` pass then matches the substring inside the path it just emitted.
+The scan tries the rewrite list longest-relative-path-first at each position
+and skips past whatever it emitted. A missing documentation directory yields
+zero rewrites rather than an error.
 
 ### 4.5 Staleness
 
@@ -267,6 +295,14 @@ enum Action {
 }
 ```
 
+Each `PlannedFile` carries its own `Action`, so `apply` can report *created*
+separately from *updated* without re-`stat`ing at apply time. The
+`RepoPlan`-level `Action` is the worst-of across its files (`Create` >
+`Update` > `Unchanged`), or `RepoMissing` when the checkout directory is
+absent — in which case the file list is empty. `apply` counts **files**, not
+repositories; a caller that wants to mention repositories that are not checked
+out counts `RepoMissing` plans itself.
+
 - `sync` applies the plan.
 - `status` reports it.
 - `validate` reports it.
@@ -291,7 +327,16 @@ One code path, three consumers. `Unchanged` entries are never written, so
 ```
 
 `--dry-run` suppresses every mutation: no clone, no fetch, no merge, no file
-write. Intended actions are printed as they would have been performed.
+write. Intended actions are printed as they would have been performed. A
+`git fetch` counts as a mutation because it rewrites `.git/refs/remotes`, so
+dry-run stops before it and cannot predict whether a repository would end up
+`current` or fast-forwarded.
+
+The dry-run gate lives at each call site in `commands.rs`, not in `git.rs`;
+the Git layer is pure and always executes what it is asked to.
+
+`--quiet` gates progress output only. A command's *result* — `status`'s table,
+`validate`'s findings — is always printed.
 
 ### 5.2 `setup`
 
@@ -314,6 +359,20 @@ Sequence:
 7. Print a summary.
 
 `setup` never discards local modifications and never changes a branch.
+
+`setup` passes `validate`'s exit code straight through, so `setup --no-clone`
+on an empty workspace exits 1 (the missing directories are real validation
+errors) while a healthy `setup` exits 0. A clone failure is a command error
+(exit 2).
+
+The summary is per-phase and chronological rather than one block at the end:
+the clone tally prints when cloning finishes, the generation line when
+generation finishes, and the validation report ends the run and supplies the
+exit code.
+
+Under `--dry-run` with the context checkout absent, `setup` prints the intended
+workspace creation and clone and then returns 0 without steps 3–6: there is no
+manifest on disk to read, and inventing that output would be a lie.
 
 ### 5.3 `update`
 
@@ -347,6 +406,20 @@ A repository is skipped, with the reason reported, when it is:
 Updated repositories report `<old sha> -> <new sha>`. Unchanged repositories
 report `current`.
 
+The check order is `is_repo` → `is_dirty` → `branch` → `ahead_behind`, and it
+is load-bearing: `ahead_behind` returns `None` for a detached `HEAD` as well as
+for a missing upstream, so `detached HEAD` must be decided by `branch(…) ==
+None` before the upstream check or it would be misreported as `no upstream`.
+
+There is no separate "behind" check before the merge. `git merge --ff-only
+@{u}` is already a no-op when the upstream is an ancestor, so the `current`
+verdict is simply `head_short` before == after — one git invocation fewer, and
+no second definition of "already up to date" to keep in sync.
+
+`--repo <name>` makes the manifest repositories candidates on its own, so
+`--repo <source-repo>` works without `--all`. An unknown name is a command
+error (exit 2).
+
 The current branch is updated whatever it is — a feature branch with an
 upstream is fast-forwarded, not switched to `default_branch`. `default_branch`
 is used only when cloning.
@@ -378,18 +451,52 @@ zpr-visaservice   stale
 zpr-utils         missing repository
 ```
 
+`STATUS` has four values, not the two the parent spec implies: `clean` and
+`modified` for a present checkout, plus `missing` for an absent directory and
+`not a git repository` for a present non-repository. Those last two rows carry
+`-` for BRANCH and `no upstream` for UPSTREAM, and use the same wording as the
+corresponding `validate` errors. A detached `HEAD` shows BRANCH `detached`.
+
+The context checkout leads the table, named after its directory. It holds no
+generated context of its own, so it appears in no other section.
+
+`--repo <name>` filters both sections and accepts the context checkout; an
+unknown name is a command error (exit 2).
+
 Ahead/behind is computed locally with
 `git rev-list --left-right --count HEAD...@{u}`. `status` performs no network
 access — it does not fetch, so `behind` reflects the last fetch.
 
 `--porcelain` emits one tab-separated record per repository with a stable
-field order, followed by generated-context records. Field order is part of
-the contract and will not change within v0.x.
+field order, followed by generated-context records. Field order is part of the
+contract and will not change within v0.x:
+
+```text
+repo   <name>  <branch>  <clean|modified|missing|not a git repository>  <ahead>  <behind>
+agent  <name>  <current|stale|missing repository>
+```
+
+`<branch>` is `-` when there is no repository and `detached` when `HEAD` is
+detached; `<ahead>` and `<behind>` are `-` when there is no upstream. The
+record-kind prefix is what keeps the two sections distinguishable in one
+stream.
 
 ### 5.5 `sync`
 
 Apply the plan from §4.6. No fetch, no pull, no network access. Reports
-created, updated, and unchanged files.
+created, updated, and unchanged **files**:
+
+```text
+wrote generated context: 2 created, 0 updated, 2 unchanged
+```
+
+The verb is `would write` under `--dry-run`; the counts are identical either
+way. Repositories that are not checked out add a second line, `skipped N
+repositories not checked out`, and do not change the exit code — a missing
+repository is `validate`'s error to report, not `sync`'s.
+
+`setup` and `update` share this code path exactly, so their regeneration
+output and counts are the same.
 
 ### 5.6 `validate`
 
@@ -443,15 +550,25 @@ fn git(dir: &Path, args: &[&str]) -> Result<String>   // capture stdout; Err on 
 fn is_repo(dir: &Path) -> bool
 fn head_short(dir: &Path) -> Result<String>
 fn branch(dir: &Path) -> Result<Option<String>>       // None when detached
-fn is_dirty(dir: &Path) -> Result<bool>               // git status --porcelain non-empty
+fn is_dirty(dir: &Path) -> Result<bool>               // tracked-file changes only (§1.4.6)
 fn ahead_behind(dir: &Path) -> Result<Option<(usize, usize)>>   // None when no upstream
 fn clone(url: &str, dest: &Path, branch: Option<&str>) -> Result<()>
 fn fetch(dir: &Path) -> Result<()>
 fn ff_merge(dir: &Path) -> Result<bool>               // false when fast-forward impossible
 ```
 
-Every mutating function is a no-op that logs its intent when `ctx.dry_run` is
-set.
+`git()` returns trimmed stdout. `is_repo` compares `git rev-parse
+--show-toplevel` against the canonicalized directory rather than merely
+checking that the command succeeded, so a plain directory nested inside a
+repository does not report true. `branch` maps the literal `"HEAD"` to `None`,
+so detachment is a value rather than an error. `ahead_behind` returns `None`
+for any failure of the `rev-list` range, which covers both "no upstream" and a
+detached `HEAD` — callers that need to tell them apart check `branch` first.
+`clone` creates the destination's parent directory.
+
+This layer is pure and always executes; the `--dry-run` gate lives at each call
+site in `commands.rs`, which is also where the "would have" message is printed
+(§5.1).
 
 ### 6.4 Exit codes
 
@@ -462,7 +579,8 @@ set.
 ```
 
 An `anyhow` error reaching `main` exits 2. A `validate` run that accumulated
-errors exits 1. Warnings alone do not affect the exit code.
+errors exits 1, and `setup` passes that code through because it ends in
+validation. Warnings alone do not affect the exit code.
 
 ---
 
@@ -470,18 +588,34 @@ errors exits 1. Warnings alone do not affect the exit code.
 
 | Check | Severity when failing |
 |---|---|
-| Context checkout exists and is a Git repository | error |
-| `workspace.yaml` exists and parses | error |
-| `version` equals 1 | error |
-| `repositories` is non-empty | error |
-| Repository names are unique and non-empty | error |
+| Context checkout exists and is a Git repository | error, ends the run |
+| `workspace.yaml` exists and parses, `version` equals 1, `repositories` is non-empty, names are unique and non-empty | error, ends the run |
 | `context/AGENTS.md` exists | error |
-| Every `docs/*.md` reference in `context/AGENTS.md` resolves to a real file | error |
+| Every documentation reference in `context/AGENTS.md` resolves to an existing path | error |
 | Each manifest repository directory exists | error |
 | Each repository directory is a Git repository | error |
 | Generated files match their rendered content | warning, suggests `zpr-dev sync` |
 | `agent.hermes.shared_skills` directory exists, when declared | warning |
 | `AGENTS.repo.md` present in a repository | informational only; absence is legitimate |
+
+Findings accumulate rather than stopping at the first, with two exceptions: an
+absent context directory and a failed manifest load both end the run, because
+every later check needs the manifest.
+
+The five manifest checks are one row above because they are one code path.
+`config::load` performs them and reports the first structural problem it finds
+as an error; `validate` prints it as a single `[ERROR] workspace manifest:` line.
+Splitting them into five independently accumulated checks would mean a second
+implementation of the parser's validation.
+
+A documentation reference is any token in the raw `AGENTS.md` that begins with
+`<documentation.root>/`, after splitting on whitespace and Markdown link
+punctuation and stripping a leading `./` and a trailing sentence period. It
+must resolve to an existing path — **a directory counts**, so a mention of
+`docs/` naming the documentation directory is not a broken reference. This
+check is deliberately not built on §4.4's rewrite list: that list contains only
+paths that exist, so it cannot name what is missing. The two are exact
+complements — the references §4.4 leaves untouched are the ones reported here.
 
 Output form:
 
@@ -493,9 +627,15 @@ $ zpr-dev validate
 [OK]   10 source repositories
 [WARN] generated context stale in 2 repositories (run: zpr-dev sync)
 [OK]   documentation references
+[INFO] repository-specific context in 3 of 10 repositories
 
 Validation completed with 1 warning.
 ```
+
+`[INFO]` is a fourth tag beyond the parent spec's three, carrying the
+`AGENTS.repo.md` row; it touches neither the counts nor the exit code. When
+errors are present the summary line is instead `Validation failed with N
+error(s) and M warning(s).`
 
 ---
 
@@ -508,13 +648,31 @@ Validation completed with 1 warning.
 local `git init --bare` origin repositories addressed by `file://` URL. No
 network access and no credentials are required.
 
-Fixture construction:
+Fixture construction (`tests/common/mod.rs`, a shared module rather than its
+own test binary):
 
-1. Create a temporary directory.
-2. `git init --bare` two origin repositories.
-3. `git init` a context repository containing `AGENTS.md`, one `docs/*.md`,
-   and a `workspace.yaml` whose repository URLs are `file://` paths to the
-   bare origins. Commit it.
+1. Create a temporary directory holding `origins/` and `workspace/`. The
+   origins live **outside** the workspace so a stray `origins/` entry never
+   appears in `status` or `validate` output.
+2. `git init --bare` three origin repositories — two source repositories and
+   `zpr-dev-context` — each seeded with one commit through a throwaway clone.
+3. Clone the context origin into `<workspace>/zpr-dev-context`. It is cloned
+   rather than `git init`'d in place so that it has an upstream, which
+   `update`'s default target set needs. It contains `AGENTS.md` (referencing
+   `docs/EXAMPLE.md`), `docs/EXAMPLE.md`, and a `workspace.yaml` whose
+   repository URLs are `file://` paths to the bare origins.
+
+Git is isolated per child process rather than per environment: every spawned
+command sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, the
+four `GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL}` variables, and
+`GIT_TERMINAL_PROMPT=0`, and removes `ZPR_WORKSPACE` so a developer's shell
+cannot leak in. The `git.rs` unit tests cannot do this — `std::env::set_var` is
+`unsafe` and process-global in edition 2024 — so they pin `git init -b main`
+and per-repository `user.name` / `user.email` / `commit.gpgsign=false` instead.
+
+The fixture manifest deliberately has no `agent` block, so no command test
+carries a permanent `shared_skills` warning; the test that needs one appends it
+to `workspace.yaml` itself.
 
 Cases:
 
@@ -548,11 +706,12 @@ Written as part of this work:
 ```text
 zpr-dev-context/
 ├── workspace.yaml          new: the ten repositories from §3.2
-├── README.md               amended: install and bootstrap notes
+├── README.md               new: command table, install and bootstrap notes
 └── zpr-dev/
     ├── Cargo.toml          dependencies from §6.1
     ├── src/                modules from §6.2
     └── tests/
+        ├── common/mod.rs   fixture harness (§8.1)
         └── integration.rs
 ```
 
@@ -607,3 +766,8 @@ Developers who keep the context checkout elsewhere can pass `--context`.
 The only files `zpr-dev` writes inside a source repository are the two
 generated ones, and it writes them only when their rendered content differs
 from what is on disk.
+
+Verified after implementation: `reset`, `rebase`, `stash`, `checkout`, `push`,
+and `branch -d` appear only inside `#[cfg(test)]` code and the test binaries,
+which push to local bare origins to build fixtures. No command path contains
+any of them.

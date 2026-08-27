@@ -1,0 +1,484 @@
+# Routing
+
+ZPR nodes do not run a routing protocol. There is no OSPF, no BGP, no
+adjacency discovery, no route advertisement. The topology of a ZPRnet is
+**declared in the configuration description** (the `.zplc` file), compiled into
+the policy binary, and handed to the visa service. The visa service is the only
+component that computes paths, and it computes them **per visa, at issuance**:
+the chosen route is frozen into the visa as a next hop.
+
+A node therefore learns exactly one routing fact, and only for flows it is
+authorized to carry: "for this visa, hand the packets to that neighbour."
+
+Read this before changing the topology schema, the `Router`/`TopologyMgr` pair,
+or how a visa's next hop is chosen — and before adding a second node to a test
+setup.
+
+## Authoritative sources
+
+| Source | What it governs |
+|---|---|
+| **ZRFC 6.4** §5.12 "Route Generation and Distribution", §5.11.2 "Next Hop Selection" | The intended design. Two pages, and its own editorial note says routing "should be moved into a new document that just covers ZPR Routing" — that document does not exist. |
+| **`zpr-compiler/README_ZPLC.md`**, §Nodes / §Topology / §Link attributes | The topology schema as the compiler accepts it. |
+| **`zpr-policy/policy.capnp`** — `Peering`, `CPolicy.linkConds` | How topology and link constraints are carried in a compiled policy. |
+| **`zpr-visaservice/vs/src/router.rs`**, `topology_mgr.rs` | Path computation and the live graph, as implemented. |
+| **`zpr-visaservice/vs/src/visa_policy.rs`**, `visa_mgr.rs` | Route selection and how a route becomes per-node visas. |
+| **`zpr-vsapi/vs.capnp`** — `FwdPep`, `Link`, `setTopology` | The wire contract between visa service and node. |
+
+Related: [ZPL.md](ZPL.md) for the `over` clause, [ZDP.md](ZDP.md) for what the
+data plane does with a next hop, [TERMINOLOGY.md](TERMINOLOGY.md).
+
+---
+
+## The model
+
+Three distinct things get called "routing" in ZPR. Keep them apart:
+
+| | Where it lives | What it is |
+|---|---|---|
+| **Intended topology** | policy (from `.zplc`) | Every link an administrator has declared, with its attributes and cost. Static until a new policy is installed. |
+| **Actual topology** | `Router`'s in-memory graph, persisted edges | The subset of declared links believed to be up right now. |
+| **A route** | one visa | An ordered list of link IDs from the ingress node to the egress node, plus its total cost. |
+
+*"Note that this is topology as it exists. For topology as it is intended to
+be, you need to look at policy."* — `topology_mgr.rs`
+
+A route is **not** a routing-table entry. It is a decision made once, for one
+flow, and distributed as a next hop stamped into each node's copy of that
+flow's visa. Nothing recomputes it in the data plane. If the topology changes,
+the affected visas are revoked and the flow re-requests.
+
+Flow setup is unidirectional, so each direction of a conversation gets its own
+route, computed from its own ingress node. They need not be symmetric.
+
+---
+
+## Declaring topology in `.zplc`
+
+```toml
+[nodes.n0]
+provider = [["device.zpr.adapter.cn", "node0.zpr.org"]]
+zpr_address = "fd5a:5052:90de::1"
+
+[nodes.n0.substrate_addrs]
+i0 = "10.0.0.1:5000"
+
+[nodes.n1]
+provider = [["device.zpr.adapter.cn", "node1.zpr.org"]]
+zpr_address = "fd5a:5052:90de::2"
+
+[nodes.n1.substrate_addrs]
+i0 = "10.0.0.2:5000"
+
+[links.n0n1]
+attributes = [["zpr.cost", "10"], ["#secure", ""], ["location", "usa"]]
+peers = [{ node = "n0" }, { node = "n1", interface = "i0" }]
+```
+
+- **`provider`** is the attribute set an adapter must present to be recognized
+  as that node. It cannot come from a trusted service — in practice it is
+  `device.zpr.adapter.cn`, the CN of the node's Noise certificate.
+- **`zpr_address`** identifies the node everywhere else in the system: it is the
+  `NodeId`, the routing destination, and the key of every topology lookup. The
+  node itself must be configured with the same address in its own `ph` config —
+  nothing reconciles a mismatch.
+- **`substrate_addrs`** are named interfaces (`i0`) in `HOST:PORT` form. `HOST`
+  may be a hostname; the visa service resolves it via DNS when it loads the
+  policy (`PolicyResolver::resolve_topology`). Multiple per node are supported
+  in the schema; `peers` selects one with `interface = "i3"`. The `interface`
+  key may be omitted only when the node has exactly one substrate address —
+  with several it is a compile error, not a default.
+- **`links.<LINKID>`** is one bidirectional edge with exactly two `peers`. The
+  `<LINKID>` is a free-form string and travels all the way to the node in the
+  `setTopology` message.
+- **`attributes`** are key/value pairs, or **tags** written `["#name", ""]`.
+  Giving a `#`-prefixed key a value is an error.
+
+Link attributes land in the `link` attribute domain, so `zpr.cost` in the file
+becomes **`link.zpr.cost`** in the compiled policy. **Every link gets a cost**:
+if none is declared the compiler appends `zpr.cost = 1`, and
+`DEFAULT_LINK_COST = 1` in `libeval` covers a link whose policy carries no cost
+attribute. Costs are `u32` and simply summed along a path.
+
+`README_ZPLC.md` §Nodes opens with "Only one node is supported currently in a
+ZPRnet" and then documents multi-node topology below. Read it as a statement
+about the data plane: the compiler and visa service both handle many nodes (see
+§Implementation status). Relatedly, the undocumented `[visa_service]` section —
+whose only key is `dock_node` — may be omitted, and the compiler fills it in on
+the assumption there is one node (`zpr-compiler` issue 100).
+
+`README_ZPLC.md` states that only `device`, `user`, and `service` namespaces are
+valid for attributes. That rule is about actor attributes; link attributes are
+namespaced `link` by the compiler and are never resolved against a trusted
+service — they are topology data, not vouched-for claims.
+
+### `over` clauses are checked here
+
+Because ZPL and ZPLC are compiled together, the compiler can check an `over`
+clause against the declared links:
+
+- naming a link **attribute** no configured link carries is an **error** — the
+  statement could never match;
+- naming a **value** no configured link carries, when the attribute does exist,
+  is a **warning** (fatal with `--werror`) — topology data may legitimately
+  gain that value later.
+
+This is the only place link constraints are enforced today. See
+[§Route constraints](#route-constraints-in-policy).
+
+---
+
+## From `.zplc` to the visa service
+
+```text
+.zplc  --[compiler]-->  policy.capnp        --[libeval]-->  visa service
+[links.X]              topology: [Peering]                  peer_table
+  peers                  linkId, nodeA/B (ZPR addrs)        link_attrs
+  attributes             nodeASubstrate/nodeBSubstrate      resolved_peers (DNS)
+                         attrs                              Router graph
+```
+
+The compiler builds a `FabricLink` per `[links.*]` entry (`weaver::add_topology`)
+resolving each `(node, interface)` pair to a `NodeLinkAddr { zpr_addr,
+substrate }`, and emits it as a `Peering` in `Policy.topology`.
+
+`libeval::policy` turns those peerings into two lookups:
+
+- **`peer_table`**: node ZPR address → `Vec<Peer>`, each `Peer` holding the link
+  id, the remote node's ZPR address, the remote substrate address, and *this*
+  node's own substrate address on that link. One peering produces an entry under
+  both endpoints, each oriented from that endpoint's point of view.
+- **`link_attrs`**: link id → attributes.
+
+`Policy::describe_link(node_a, node_b)` combines them into the
+`LinkDescription { link_id, attrs, cost }` that the router installs.
+
+A `PolicySnapshot` additionally caches `resolved_peers_by_node`: the same peer
+list with hostnames already resolved to `SocketAddr`. Resolution happens once,
+at policy load — a failing lookup fails the whole policy install, and DNS
+changes are not picked up until the next install.
+
+---
+
+## The live graph
+
+`TopologyMgr` owns the in-memory `Router` graph and a `LinkRepo` that persists
+node-link adjacency so the graph survives a restart. Nodes themselves are
+persisted by `ActorMgr`/`NodeRepo`; only edges are persisted here.
+
+A link becomes live when **both** of its endpoints are connected nodes:
+
+1. A node authenticates over VSAPI (`connect`/`open`) and is added to the graph
+   as a bare vertex (`add_node_if_not_exists`).
+2. `install_policy_links_for_node` walks the peerings policy declares for that
+   node and, for each peer already in the connected-node list, calls
+   `add_linked_node` — which installs the edge in the router from the policy's
+   `LinkDescription` and write-throughs the adjacency to state. Peers not yet
+   connected are logged and deferred until they connect and run the same code.
+3. On restart, `restore_from_state` rebuilds from persisted edges; on every
+   policy install, `revalidate_against_policy` reconciles the union of persisted
+   and live edges against the new policy — refreshing id/attrs/cost, garbage-
+   collecting links policy no longer declares, repairing router/persistence
+   drift, and reporting orphaned nodes.
+
+Three caveats, all documented in the code as TODOs:
+
+- **A declared peering between two connected nodes is taken as evidence the link
+  is up.** The visa service cannot see which peer forwarded a node's VSAPI
+  connection, so a node with several connected peers gets edges for all of them.
+  The suggested fix is to have the node report the link it came in over as a
+  connect parameter.
+- **A failed `add_linked_node` is logged, not retried.** It leaves the edge in
+  neither the router nor state, and `revalidate_against_policy` only works the
+  union of those two — so the link stays missing until an endpoint reconnects.
+  Meanwhile the node *is* still told the link exists (topology messages come
+  from policy, not the router), so its visa requests over that link deny
+  `NoRoute` with nothing node-side to explain why.
+  (`zpr-visaservice` issue 302.)
+- **Multi-homed nodes are not supported** by `substrate_addr_from_topology`,
+  which takes a node's own substrate address from the first resolved link it
+  finds.
+
+---
+
+## Path computation
+
+`Router` wraps a `Graph` of `nodes: NodeId -> {edges}` and
+`edges: LinkId -> {a, b, attributes, cost}` behind one `RwLock`. Two queries:
+
+**`get_best_route(a, b)`** — lowest total cost, ties broken arbitrarily. Served
+from `Graph::best_routes`, an **all-pairs table recomputed by running Dijkstra
+from every node** on each topology mutation. `a == b` short-circuits to a
+`DirectSameNode` route: both actors dock on the same node, no link is traversed,
+cost 0, and there is nothing to forward.
+
+**`get_routes(a, b, hint)`** — *every* simple path, via an explicit-stack DFS
+(no recursion limit), for the not-yet-implemented route-constraint evaluator.
+This is the expensive one and it carries the interesting machinery:
+
+- Results are memoized on `(src, dst, hint)`. Cache hits *and* DFS on a miss
+  both run under a **read** lock, so lookups parallelize; only the insert takes
+  the write lock.
+- `topo_generation` is bumped on every mutation. If it changed while the DFS
+  ran, the result may be stale: the call recomputes under the write lock and
+  skips caching.
+- `link_to_cache_keys` reverse-indexes which cached routes traverse each link,
+  so **link removal** evicts exactly the affected entries. **Link addition**
+  cannot use that index — a new edge can invalidate an entry whose routes never
+  touched either endpoint — so `add_link` flushes the whole cache. The code
+  documents the tighter bounds (topological horizon; and, for shortest-path
+  caches only, the cost horizon of incremental SSSP) and defers them until
+  profiling justifies the work.
+
+`route_to_path(route, starting_node)` converts a link list into the ordered node
+list, using the starting node to fix the direction.
+
+---
+
+## From route to visa
+
+`visa_policy::evaluate_against_policy` is the single funnel — both the visa
+request path and the policy-change re-check go through it, so a re-check applies
+exactly the rules of the original decision.
+
+1. Resolve each actor's **docking node**: the node its traffic enters the fabric
+   at, from the connection table, falling back to the AAA table for fabricated
+   anonymous actors. An undocked endpoint denies `SourceNotFound` /
+   `DestNotFound`.
+2. `get_best_route(docking_node_src, docking_node_dst)`. **No route at all
+   denies `NoRoute`** before policy is even evaluated.
+3. Evaluate policy. `AllowWithoutRoute` uses the best route as the default.
+   `NeedsRoute` would enumerate candidate routes and evaluate each — see below.
+4. `route_for_allow` takes the first hit's own route if it has one, else the
+   default.
+
+`path_for_flow` then orients the route into a **node path in flow order**:
+ingress node first, egress last. It is anchored on the docking node of the
+*source of the packets this visa authorizes*, deliberately **not** on the node
+that asked for the visa — those coincide for an ordinary request but not for
+visas the visa service mints pre-emptively on another node's behalf, and getting
+the anchor wrong hands the destination node a next hop pointing back the way the
+packets came. A `DirectSameNode` route yields no path.
+
+`actualize_visa_for_target_node` then adapts one stored visa per node, reading
+each node's role straight off its position in that path:
+
+| Role | Position | What it gets |
+|---|---|---|
+| **Ingress** | first | Full visa (dock PEP, session keys) **plus** `FwdPep { next_hop }` |
+| **Intermediary** | middle | `forwardOnly` visa: id and `FwdPep` only |
+| **Egress** | last | Full visa, no `FwdPep` — the flow terminates here |
+
+`FwdPep.next_hop` is the **next node's ZPR address**, not a link id and not an
+interface. `FwdPep.symmetric` exists in the schema; the code always sets
+`OneWay` with a `TODO: Not sure when to set this to symmetric`.
+
+On policy install, `visa_reconciler` re-checks each live visa via
+`recheck_visa_allowed`: denied → revoke; still allowed but the newly derived
+path differs from the stored one → **revoke**. Routes are never edited in place.
+
+---
+
+## What the node does with it
+
+Two halves, and only one of them is wired up.
+
+**Visas — implemented.** `visa_mgmt::insert_visa` takes `fwd_pep.next_hop` (or
+the dock PEP's destination address when there is no `FwdPep`), resolves it to a
+link with `Assembly::find_egress_link` — which matches the address against the
+node's own ZPR addresses first, then against each peer's registered actor
+addresses — and stores it in the visa table. A next hop that resolves to no link
+is rejected as `DestNotFound`. From there forwarding is pure Stream ID switching
+(see [ZDP.md](ZDP.md)); the next hop is consulted once, at visa install, not per
+packet.
+
+**`setTopology` — a stub.** `vss_worker::process_topology` logs each link and
+returns `Ok`:
+
+```rust
+fn process_topology(_asm: &Arc<Assembly>, links: Vec<Link>) -> SetTopologyResponse {
+    info!(target: VSS_RPC, "received topology update with {} links (not yet implemented)", links.len());
+    ...
+}
+```
+
+So a node is told its peers, their substrate addresses, their ZPR addresses, and
+carries bootstrap visas for them — and does nothing with any of it. No
+node-to-node link is ever brought up: `LinkType::NodeToNode` is marked
+*currently unsupported* in `link_state.rs`, and `insert_visa` outright panics on
+a `forwardOnly` visa (`"Forward only visas not yet supported"`).
+
+The consequence is worth stating plainly: **the control plane computes
+multi-hop routes that the data plane cannot yet use.** Everything above —
+Dijkstra, all-paths DFS, path orientation, per-role visa actualization — is
+built, tested, and exercised by unit tests, while `zpr-core`'s integration
+tests are `one-node-test.sh` and `one-node-v6-test.sh`. `zpr-demo/multinode-demo`
+is the two-node deployment being built out against this gap.
+
+---
+
+## Route constraints in policy
+
+ZPL's `over` clause constrains which links a flow may traverse:
+
+```zpl
+allow redhead users to access database over secure, location:usa links.
+never allow baldy users to access database over foreign links.
+```
+
+The full pipeline exists in outline and is disconnected at every runtime joint:
+
+| Stage | State |
+|---|---|
+| Compiler parses `over`, checks satisfiability against declared links | **works** |
+| Compiler emits `CPolicy.linkConds` into the policy binary | **works** |
+| `libeval` reads `linkConds` | **never read** — no reference to the field anywhere in `zpr-visaservice` |
+| `RoutePredicate` (`DirectOnly`, `RequireLinkedPath`, `AnyLinkHas`, `NoLinkHas`, `AllLinksHave`, `And`, `Or`) | defined, never constructed |
+| `PartialEvalResult::NeedsRoute` | defined, never returned — evaluation always yields `AllowWithoutRoute` or `Deny` |
+| `RouteResidualEvaluator::eval_route` / `eval_routes` | `Err(InternalError("route evaluation not implemented"))`, with the intended algorithm written out in comments |
+| `RouteHint`-based pruning in `Router::compute_routes` | hint accepted and ignored |
+| `TopologyQueryApi::link_has_attr` on `TopologyMgr` | `return false` |
+
+**An `over` clause compiles, is checked against the topology, and is then not
+enforced.** A policy relying on one for security is not getting it. The
+`link.zpr.cost` attribute is the sole exception: it is read, by
+`describe_link`, as a number.
+
+The design intent (`eval_route`'s comments): evaluate each candidate deny hit's
+`RoutePredicate` against the route and re-check the actor conditions from the
+cached actors; if any deny fires it is a deny; otherwise collect passing allow
+hits. The two-phase split exists because the answer depends on which
+permission matched —
+
+```zpl
+allow admins to access services over secure links.
+allow employees to access services.          # implied: over any link
+never allow admins to access services over insecure links.
+```
+
+— so evaluating a route requires knowing whether the actor matched as an admin
+or merely as an employee.
+
+---
+
+## Bootstrap routing
+
+A node that is not yet connected cannot be evaluated by policy — it has no
+actor, and no route until its link is up — but it needs to reach the visa
+service's VSAPI port to connect at all. `visa_bootstrap` resolves the circularity:
+
+- Every `setTopology` message mints, per link, **two** visas for the *peer* (not
+  the recipient): one for the peer's own SYN to VSAPI, one for the visa
+  service's reply. Both are needed — with only the forward visa the reply is
+  dropped, since no dock PEP matches it and no node on the forward path has a
+  route back.
+- The recipient holds them and hands them off when the peer shows up. The peer's
+  own link is not in the router yet, so its first hop is stitched on from the
+  peering rather than routed.
+- Minting deliberately bypasses policy evaluation: **a peering declared in
+  policy is itself the authorization** for that peer to reach VSAPI.
+- An already-connected peer yields no bootstrap visas — it has a VSAPI session
+  and asks for what it needs.
+
+The whole module is labelled a HACK to get initial multi-node working
+(`zpr-visaservice` issue 301) and is meant to be deleted.
+
+---
+
+## Addressing
+
+Routing destinations are ZPR addresses, and where each kind comes from matters:
+
+| | Source |
+|---|---|
+| **Node ZPR address** | `zpr_address` in `.zplc`, and the same value in the node's own config. Not allocated. |
+| **Adapter/actor address** | Allocated by the visa service from its pool, or requested by the adapter via the `zpr.addr` claim (the one `zpr.*` claim an adapter may send). |
+| **AAA address** | Used only during authentication. The ZPRnet AAA network is `fd5a:5052:0:aaa::/64`; each node gets a **/88** carved out using the low 24 bits of its node address, pushed to the node as the `AAA_PREFIX` configuration parameter and used to seed its local `AddressPool`. |
+| **Static service address** | A service needing a fixed address sets `zpr_addr` in the adapter config *and* a matching `["zpr.addr", "..."]` provider attribute in `.zplc`. |
+
+ZRFC 6.4 §4.1 has node addresses as prefixes from which dock and tether
+addresses are cut, so a route to a dock covers every tether on it. The
+implementation does not do this: `NodeId` is a flat `IpAddr`, routes are
+computed strictly between node addresses, and the docking node for an actor
+comes from a table lookup rather than from prefix containment.
+
+---
+
+## Observability
+
+- **`GET /admin/network`** returns every link the current policy declares
+  between nodes, deduplicated by normalized node pair, each carrying
+  `node_a_addr`/`node_b_addr`, both substrate addresses, `link_id`,
+  `link_attrs`, and `link_cost` from the policy's link description — plus a
+  `ctype`: `UP` if a connected node reports the link, `DOWN` if policy declares
+  it but no node reports it, `INVALID` otherwise (and then with no substrate
+  addresses, link id, or cost).
+- The per-node admin endpoint lists that node's `adapters` and `links`.
+- `zpr-dashboard` (TUI) and `vs-admin gui` render the same data;
+  `demo-zpr-dashboard` in the multinode demo wraps it.
+- Deny reason **`NoRoute`** in the deny log is the routing-specific failure:
+  either an endpoint is undocked or no path exists between the two docking
+  nodes.
+- Counter `LinkInstallFailed` counts the silent-link-loss case described above.
+
+---
+
+## Implementation status
+
+Specified or designed, not working:
+
+- **Node-side topology.** `setTopology` is a log-only stub; no node-to-node link
+  is established.
+- **`forwardOnly` visas** panic on install, so a path with an intermediary node
+  cannot work. Two nodes with one link between them need only ingress and egress
+  visas, which is why that is the frontier.
+- **Route constraints** (`over`) are compiled and never enforced.
+- **Next-hop selection modes** from ZRFC 6.4 §5.11.2 — a visa specifying an
+  exact next hop, or a constrained set of permissible next hops, versus leaving
+  the choice to the forwarder. The implementation always computes the whole path
+  centrally and pins every hop.
+- **Link/route liveness.** Nothing detects a link going down and reroutes; ZRFC
+  6.4 §5.12 requires docks and forwarders to report link and peer state changes
+  to the admin service, and §5.11 describes re-heralding a visa onto a new path
+  around a failure. Today a topology change revokes affected visas and the flow
+  re-requests.
+- **Backup links.** `LinkRole::backup` exists in the schema; only `Active` is
+  ever sent.
+- **Multi-homed nodes**, and equal-cost multipath (ties are broken arbitrarily).
+- **`FwdPep.symmetric`** — always `OneWay`.
+
+Also note that ZRFC 6.4 assigns route generation to the **Admin Service**, which
+distributes `(egress address, next hop)` routes to docks and forwarders as a
+routing table. The implementation folds that role into the visa service and
+distributes next hops **per visa** instead. Nodes hold no routing table at all.
+
+---
+
+## Where the code lives
+
+| Concern | Location |
+|---|---|
+| Topology schema (`nodes`, `substrate_addrs`, `links`) | `zpr-compiler/src/config/mod.rs`, `config_api.rs` |
+| Link → `Peering` emission, `over` satisfiability checks | `zpr-compiler/src/weaver.rs`, `fabric.rs` |
+| Topology and link-condition schema | `zpr-policy/policy.capnp` (`Peering`, `CPolicy.linkConds`) |
+| Peer table, link attributes, `describe_link`, default cost | `zpr-visaservice/libeval/src/policy.rs` |
+| Route and predicate types | `libeval/src/route.rs` |
+| Route-constraint evaluator (unimplemented) | `libeval/src/eval_route.rs` |
+| Graph, Dijkstra, all-paths DFS, route cache | `zpr-visaservice/vs/src/router.rs` |
+| Live graph, persistence, policy revalidation | `vs/src/topology_mgr.rs`, `vs/src/db/link.rs` |
+| DNS resolution of substrate hostnames | `vs/src/policy_mgr.rs` (`PolicyResolver`) |
+| Docking-node resolution, route selection, `NoRoute` | `vs/src/visa_policy.rs` |
+| Path orientation, per-node visa actualization, re-check | `vs/src/visa_mgr.rs` |
+| Bootstrap visas for unconnected peers | `vs/src/visa_bootstrap.rs` |
+| Link install on node connect | `vs/src/vsapi_worker.rs` |
+| `setTopology` send path | `vs/src/vss_worker.rs` |
+| Address pools, AAA prefixes | `vs/src/net_mgr.rs` |
+| Wire contract (`FwdPep`, `Link`, `setTopology`) | `zpr-vsapi/vs.capnp` |
+| Node: visa install, next hop → egress link | `zpr-core/adapter/ph/src/visa_mgmt.rs`, `visa_table.rs`, `assembly.rs` |
+| Node: `setTopology` receive (stub) | `zpr-core/adapter/ph/src/vss_worker.rs`, `libnode2/src/vss.rs` |
+| Two-node deployment | `zpr-demo/multinode-demo/` |
+
+A change to the topology model usually touches all four repositories: the schema
+in `zpr-compiler`, the wire format in `zpr-policy` and/or `zpr-vsapi`, the graph
+and route selection in `zpr-visaservice`, and the consumer in `zpr-core`. See
+[REPOSITORIES.md](REPOSITORIES.md).

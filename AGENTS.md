@@ -20,4 +20,33 @@ Additional coding guidelines:
 
 - `docs/` -> technical knowledge loaded when relevant.
 - `skills/` -> specialized, repeatable agent workflows.
-- `zpr-dev/` -> binary for configuring the ZPR development environment. 
+- `zpr-dev/` -> binary for configuring the ZPR development environment.
+
+
+## Required reading by task
+
+Read these before making the change, not after. Paths are relative to the
+shared context checkout; a generated `AGENTS.md` rewrites them to absolute
+paths, so they can be opened directly.
+
+| When you are | Read |
+|---|---|
+| New to ZPR, or unsure how the pieces fit | `docs/SYSTEM_OVERVIEW.md`, `docs/TERMINOLOGY.md` |
+| Unsure which repository owns something | `docs/REPOSITORIES.md` |
+| Building, testing, or changing a cross-repository dependency | `docs/BUILD.md` |
+| Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
+| Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
+| Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
+| Changing packet formats, links, docking sessions, forwarding, or compression | `docs/ZDP.md` |
+| Changing routing, topology, or address assignment | `docs/SYSTEM_OVERVIEW.md`, `docs/ZDP.md`, `docs/VISA_SERVICE.md` |
+| Changing anything cryptographic, or touching the enforcement path | `docs/SECURITY_MODEL.md` |
+| Writing or reviewing a policy file | `docs/ZPL.md` |
+
+Two rules that apply to every task above:
+
+- **The RFCs are design intent, not a description of what runs.** Each document
+  has an "Implementation status" section recording where the code diverges.
+  Check it before assuming a feature exists.
+- **A change to what policy can express usually spans three repositories** --
+  the grammar and compiler in `zpr-compiler`, the schema in `zpr-policy`, and
+  the evaluator in `zpr-visaservice`. See `docs/REPOSITORIES.md`.
