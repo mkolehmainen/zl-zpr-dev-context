@@ -1,0 +1,1275 @@
+# ZPR Development Environment Specification
+
+## 1. Purpose
+
+This document specifies a shared ZPR software development environment intended for both human developers and software-development agents such as Hermes and Codex.
+
+The goals are:
+
+1. Maintain one canonical source of cross-repository ZPR development context.
+2. Make the same context available to human developers and development agents.
+3. Keep repository-specific instructions close to the repository that owns them.
+4. Avoid manually maintaining duplicate copies of shared agent instructions.
+5. Make a complete local multi-repository ZPR workspace easy to create and update.
+6. Keep technical documentation usable independently of any particular agent framework.
+7. Allow agent-specific skills to be versioned, reviewed, and shared through Git.
+
+This specification introduces a small command-line tool named `zpr-dev` to create, validate, and maintain the local workspace.
+
+---
+
+## 2. Configuration Decisions
+
+### 2.1 Configuration 1: Canonical development-context repository
+
+A dedicated Git repository named `zpr-dev-context` SHALL contain shared ZPR development context.
+
+Suggested layout:
+
+```text
+zpr-dev-context/
+├── AGENTS.md
+├── docs/
+│   ├── SYSTEM_OVERVIEW.md
+│   ├── REPOSITORIES.md
+│   ├── TERMINOLOGY.md
+│   ├── BUILD.md
+│   ├── ZPL.md
+│   ├── ZDP.md
+│   ├── VISA_SERVICE.md
+│   ├── ROUTING.md
+│   └── SECURITY_MODEL.md
+├── skills/
+│   ├── zpr-build/
+│   │   └── SKILL.md
+│   ├── zpr-debug/
+│   │   └── SKILL.md
+│   └── ...
+└── workspace.yaml
+```
+
+`zpr-dev-context` is the canonical source for:
+
+- cross-repository development instructions;
+- architecture and terminology;
+- repository inventory;
+- common build and test procedures;
+- agent-oriented skills that apply across ZPR repositories;
+- the definition of the standard local ZPR workspace.
+
+The repository SHALL NOT contain copies of application source repositories.
+
+---
+
+### 2.2 Configuration 2: Separate instructions, documentation, and skills
+
+The repository SHALL distinguish among three kinds of information:
+
+```text
+AGENTS.md   -> instructions that should usually be in agent context
+docs/       -> technical knowledge loaded when relevant
+skills/     -> specialized, repeatable agent workflows
+```
+
+`AGENTS.md` SHOULD remain concise.
+
+It SHOULD contain:
+
+- essential ZPR terminology;
+- important architectural facts;
+- development conventions;
+- repository relationships;
+- instructions telling an agent which deeper documents to consult for particular tasks.
+
+It SHOULD NOT attempt to contain the complete ZPR technical documentation.
+
+Example:
+
+```markdown
+## Visa Service
+
+The Visa Service evaluates policy and issues visas.
+
+Before modifying visa issuance, revocation, or caching behavior, read:
+
+- `docs/VISA_SERVICE.md`
+- `docs/SECURITY_MODEL.md`
+```
+
+This keeps always-loaded agent context small while preserving access to detailed documentation.
+
+---
+
+### 2.3 Configuration 3: Standard multi-repository workspace
+
+The normal local development environment SHALL use a common parent directory.
+
+Default:
+
+```text
+~/src/zpr/
+├── context/             # clone of zpr-dev-context
+├── node/
+├── visa-service/
+├── zpl/
+├── router/
+└── ...
+```
+
+The exact repository set and checkout names SHALL be defined by `workspace.yaml` in `zpr-dev-context`.
+
+Example:
+
+```yaml
+version: 1
+
+repositories:
+  - name: node
+    url: git@github.com:example/zpr-node.git
+    default_branch: main
+
+  - name: visa-service
+    url: git@github.com:example/zpr-visa-service.git
+    default_branch: main
+
+  - name: zpl
+    url: git@github.com:example/zpl.git
+    default_branch: main
+```
+
+The parent directory is a workspace only. It does not need to be a Git repository.
+
+---
+
+### 2.4 Configuration 4: Shared AGENTS.md is canonical
+
+The canonical cross-repository `AGENTS.md` SHALL live at:
+
+```text
+~/src/zpr/context/AGENTS.md
+```
+
+Individual source repositories MAY contain repository-specific `AGENTS.md` files.
+
+Repository-specific files SHOULD contain only information owned by that repository.
+
+For example:
+
+```text
+visa-service/
+├── AGENTS.md
+├── Cargo.toml
+└── src/
+```
+
+The repository-specific `AGENTS.md` might contain:
+
+```markdown
+# Visa Service Repository
+
+Shared ZPR development guidance is provided by the ZPR development
+environment.
+
+This repository implements the Visa Service.
+
+Before changing issuance behavior, consult the shared documents:
+
+- VISA_SERVICE.md
+- SECURITY_MODEL.md
+
+Repository-specific commands:
+
+- `cargo test`
+- `make integration-test`
+```
+
+The system SHALL avoid maintaining a second hand-edited copy of the shared `AGENTS.md` in each repository.
+
+---
+
+### 2.5 Configuration 5: Generated local agent context
+
+Because different agent frameworks discover context differently, `zpr-dev` SHALL generate local integration files where needed.
+
+Generated files SHALL be clearly marked as generated.
+
+For example:
+
+```markdown
+<!-- Generated by zpr-dev. Do not edit manually. -->
+<!-- Source: zpr-dev-context commit 4ba137c -->
+```
+
+A generated repository-local `AGENTS.md` MAY combine:
+
+1. the shared ZPR `AGENTS.md`; and
+2. a repository-specific source file such as `AGENTS.repo.md`.
+
+An alternative layout is:
+
+```text
+visa-service/
+├── AGENTS.repo.md        # maintained by humans
+├── AGENTS.md             # generated by zpr-dev
+└── ...
+```
+
+The exact mechanism SHOULD be configurable per repository.
+
+This avoids relying on cross-repository symbolic links, which are fragile when repositories are cloned independently.
+
+---
+
+### 2.6 Configuration 6: Technical documentation remains ordinary documentation
+
+Technical documentation SHALL remain under `docs/` rather than being hidden inside agent skills.
+
+This allows the same material to be used by:
+
+- Hermes;
+- Codex;
+- Claude;
+- other development agents;
+- developers reading the files directly;
+- documentation tooling;
+- code review.
+
+Skills MAY reference these documents.
+
+For example:
+
+```markdown
+Before debugging visa issuance, read:
+
+../../docs/VISA_SERVICE.md
+../../docs/SECURITY_MODEL.md
+```
+
+---
+
+### 2.7 Configuration 7: Shared skills are version-controlled
+
+Cross-repository development skills SHALL live under:
+
+```text
+zpr-dev-context/skills/
+```
+
+Hermes SHOULD be configured to use that directory directly as an external skill directory.
+
+Conceptually:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/src/zpr/context/skills
+```
+
+This means edits to a shared skill occur directly inside the Git checkout and can be reviewed with normal Git tools.
+
+Repository-specific skills SHOULD remain inside the repository that owns them, preferably under:
+
+```text
+.agents/skills/
+```
+
+when compatibility with multiple agent systems is desired.
+
+---
+
+## 3. `zpr-dev` Tool
+
+### 3.1 Purpose
+
+`zpr-dev` is a small command-line tool for creating and maintaining the standard ZPR development workspace.
+
+It is not a build system and does not replace Git.
+
+Its responsibilities are:
+
+1. bootstrap a workspace;
+2. clone the required repositories;
+3. update shared development context;
+4. update source repositories;
+5. generate agent integration files;
+6. configure supported local agent tools;
+7. validate workspace consistency;
+8. show workspace status.
+
+The tool SHOULD be safe to run repeatedly.
+
+Operations SHOULD be idempotent whenever practical.
+
+---
+
+## 4. Command-Line Interface
+
+General syntax:
+
+```text
+zpr-dev [global-options] <command> [command-options]
+```
+
+Global options:
+
+```text
+--workspace <path>    Override workspace directory
+--context <path>      Override zpr-dev-context checkout
+-v, --verbose         Show additional detail
+-q, --quiet           Suppress non-error output
+--dry-run             Show intended changes without modifying anything
+-h, --help            Show help
+--version             Show zpr-dev version
+```
+
+Default workspace:
+
+```text
+~/src/zpr
+```
+
+---
+
+## 5. Commands
+
+### 5.1 `zpr-dev setup`
+
+Create or repair a standard ZPR development environment.
+
+Usage:
+
+```bash
+zpr-dev setup
+```
+
+Optional arguments:
+
+```text
+--workspace <path>
+--context-url <git-url>
+--branch <branch>
+--agent <name>
+--no-agent-config
+--no-clone
+```
+
+Example:
+
+```bash
+zpr-dev setup \
+    --workspace ~/src/zpr \
+    --context-url git@github.com:example/zpr-dev-context.git
+```
+
+`setup` SHALL:
+
+1. create the workspace directory if necessary;
+2. clone `zpr-dev-context` into `<workspace>/context`;
+3. read `context/workspace.yaml`;
+4. clone missing ZPR repositories;
+5. leave existing repository clones intact;
+6. generate any required local agent integration files;
+7. configure supported agent integrations when requested;
+8. run validation;
+9. print a summary.
+
+Example result:
+
+```text
+Workspace: /home/alice/src/zpr
+
+Context:
+  context          OK   main @ 4ba137c
+
+Repositories:
+  node             OK   main
+  visa-service     OK   main
+  zpl              OK   main
+  router           cloned
+
+Agent integration:
+  Hermes           configured
+  Codex            ready
+  Claude           ready
+
+Workspace validation: OK
+```
+
+`setup` SHALL NOT discard local modifications.
+
+---
+
+### 5.2 `zpr-dev update`
+
+Update the workspace from its configured upstream repositories.
+
+Usage:
+
+```bash
+zpr-dev update
+```
+
+Options:
+
+```text
+--context-only
+--repos-only
+--repo <name>
+--ff-only
+--rebase
+--no-generate
+```
+
+Default behavior SHOULD be conservative.
+
+For each clean repository on its configured branch:
+
+```text
+git fetch
+git pull --ff-only
+```
+
+If a repository is dirty, detached, or cannot be fast-forwarded, `zpr-dev` SHALL report the condition and leave that repository unchanged.
+
+Example:
+
+```text
+$ zpr-dev update
+
+context          updated   4ba137c -> 650ad18
+node             current
+visa-service     skipped   local modifications
+zpl              updated   91c0fea -> a27100d
+
+Regenerating agent context...
+Done.
+```
+
+`zpr-dev update --context-only` is the expected command when a developer only wants the newest shared documentation, AGENTS instructions, and skills.
+
+---
+
+### 5.3 `zpr-dev status`
+
+Show the state of the complete workspace.
+
+Usage:
+
+```bash
+zpr-dev status
+```
+
+Example:
+
+```text
+WORKSPACE /home/alice/src/zpr
+
+REPOSITORY        BRANCH       STATUS       UPSTREAM
+context           main         clean        current
+node              feature-x    modified     ahead 2
+visa-service      main         clean        behind 3
+zpl               main         clean        current
+
+AGENT CONTEXT
+generated files   current
+Hermes skills     configured
+Hermes SOUL       unmanaged
+Codex context     ready
+Claude context    stale
+```
+
+Options:
+
+```text
+--short
+--porcelain
+--repo <name>
+```
+
+`--porcelain` SHOULD provide machine-readable, stable output suitable for scripts.
+
+---
+
+### 5.4 `zpr-dev sync`
+
+Synchronize generated development-context files without updating source repositories.
+
+Usage:
+
+```bash
+zpr-dev sync
+```
+
+This command SHALL:
+
+1. read the current `context/AGENTS.md`;
+2. read repository-specific agent context sources;
+3. regenerate repository-local integration files;
+4. refresh generated references to shared documentation;
+5. update agent configuration that is managed by `zpr-dev`.
+
+This is useful after editing the local `zpr-dev-context` checkout.
+
+Example workflow:
+
+```bash
+cd ~/src/zpr/context
+vim AGENTS.md
+git diff
+
+zpr-dev sync
+
+cd ../visa-service
+codex
+```
+
+No Git fetch or pull is implied by `sync`.
+
+---
+
+### 5.5 `zpr-dev validate`
+
+Check whether the workspace conforms to this specification.
+
+Usage:
+
+```bash
+zpr-dev validate
+```
+
+Validation SHOULD include:
+
+- required repositories exist;
+- each directory is the expected Git repository;
+- generated files match their sources;
+- no generated file has been manually modified;
+- documentation references from `AGENTS.md` resolve;
+- configured skills directories exist;
+- Hermes integration points at the expected shared skills directory;
+- repository names in `workspace.yaml` are unique;
+- repository-specific context sources exist when required.
+
+Example:
+
+```text
+$ zpr-dev validate
+
+[OK] context repository
+[OK] workspace manifest
+[OK] 7 source repositories
+[OK] generated AGENTS.md files
+[OK] documentation references
+[WARN] Hermes config contains an additional unmanaged skill directory
+
+Validation completed with 1 warning.
+```
+
+Exit status:
+
+```text
+0   valid
+1   validation errors
+2   command/configuration error
+```
+
+---
+
+### 5.6 `zpr-dev repo`
+
+Operate on or locate a repository in the workspace.
+
+Subcommands:
+
+```text
+zpr-dev repo list
+zpr-dev repo path <name>
+zpr-dev repo update <name>
+```
+
+Examples:
+
+```bash
+zpr-dev repo list
+```
+
+```text
+node
+visa-service
+zpl
+router
+```
+
+```bash
+cd "$(zpr-dev repo path visa-service)"
+```
+
+This avoids scripts depending on hard-coded checkout paths.
+
+---
+
+### 5.7 `zpr-dev docs`
+
+Locate shared technical documentation.
+
+Usage:
+
+```text
+zpr-dev docs
+zpr-dev docs <topic>
+```
+
+Examples:
+
+```bash
+zpr-dev docs
+```
+
+might print:
+
+```text
+SYSTEM_OVERVIEW
+TERMINOLOGY
+BUILD
+ZPL
+ZDP
+VISA_SERVICE
+ROUTING
+SECURITY_MODEL
+```
+
+```bash
+zpr-dev docs visa
+```
+
+might print:
+
+```text
+/home/alice/src/zpr/context/docs/VISA_SERVICE.md
+```
+
+An optional future command could launch the configured editor:
+
+```bash
+zpr-dev docs visa --edit
+```
+
+---
+
+### 5.8 `zpr-dev agent`
+
+Manage agent integrations.
+
+Usage:
+
+```text
+zpr-dev agent status
+zpr-dev agent configure <agent>
+zpr-dev agent unconfigure <agent>
+```
+
+Initial supported values:
+
+```text
+hermes
+codex
+claude
+```
+
+#### Hermes
+
+```bash
+zpr-dev agent configure hermes
+```
+
+SHALL:
+
+1. locate the Hermes configuration;
+2. add the shared skills directory if it is not already configured;
+3. avoid removing unrelated user configuration;
+4. validate that the configured directory exists.
+
+Conceptually:
+
+```yaml
+skills:
+  external_dirs:
+    - /home/alice/src/zpr/context/skills
+```
+
+Hermes global personality configuration such as `SOUL.md` SHOULD remain separate from ZPR project context unless explicitly managed by the user.
+
+#### Codex / Claude
+
+```bash
+zpr-dev agent configure codex
+
+# or for Claude:
+zpr-dev agent configure claude
+```
+
+SHOULD ensure that each repository exposes the appropriate `AGENTS.md` context.
+
+Codex/Claude iaintegration SHOULD require no user-specific global configuration when repository-local `AGENTS.md` files are sufficient.
+
+
+---
+
+### 5.9 `zpr-dev regenerate`
+
+Force regeneration of all generated context files.
+
+Usage:
+
+```bash
+zpr-dev regenerate
+```
+
+Normally `sync`, `setup`, and `update` perform regeneration automatically.
+
+`regenerate` exists for troubleshooting and automation.
+
+---
+
+### 5.10 `zpr-dev doctor`
+
+Diagnose environment problems.
+
+Usage:
+
+```bash
+zpr-dev doctor
+```
+
+Checks MAY include:
+
+- Git installation and version;
+- SSH access to configured Git hosts;
+- malformed workspace manifest;
+- missing repositories;
+- broken generated files;
+- Hermes installation;
+- Hermes configuration;
+- Codex installation;
+- Claude installation;
+- unexpected symbolic links;
+- unsupported workspace layout.
+
+Example:
+
+```text
+$ zpr-dev doctor
+
+git                 OK   2.51.0
+ssh github.com      OK
+context             OK
+Hermes              OK
+Codex               OK
+Claude              OK
+generated context   STALE
+
+Suggested action:
+    zpr-dev sync
+```
+
+---
+
+## 6. Workspace Manifest
+
+`workspace.yaml` SHALL define the repositories needed for the normal ZPR development environment.
+
+Suggested schema:
+
+```yaml
+version: 1
+
+workspace:
+  name: zpr
+
+repositories:
+  - name: node
+    url: git@github.com:example/zpr-node.git
+    default_branch: main
+    context:
+      local: AGENTS.repo.md
+      generated: AGENTS.md
+
+  - name: visa-service
+    url: git@github.com:example/zpr-visa-service.git
+    default_branch: main
+    context:
+      local: AGENTS.repo.md
+      generated: AGENTS.md
+
+agent:
+  hermes:
+    shared_skills: skills
+
+documentation:
+  root: docs
+```
+
+The manifest SHOULD describe policy, not mutable local state.
+
+Local state MAY be stored separately, for example:
+
+```text
+~/.config/zpr-dev/config.yaml
+```
+
+or:
+
+```text
+<workspace>/.zpr-dev/state.yaml
+```
+
+Local state SHALL NOT normally be committed.
+
+---
+
+## 7. Generated AGENTS.md Model
+
+A recommended implementation is to generate repository-local `AGENTS.md` files.
+
+Input:
+
+```text
+context/AGENTS.md
+visa-service/AGENTS.repo.md
+```
+
+Output:
+
+```text
+visa-service/AGENTS.md
+```
+
+Conceptually:
+
+```markdown
+<!-- Generated by zpr-dev. Do not edit. -->
+<!-- Shared context: zpr-dev-context @ 650ad18 -->
+
+# Shared ZPR Development Context
+
+...contents of shared AGENTS.md...
+
+# Repository-Specific Context
+
+...contents of AGENTS.repo.md...
+```
+
+This has several advantages:
+
+1. Hermes and Codex/Claude see an ordinary repository-local `AGENTS.md`.
+2. A repository checkout remains useful to an agent even outside the standard workspace.
+3. Shared instructions remain centrally maintained.
+4. Repository-specific instructions remain owned by the source repository.
+5. The exact shared-context revision can be identified.
+
+There are two possible Git policies.
+
+### Policy A: Generated AGENTS.md is committed
+
+Advantages:
+
+- a standalone clone contains agent context;
+- pull requests show changes to effective agent instructions;
+- developers do not need `zpr-dev` merely to use Codex/Claude.
+
+Disadvantages:
+
+- updates to shared context create mechanical commits across repositories.
+
+### Policy B: Generated AGENTS.md is ignored
+
+Advantages:
+
+- no generated-file commits;
+- shared context updates immediately within a configured workspace.
+
+Disadvantages:
+
+- a standalone repository clone lacks the complete shared context until `zpr-dev` is run.
+
+For ZPR, Policy A is recommended if individual developers commonly clone and work in one repository without creating the complete ZPR workspace.
+
+Policy B is recommended if the standard workspace becomes the required development environment.
+
+
+**DECISION:** Go with `Policy B` intially.
+
+---
+
+## 8. Developer Workflows
+
+### 8.1 First-time setup
+
+A new developer installs `zpr-dev`, then runs:
+
+```bash
+zpr-dev setup \
+    --context-url git@github.com:example/zpr-dev-context.git
+```
+
+Afterward:
+
+```bash
+cd ~/src/zpr/visa-service
+claude
+```
+
+or:
+
+```bash
+cd ~/src/zpr/node
+hermes
+```
+
+The agent receives the same shared development context.
+
+---
+
+### 8.2 Normal daily update
+
+```bash
+zpr-dev update
+```
+
+This updates clean repositories and refreshes generated context.
+
+A developer who does not want source branches touched can run:
+
+```bash
+zpr-dev update --context-only
+```
+
+---
+
+### 8.3 Editing shared ZPR knowledge
+
+```bash
+cd ~/src/zpr/context
+
+vim AGENTS.md
+vim docs/VISA_SERVICE.md
+
+git diff
+git commit
+git push
+
+zpr-dev sync
+```
+
+The local agent environment now uses the changed context.
+
+---
+
+### 8.4 Editing repository-specific instructions
+
+```bash
+cd ~/src/zpr/visa-service
+
+vim AGENTS.repo.md
+zpr-dev sync
+
+git diff
+```
+
+If generated `AGENTS.md` is committed, the diff will include both the source change and generated result.
+
+---
+
+### 8.5 Editing a shared Hermes skill
+
+Because Hermes points directly at the checked-out shared skills directory:
+
+```bash
+cd ~/src/zpr/context
+vim skills/zpr-debug/SKILL.md
+
+git diff
+```
+
+No export from Hermes is required.
+
+---
+
+### 8.6 Checking environment consistency
+
+Before investigating an agent-context problem:
+
+```bash
+zpr-dev doctor
+zpr-dev validate
+```
+
+---
+
+## 9. Repository-Specific Documentation
+
+Not all documentation belongs in `zpr-dev-context`.
+
+A useful rule is:
+
+```text
+Cross-repository architectural knowledge
+    -> zpr-dev-context/docs
+
+Implementation details owned by one repository
+    -> that repository's docs/
+
+Instructions required whenever working on one repository
+    -> AGENTS.repo.md
+```
+
+For example:
+
+```text
+zpr-dev-context/docs/ZDP.md
+```
+
+might describe ZDP architecture and protocol relationships.
+
+Meanwhile:
+
+```text
+node/docs/zdp-implementation.md
+```
+
+might explain the specific Rust modules implementing ZDP in the node repository.
+
+The shared document MAY point to repository-owned documentation.
+
+---
+
+## 10. Agent Behavior
+
+The shared `AGENTS.md` SHOULD direct agents to consult deeper documentation conditionally.
+
+Example:
+
+```markdown
+## Required reading by task
+
+When working on ZPL syntax or semantics:
+- read `docs/ZPL.md`
+
+When changing routing:
+- read `docs/ROUTING.md`
+- read `docs/ZDP.md`
+
+When changing authentication or visa issuance:
+- read `docs/SECURITY_MODEL.md`
+- read `docs/VISA_SERVICE.md`
+```
+
+This allows agent context to grow only when the task requires it.
+
+---
+
+## 11. Security and Secrets
+
+The `zpr-dev-context` repository SHALL NOT contain:
+
+- API tokens;
+- SSH private keys;
+- cloud credentials;
+- passwords;
+- private certificates;
+- developer-specific secrets.
+
+Documentation MAY reference the names of required environment variables or secret-management procedures.
+
+For example:
+
+```text
+GITHUB_TOKEN
+AWS_PROFILE
+ZPR_TEST_CA
+```
+
+but SHALL NOT contain their values.
+
+---
+
+## 12. Implementation Notes for `zpr-dev`
+
+The first implementation of `zpr-dev` SHOULD be intentionally small.
+
+A reasonable implementation language is Rust, Python, or Go. Since the
+majority of the ZPR ecosystem is Rust, **we choose Rust**.
+
+The first version needs only:
+
+```text
+setup
+update
+status
+sync
+validate
+agent configure
+doctor
+```
+
+Everything else can be added later.
+
+The implementation SHOULD shell out to the installed `git` command rather than reimplementing Git operations.
+
+It SHOULD preserve user state conservatively.
+
+In particular, it SHALL NOT automatically:
+
+- reset repositories;
+- delete branches;
+- discard local changes;
+- force-push;
+- rebase without an explicit option;
+- rewrite user-managed agent configuration unrelated to ZPR.
+
+---
+
+## 13. Suggested Minimum Viable Version
+
+The first usable release of `zpr-dev` can be limited to the following.
+
+### Version 0.1
+
+Commands:
+
+```text
+zpr-dev setup
+zpr-dev update
+zpr-dev status
+zpr-dev sync
+zpr-dev validate
+zpr-dev agent configure hermes
+zpr-dev agent configure claude
+zpr-dev agent configure codex
+```
+
+Supported configuration:
+
+```text
+workspace.yaml
+shared AGENTS.md
+repository AGENTS.repo.md
+shared docs/
+shared Hermes skills/
+```
+
+This is sufficient to establish a centralized, version-controlled development context shared by Hermes, Codex, Claude, and human developers.
+
+---
+
+## 14. Open Questions
+
+The following decisions should be made before implementation.
+
+### 14.1 Open Question 1: Commit generated AGENTS.md files?
+
+Choose between:
+
+1. commit generated `AGENTS.md` files to every source repository; or
+2. generate them only in configured workspaces.
+
+The answer depends primarily on how important standalone repository clones are.
+
+**ANSWER:** Option 2.
+
+### 14.2 Open Question 2: Where should `zpr-dev-context` live?
+
+Possible locations include:
+
+```text
+~/src/zpr/context
+~/src/zpr/zpr-dev-context
+```
+
+`context` is shorter and makes the workspace easier to navigate.
+
+`zpr-dev-context` is more explicit and matches the repository name.
+
+**ANSWER:** `zpr-dev-context`. Use repository name.
+
+### 14.3 Open Question 3: Should `zpr-dev update` update application repositories by default?
+
+A conservative alternative is:
+
+```text
+zpr-dev update
+    -> update only context
+
+zpr-dev update --all
+    -> update source repositories too
+```
+
+This may be preferable because developers frequently have application repositories checked out on feature branches.
+
+**ANSWER:** Yes, use this conservative alternative.
+
+
+### 14.4 Open Question 4: Should the workspace manifest define optional repositories?
+
+As ZPR grows, not every developer may need every repository.
+
+The manifest could eventually support groups:
+
+```yaml
+groups:
+  core:
+    - node
+    - visa-service
+    - zpl
+
+  hosted:
+    - hosted-control-plane
+    - zpr-cli
+```
+
+Then:
+
+```bash
+zpr-dev setup --group core
+```
+
+or:
+
+```bash
+zpr-dev setup --group hosted
+```
+
+
+**ANSWER:** No, leave this as a possible future feature.
+
+
+### 14.5 Open Question 5: Should `zpr-dev` launch agents?
+
+A future command could provide:
+
+```bash
+zpr-dev hermes visa-service
+zpr-dev codex node
+```
+
+which changes to the correct repository and starts the chosen agent.
+
+This is convenient but is not necessary for the initial version.
+
+**ANSWER:** No, leave this as a possible future feature.
+
+---
+
+## 15. Recommended Initial Decisions
+
+For an initial implementation, the recommended choices are:
+
+1. Use `zpr-dev-context` as the single canonical repository for shared development knowledge.
+2. Use `~/src/zpr` as the default workspace.
+3. Check out the context repository as `~/src/zpr/zpr-dev-context`.
+4. Keep detailed documentation under `zpr-dev-context/docs/`.
+5. Keep shared agent skills under `zpr-dev-context/skills/`.
+6. Keep repository-specific instructions in `AGENTS.repo.md`.
+7. Generate repository-local `AGENTS.md` files from shared plus repository-specific context.
+8. Do not commit generated `AGENTS.md` files.
+9. Make `zpr-dev update` conservative and never modify dirty repositories.
+10. Keep Hermes `SOUL.md` outside this system because it represents agent personality rather than ZPR engineering context.
