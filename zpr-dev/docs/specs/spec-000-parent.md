@@ -1,4 +1,15 @@
-# ZPR Development Environment Specification
+# SPEC-000: ZPR Development Environment (parent spec)
+
+Status: **superseded for v0.1** — historical design record.
+
+This is the original design document for the workspace and the `zpr-dev` tool,
+written before implementation. It is kept for the rationale behind the
+configuration decisions in §2; its command surface, examples, and open
+questions are not a description of the shipped tool.
+
+For the tool as built, read [`spec-001-zpr-dev.md`](spec-001-zpr-dev.md). Where
+the two disagree, spec-001 governs. For how the workspace behaves today, read
+the repository `README.md`.
 
 ## 1. Purpose
 

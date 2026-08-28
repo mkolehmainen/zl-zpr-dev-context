@@ -4,8 +4,9 @@ Agent context for ZPR development: the coding standards, architecture
 documentation, and skills that every coding agent working in an `org-zpr`
 repository should see.
 
-For the full specification see `docs/ZPR_DEV_CONTEXT_SPEC.md`; for the tool,
-`zpr-dev/docs/specs/spec-001-zpr-dev.md`.
+`docs/` is the documentation agents read; the specs behind the tooling live in
+`zpr-dev/docs/specs/` (`spec-001-zpr-dev.md` for the tool as built,
+`spec-000-parent.md` for the original design record).
 
 ## `zpr-dev`
 
