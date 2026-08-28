@@ -14,20 +14,20 @@ a message type, or changing anything about how packets are secured on the wire.
 
 | Source | What it governs |
 |---|---|
-| **ZRFC 17** — `gitlab-zpr-rfcs/doc/ZPR_RFC-17.pdf`, "ZDP Protocol Definition" | The current protocol definition: procedures, packet formats, message types. |
-| **ZRFC 6.4** — `gitlab-zpr-rfcs/doc/ZPR_RFC-6.4.pdf`, "ZPR Data Protocols" | The predecessor. Still the best source for **substrate** requirements and encapsulations (§3), the addressing model (§4), and the rationale behind field sizes. Its packet formats are superseded. |
+| **Internal RFC 17** — "ZDP Protocol Definition" | The current protocol definition: procedures, packet formats, message types. |
+| **Internal RFC 6.4** — "ZPR Data Protocols" | The predecessor. Still the best source for **substrate** requirements and encapsulations (§3), the addressing model (§4), and the rationale behind field sizes. Its packet formats are superseded. |
 | **`zpr-core/adapter/ph/src/zdp.rs`** | The wire format **as actually implemented** — header structs and the message-type enum. |
 | **`zpr-core/packet_walk.md`** | The intended life of a packet, written as an implementation guide. |
 
-The ZDP RFCs live only as `.docx`/`.pdf` in `gitlab-zpr-rfcs`; unlike ZRFC 4,
-12, 15, 16, and 19 there is no Markdown source in `zpr-rfcs`. Extract text with
-`pdftotext -layout`.
+The ZDP RFCs live only as `.docx`/`.pdf`; unlike internal RFCs 4, 12, 15, 16,
+and 19 there is no Markdown source. Extract text with `pdftotext -layout`.
 
 Code comments cite "RFC 6.5" (17 places) — a revision that is **not** in the
-`gitlab-zpr-rfcs` checkout, which stops at 6.4. Section numbers in those
-comments track 6.4 closely enough to follow; treat them as approximate.
+internal RFC set, which stops at 6.4. Section numbers in those comments track
+6.4 closely enough to follow; treat them as approximate.
 
-Related: ZRFC 4 (terminology), ZRFC 12 (ZPR overview), ZRFC 16 (identity).
+Related: internal RFC 4 (terminology), internal RFC 12 (ZPR overview),
+internal RFC 16 (identity).
 For policy see [ZPL.md](ZPL.md); for terms see [TERMINOLOGY.md](TERMINOLOGY.md).
 
 ---
@@ -37,7 +37,7 @@ For policy see [ZPL.md](ZPL.md); for terms see [TERMINOLOGY.md](TERMINOLOGY.md).
 The same entity has three names across three eras, and all three are in the
 tree right now:
 
-| ZRFC 6.4 | ZRFC 17 | `zpr-core` code |
+| Internal RFC 6.4 | Internal RFC 17 | `zpr-core` code |
 |---|---|---|
 | Agent | Endpoint | **Actor** |
 | Agent Packet | Endpoint Packet | actor packet |
@@ -53,7 +53,7 @@ translate.
 
 ## The protocol family
 
-ZRFC 6.4 §1 names five protocols. ZDP is the transport under the others:
+Internal RFC 6.4 §1 names five protocols. ZDP is the transport under the others:
 
 | Protocol | Between | Status in `zpr-core` |
 |---|---|---|
@@ -183,9 +183,9 @@ Divergences from the RFC's baseline packet, all live in the code today:
 
 ### Message types
 
-As implemented (`zdp.rs`). **The numbering is not RFC 6.4's** — 6.4's table is
-superseded by ZRFC 17 and the code follows the newer scheme. Never infer a type
-value from 6.4.
+As implemented (`zdp.rs`). **The numbering is not internal RFC 6.4's** — 6.4's
+table is superseded by internal RFC 17 and the code follows the newer scheme.
+Never infer a type value from 6.4.
 
 | Value | Type | Per-flow |
 |---|---|---|
@@ -272,7 +272,7 @@ RFC 8019 anti-DDoS measures for the responder are not implemented.
 
 ## Reliability (ZDPR)
 
-Management messages need request/response semantics. RFC 6.4 §6.4 specifies
+Management messages need request/response semantics. Internal RFC 6.4 §6.4 specifies
 stop-and-wait ARQ: window of exactly 1, 64-bit non-wrapping sequence numbers
 per link, 1-second timer, 3 retries. The RFC argues the simplicity is worth the
 throughput because these are low-frequency operations.
@@ -280,7 +280,7 @@ throughput because these are low-frequency operations.
 `zpr-core` implements a sliding-window version in `zdpr.rs` (`Sender` /
 `Receiver`, one pair per direction per link) with cancellation:
 
-| | RFC 6.4 | `zpr-core` |
+| | Internal RFC 6.4 | `zpr-core` |
 |---|---|---|
 | Window | 1 | `DEFAULT_ZDPR_RECEIVE_WINDOW_SIZE = 32` |
 | Retry timer | 1 s | `DEFAULT_ZDPR_RETRY_TIMER = 600 ms` |

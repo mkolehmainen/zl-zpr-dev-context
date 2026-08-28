@@ -24,32 +24,18 @@ the gaps.
 
 ---
 
-## The problem
+## The approach
 
-IP was designed on the explicit assumption that security is not the network's
-job. Everything could talk to everything, and every endpoint was expected to
-defend itself. That turned out to be harder than anticipated.
-
-Enterprises responded with firewalls, and the actual policy of a network became
-an emergent property of accumulated firewall rules, the current topology, and
-whatever the endpoints happened to enforce. Because there is no way to know the
-true source of an IP packet, those rules were approximations. Rules outlived
-the reasons they were written. The resulting protections are poorly understood
-and routinely exploited.
-
-What an enterprise actually needs is to state its communication policy **in one
-place, in a form a human can read and audit**, and have the network guarantee
-it.
-
-## The answer
+Conventionally a network's real policy is an emergent property of accumulated
+firewall rules and whatever the endpoints happen to enforce. ZPR instead states
+policy in one auditable place and has the network guarantee it.
 
 Policy is written in [ZPL](ZPL.md) against the *attributes* of the
-communicators — never their addresses, and never their identities. It is
+communicators — **never their addresses, and never their identities**. It is
 compiled, installed, and enforced by the network itself, as a layer of security
-independent of whatever the endpoints and firewalls already do.
-
-Because policy names attributes rather than addresses, a service can move from
-one cloud to another, or from on-premises to a cloud, with no policy change.
+independent of whatever the endpoints and firewalls already do. Because policy
+names attributes rather than addresses, a service can move from one cloud to
+another with no policy change.
 
 ### Four paranoid design principles
 

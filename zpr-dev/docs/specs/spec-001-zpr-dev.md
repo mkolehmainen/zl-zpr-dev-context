@@ -2,7 +2,7 @@
 
 Status: implemented — v0.1 complete
 Date: 2026-08-27 (revised after implementation)
-Parent spec: `../../../docs/ZPR_DEV_CONTEXT_SPEC.md`
+Parent spec: `spec-000-parent.md`
 
 This document specifies the first implementation of the `zpr-dev` tool. It
 narrows the parent spec to a buildable v0.1 and records the decisions made

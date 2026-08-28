@@ -44,9 +44,11 @@ paths, so they can be opened directly.
 
 Two rules that apply to every task above:
 
-- **The RFCs are design intent, not a description of what runs.** Each document
-  has an "Implementation status" section recording where the code diverges.
-  Check it before assuming a feature exists.
+- **These documents record design intent, not what runs.** The RFCs describe the
+  system as designed; each document in `docs/` has an `## Implementation status`
+  section recording where the code diverges, and flags divergence inline where
+  it matters. **The code wins.** Check the status section before assuming a
+  feature exists, and verify against the source before relying on a detail.
 - **A change to what policy can express usually spans three repositories** --
   the grammar and compiler in `zpr-compiler`, the schema in `zpr-policy`, and
   the evaluator in `zpr-visaservice`. See `docs/REPOSITORIES.md`.
