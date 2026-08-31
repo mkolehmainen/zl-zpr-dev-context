@@ -132,6 +132,8 @@ admin-api-types     data structures shared by vs and vs-admin
 integration-test    shell-based integration tests, including libeval
                     evaluation tests driven through zpt
 tools               helper scripts, including zpr-pki for PKI operations
+admin-http-api.txt  reference for the vs HTTPS admin API
+config-example.yaml annotated example vs configuration
 ```
 
 Depends on `zpr-common` for the NODE–VS API structures and the binary policy
@@ -161,6 +163,8 @@ service evaluates, and `zpdump` inspects a compiled policy.
 The RSA key signs the binary policy and must match the key the visa service is
 configured with. Configuration defaults to a `.zplc` file beside the `.zpl`
 source; `-c` overrides it. Built with `make`.
+
+`zpl.bnf` is the grammar, and `test-data/` holds the compiler's ZPL fixtures.
 
 ### `zpr-policy`
 

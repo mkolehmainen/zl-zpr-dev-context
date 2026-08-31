@@ -118,6 +118,15 @@ Features: `policy`, `vsapi`, `all`. `build.rs` compiles the schemas from
 `make submodules-update` moves the submodules to the latest upstream commit —
 that is a deliberate dependency bump, not routine setup.
 
+Two invocation traps here, both of which look like a broken repository:
+
+- A bare `cargo build --all-targets` gates off `serde` and fails in
+  `packet_info.rs` with a misleading "unresolved import `serde`". Use
+  `make build`, which passes `-F all`.
+- `make check` (`cargo rustc --lib -- -D warnings`) does *not* pass `-F all`, so
+  it fails the same way on clean `main`. That is a known pre-existing issue in
+  this repository, not something your change caused.
+
 ### `zpr-core`
 
 A Cargo workspace with members `adapter/admin-api`, `adapter/ph`,
@@ -204,7 +213,9 @@ docker run --rm -v "$PWD":/work -w /work rfcgen:latest \
     sh -lc "git config --global --add safe.directory /work && make"
 ```
 
-Output goes to `pdf/`.
+Output goes to `pdf/`. Unix line endings are enforced, so on a machine that has
+ever been configured otherwise: `git config --global core.autocrlf input`.
+Feedback on an RFC happens in GitHub Discussions on that repository.
 
 ### `zpr-demo`
 
@@ -252,6 +263,18 @@ Two consequences worth knowing:
    ```
 
    Revert that before committing — the pin is intentional.
+
+   Do **not** reach for `[patch]` in `.cargo/config.toml` instead. A bare patch
+   entry is *silently ignored*: cargo prints "patch was not used in the crate
+   graph" and keeps building against the pinned tag, so the build looks like it
+   picked up your change when it did not. Forcing the patch to take requires
+   `cargo update -p zpr`, which rewrites the tracked `Cargo.lock` to a local
+   absolute path. **A `Cargo.lock` containing a local path must never reach a
+   PR** — strip the patch and restore the lockfile before committing.
+
+   A type change in `zpr-common` ripples into both `zpr-core` and
+   `zpr-visaservice`. Search usages across every affected checkout, not just
+   the repository you started in.
 
 2. **Version bumps are explicit.** Updating shared types means tagging
    `zpr-common` and bumping the tag in each consumer. Consumers can legitimately
@@ -359,3 +382,5 @@ docker run --rm -it -v "$PWD":/work -w /work <dev-env-image> make
 | Visa service rejects a policy | policy signed with the wrong key | re-run `zplc -k` with the key `vs` is configured with |
 | CI fails but the local build passed | `make check` not run — warnings are errors in CI | `make check` |
 | A change in `zpr-common` has no effect on a consumer | the consumer pins a Git tag | tag and bump, or use a temporary `path` dependency |
+| "patch was not used in the crate graph" | a bare `[patch]` cannot override a tag pin | use a temporary `path` dependency instead; never commit a locally-pathed `Cargo.lock` |
+| `unresolved import `serde`` in `zpr-common/packet_info.rs` | built without `-F all` | `make build`; `make check` fails this way on clean `main` too |

@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod generate;
 mod git;
+mod hermes;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -95,6 +96,35 @@ enum Command {
 
     /// Check workspace health
     Validate,
+
+    /// Configure or inspect a coding agent's global setup
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+}
+
+/// The `agent` command group (spec-002 §6). Kept separate from [`Command`] so
+/// the top-level `status` and its `--porcelain` contract stay untouched.
+#[derive(Subcommand, Debug)]
+enum AgentCommand {
+    /// Point an agent at the workspace's shared skills directory
+    Configure {
+        /// The agent to configure
+        #[arg(value_enum)]
+        agent: AgentName,
+    },
+
+    /// Report each agent's configuration state
+    Status,
+}
+
+/// The agents that need global configuration beyond a repository-local
+/// `AGENTS.md`. A `ValueEnum` so an unknown name is rejected by the parser, with
+/// the list of valid values, rather than by a hand-written match.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum AgentName {
+    Hermes,
 }
 
 /// Everything a command needs that is not specific to that command (spec §6.2).
@@ -145,6 +175,12 @@ fn run() -> Result<ExitCode> {
         Command::Status { porcelain, repo } => commands::status(&ctx, *porcelain, repo.as_deref()),
         Command::Sync => commands::sync(&ctx),
         Command::Validate => commands::validate(&ctx),
+        Command::Agent { command } => match command {
+            AgentCommand::Configure { agent } => match agent {
+                AgentName::Hermes => commands::agent_configure_hermes(&ctx),
+            },
+            AgentCommand::Status => commands::agent_status(&ctx),
+        },
     }
 }
 

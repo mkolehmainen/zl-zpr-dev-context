@@ -31,6 +31,7 @@ paths, so they can be opened directly.
 
 | When you are | Read |
 |---|---|
+| Taking a task through GitHub: issue, plan, branch, PR, review | `skills/zpr/SKILL.md` |
 | New to ZPR, or unsure how the pieces fit | `docs/SYSTEM_OVERVIEW.md`, `docs/TERMINOLOGY.md` |
 | Unsure which repository owns something | `docs/REPOSITORIES.md` |
 | Building, testing, or changing a cross-repository dependency | `docs/BUILD.md` |

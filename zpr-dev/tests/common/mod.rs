@@ -10,6 +10,9 @@
 //! <tmp>/origins/zpr-common.git         bare, seeded with a README
 //! <tmp>/workspace/zpr-dev-context/     cloned checkout (has an upstream)
 //! <tmp>/workspace/<name>/              only after `clone_repos` or `setup`
+//! <tmp>/home/                          $HOME for the binary, so the Hermes
+//!                                      cases can never reach the developer's
+//!                                      own ~/.hermes/config.yaml
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -93,6 +96,10 @@ pub struct Fixture {
     pub workspace: PathBuf,
     /// `<workspace>/zpr-dev-context`, where the binary resolves it by default.
     pub context: PathBuf,
+    /// Passed to the binary as `$HOME` (spec-002 §7.2), so a command that reads
+    /// another program's configuration reads a fixture instead of the
+    /// developer's own.
+    pub home: PathBuf,
     origins: PathBuf,
 }
 
@@ -108,14 +115,17 @@ impl Fixture {
         let root = tmp.path().canonicalize().unwrap();
         let workspace = root.join("workspace");
         let origins = root.join("origins");
+        let home = root.join("home");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&origins).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
 
         let fixture = Fixture {
             _tmp: tmp,
             context: workspace.join(CONTEXT),
             root,
             workspace,
+            home,
             origins,
         };
 
@@ -211,6 +221,7 @@ impl Fixture {
     pub fn run(&self, args: &[&str]) -> Output {
         sanitized(env!("CARGO_BIN_EXE_zpr-dev"))
             .current_dir(&self.root)
+            .env("HOME", &self.home)
             .arg("--workspace")
             .arg(&self.workspace)
             .args(args)
@@ -243,4 +254,55 @@ impl Fixture {
             .modified()
             .unwrap()
     }
+
+    /// Where the binary will look for the Hermes configuration, given this
+    /// fixture's `$HOME` (spec-002 §2).
+    pub fn hermes_config(&self) -> PathBuf {
+        self.home.join(".hermes").join("config.yaml")
+    }
+
+    /// Writes a Hermes configuration for the binary to find. Pass
+    /// [`HERMES_CONFIG`] unless the test is about a document of a different
+    /// shape.
+    pub fn write_hermes_config(&self, body: &str) {
+        write_file(&self.hermes_config(), body);
+    }
+
+    /// Declares `agent.hermes.shared_skills` in the fixture manifest and creates
+    /// the directory it names. The fixture manifest deliberately omits the
+    /// `agent` block, so the tests that need one ask for it (spec §8.1).
+    pub fn declare_shared_skills(&self) {
+        let manifest_path = format!("{CONTEXT}/workspace.yaml");
+        let manifest = self.read(&manifest_path);
+        self.write(
+            &manifest_path,
+            &format!("{manifest}agent:\n  hermes:\n    shared_skills: skills\n"),
+        );
+        self.write(&format!("{CONTEXT}/skills/EXAMPLE.md"), "a skill\n");
+    }
+
+    /// The absolute shared skills path `agent configure hermes` should write.
+    pub fn shared_skills_path(&self) -> String {
+        self.context.join("skills").display().to_string()
+    }
 }
+
+/// A small stand-in for a real Hermes configuration: machine-serialized keys,
+/// the `_config_version` Hermes maintains, an inline comment, and a trailing
+/// commented-out block, which is the shape a parse-and-re-emit edit would
+/// destroy (spec-002 §1.3.1).
+pub const HERMES_CONFIG: &str = "\
+model:
+  default: claude-fable-5
+agent:
+  max_turns: 150
+skills:
+  external_dirs: []
+  template_vars: true
+_config_version: 38
+
+# \u{2500}\u{2500} Fallback Model \u{2500}\u{2500}
+# Uncomment to enable.
+# fallback_model:
+#   provider: openrouter
+";

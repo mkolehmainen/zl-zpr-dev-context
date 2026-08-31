@@ -23,10 +23,17 @@ rewritten to absolute paths so an agent in `zpr-core` can actually open them.
 | `zpr-dev status` | Report each checkout and whether generated context is current |
 | `zpr-dev sync` | Regenerate the context files (no network access) |
 | `zpr-dev validate` | Check workspace health; exit 1 on errors |
+| `zpr-dev agent configure hermes` | Point Hermes at this repository's `skills/` directory |
+| `zpr-dev agent status` | Report whether each agent is configured |
 
 No command ever resets, rebases, stashes, pushes, switches branches, or touches
 uncommitted work. `--dry-run` suppresses every mutation and prints what would
 have happened.
+
+The one file outside the workspace that `zpr-dev` will edit is
+`~/.hermes/config.yaml`, only under `agent configure`, and only to add this
+repository's `skills/` directory to `skills.external_dirs`. It backs the file up
+first and verifies that the edit changed exactly that one key.
 
 ### Install and bootstrap
 
@@ -50,6 +57,16 @@ zpr-dev setup
 keep the checkout elsewhere, pass `--context <path>` (and `--workspace <path>`
 if the workspace is not `~/src/zpr`; `$ZPR_WORKSPACE` works too).
 
+Claude and Codex need nothing further: they read the generated `AGENTS.md` and
+`CLAUDE.md` from whichever repository they are started in. Hermes discovers
+skills through its own configuration, so if you use it, run this once:
+
+```bash
+zpr-dev agent configure hermes
+```
+
+It is idempotent, and `zpr-dev agent status` reports the result.
+
 ### Generated files are untracked
 
 The generated `AGENTS.md` and `CLAUDE.md` are deliberately not committed, and
@@ -57,3 +74,10 @@ The generated `AGENTS.md` and `CLAUDE.md` are deliberately not committed, and
 therefore show up as untracked files in `git status` in every repository. That
 is expected — the context is rendered per workspace, so committing it would
 bake one developer's absolute paths into the repository.
+
+A repository that already tracks its own `AGENTS.md` is the one case to handle
+by hand. `zpr-dev` will not overwrite a file it did not generate — `sync` prints
+`refusing to overwrite ...` and `validate` fails — because doing so silently
+destroys conventions nothing else records. Rename that file to
+`AGENTS.repo.md`, which generation appends under a "Repository-Specific
+Context" heading instead of replacing, and stop tracking `AGENTS.md`/`CLAUDE.md`.
