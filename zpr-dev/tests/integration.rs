@@ -437,6 +437,32 @@ fn foreign_agents_file_errors_in_validate_and_survives_sync() {
     );
 }
 
+/// The escape hatch for a workspace that has decided the shared context wins:
+/// `--force` warns instead of erroring, `validate` passes, and `sync` clobbers.
+#[test]
+fn force_downgrades_foreign_to_a_warning_and_overwrites() {
+    let fixture = synced_fixture();
+    fixture.write(
+        "zpr-core/AGENTS.md",
+        "# AGENTS.md\n\nNever patch a failing test you didn't write.\n",
+    );
+
+    let out = stdout_of(&fixture.run(&["--force", "validate"]));
+    assert!(
+        out.contains("[WARN]") && out.contains("--force will overwrite it"),
+        "{out}"
+    );
+
+    let out = stdout_of(&fixture.run(&["--force", "sync"]));
+    assert!(out.contains("overwriting"), "{out}");
+    assert!(
+        fixture
+            .read("zpr-core/AGENTS.md")
+            .starts_with(GENERATED_MARKER),
+        "sync --force must replace the hand-written file"
+    );
+}
+
 #[test]
 fn validate_bad_manifest_version_exits_one() {
     let fixture = synced_fixture();

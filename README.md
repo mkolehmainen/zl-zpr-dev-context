@@ -81,3 +81,8 @@ by hand. `zpr-dev` will not overwrite a file it did not generate — `sync` prin
 destroys conventions nothing else records. Rename that file to
 `AGENTS.repo.md`, which generation appends under a "Repository-Specific
 Context" heading instead of replacing, and stop tracking `AGENTS.md`/`CLAUDE.md`.
+
+If you would rather the shared context just win, `--force` overwrites the file
+instead of refusing: `zpr-dev --force sync` clobbers it and says so, and
+`zpr-dev --force validate` reports a warning rather than an error. The clobber
+is always announced — the flag suppresses the error, not the notice.

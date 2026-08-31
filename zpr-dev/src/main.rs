@@ -44,6 +44,10 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
+    /// Overwrite generated files that zpr-dev did not write
+    #[arg(long, global = true)]
+    force: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -136,6 +140,10 @@ pub struct Ctx {
     pub context: PathBuf,
     /// When set, no mutation of any kind is performed (spec §5.1).
     pub dry_run: bool,
+    /// When set, a hand-written `AGENTS.md` or `CLAUDE.md` is overwritten
+    /// instead of being left alone. Off by default: the guard exists because
+    /// clobbering one silently destroys a repository's own conventions.
+    pub force: bool,
     pub verbose: bool,
     pub quiet: bool,
 }
@@ -157,6 +165,7 @@ fn run() -> Result<ExitCode> {
         workspace,
         context,
         dry_run: cli.dry_run,
+        force: cli.force,
         verbose: cli.verbose,
         quiet: cli.quiet,
     };
