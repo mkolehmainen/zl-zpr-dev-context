@@ -230,7 +230,7 @@ images used to produce reproducible build environments.
 | Repository | Why it is not cloned |
 |---|---|
 | `zpr-dev-context` | This repository. It is the context checkout, cloned by `zpr-dev setup` before the manifest is read, so it is not listed as a manifest entry. |
-| `zpr-bas` | ZPR Basic Authentication Service. Excluded from the default workspace by request; clone it by hand if you need it. |
+| `zpr-bas` | ZPR Basic Authentication Service. Deprecated. Excluded from the default workspace by request; clone it by hand if you need it. |
 
 The organization also holds several private repositories that are not part of
 the standard workspace and are not listed here.
