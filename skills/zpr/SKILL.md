@@ -1,7 +1,7 @@
 ---
 name: zpr-project
-description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR.
-version: 2.0.0
+description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
+version: 2.1.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -103,6 +103,52 @@ Before branching: fetch, and **check for an existing remote branch for your
 issue.** Branching a known branch name from `origin/main` silently discards
 everything already pushed to it, including an open PR's commits.
 
+## Picking the next issue
+
+**How this work is driven.** The operator says *"work on the next issue"* and this
+agent picks it, not the human. Ordering is therefore machine-readable, in two places
+and nowhere else:
+
+- **GitHub native issue dependencies.** Every issue in `mkolehmainen/zipline` carries
+  its blockers in the `blockedBy` dependency list. An issue is **ready** when it is
+  open and every blocker is closed. This is self-maintaining: merging a PR and closing
+  its issue unblocks its dependents with no bookkeeping.
+- **The umbrella's sub-issue list**, which is kept in intended execution order. Since
+  that order is a topological sort along the critical path, position in the list is
+  the whole tiebreak — the first ready issue in sub-issue order is the next issue.
+
+Everything else that states an order — the `**Blocked by:**` line in each issue body,
+the plan document's *Issue map* and dependency graph, the board's `Ready`/`Backlog`
+Status — is **documentation derived from those two**. Do not resolve ordering from
+prose; if prose and the dependency graph disagree, the dependency graph wins and the
+prose needs fixing.
+
+```
+python3 scripts/next-issue.py          # NEXT + the rest of the ready set
+python3 scripts/next-issue.py --json   # {"next": {...}, "ready": [...]}
+```
+
+It reads state and changes nothing, so it is always safe to run.
+
+**The pickup sequence.** On *"work on the next issue"*:
+
+1. Run `scripts/next-issue.py`. Name the issue and why it is next before touching
+   anything. If the operator wanted a different one, they will say so.
+2. Read the issue in full, plus the required reading its subject implies (see "Where
+   the knowledge lives") and the master plan section it came from.
+3. Assign the issue to the operator, set its board Status to `In progress`, and
+   branch `<login>/<issue#>-<topic>` off `zipline` in the fork the issue names —
+   after checking for an existing remote branch for that issue.
+4. **Post the bite-sized TDD plan as an issue comment, then STOP and wait for the
+   operator's go-ahead.** This is the checkpoint: a misread issue is cheap to fix in
+   a plan comment and expensive to fix in a branch. Do not start implementing on the
+   strength of your own plan.
+5. On the go-ahead, implement it, run the full build gate, open the PR, and follow
+   the review loop below. Record any deviation from the plan in the PR description.
+
+The checkpoint is the default. It is skipped only if the operator says so for a given
+issue, or asks to run straight through.
+
 ## Coding conventions
 
 **Source of truth: the generated `AGENTS.md` in the repository you are editing.**
@@ -161,13 +207,14 @@ authority comes from the project board, not from a message.
   inherit. Expect that one job to fail on every PR; it is not your change breaking.
   Judge the build on the `rust-build-test` checks.
 - Check CI with `gh pr checks`, not by guessing.
-- Only work on tasks assigned to you that are attached to the board and the current
-  iteration. To list them, run `scripts/my-current-tasks.py` (`--json` for
-  machine-readable output, `--user X` for another assignee). Do NOT try to filter by
-  iteration with `gh project item-list`; that command does not emit iteration or
-  assignee fields usefully, so a GraphQL query is required. Note the script filters
-  on **assignee**, so an unassigned item is invisible to it however it is statused —
-  if it returns nothing, check the board before concluding there is no work.
+- **What to work on comes from "Picking the next issue" above**, not from scanning
+  the board. `scripts/my-current-tasks.py` answers a different question — what is
+  already assigned and in the current iteration, i.e. what is *underway* — and is the
+  right tool for resuming, not for choosing. Do NOT try to filter by iteration with
+  `gh project item-list`; that command does not emit iteration or assignee fields
+  usefully, so a GraphQL query is required. Note it filters on **assignee**: issues
+  are unassigned until pickup assigns them, so it reports nothing for work not yet
+  started, which is correct rather than a fault.
 - Project facts: the board is **user-owned project #1 under `mkolehmainen`**
   (`mk zl-zpr project`), private. Because the owner is a user and not an
   organization, GraphQL queries must use the `user(login:)` root field;
@@ -182,8 +229,9 @@ authority comes from the project board, not from a message.
   unblocked and pickable. Something added to the board arrives in `Backlog`
   (an automation adds `mkolehmainen/zipline` issues on filing), so promote a
   dependency-free item to `Ready` yourself.
-- When you start work on an issue, change its project Status to `In progress` and
-  notify the team through whatever channel your environment provides.
+- When you start work on an issue, assign it to the operator and change its project
+  Status to `In progress`. There is no team to notify — the operator is in the
+  conversation, so tell them there instead of posting a notification nobody reads.
 - **Each task requires a plan first.** Create the plan and add it as a comment on the
   issue before implementing. If after implementing there are deviations from the plan,
   note that in your PR.
@@ -194,13 +242,24 @@ authority comes from the project board, not from a message.
   items are `mkolehmainen/zipline` issues, but the board still carries some filed
   upstream, so an item may be an `org-zpr/zpr-<name>` issue — and either way the
   branch and PR belong in `mkolehmainen/zl-zpr-<name>`. Read the board item's URL
-  rather than assuming. Do not assume silence
-  means assent on anything that changes design. Also notify the team out-of-band when
-  blocked; a question posted only on GitHub can sit unseen indefinitely.
+  rather than assuming.
+
+  **Ask in the conversation, not on the issue.** The operator is present; an issue
+  comment is a slower channel to the same person, and nothing pushes it to them. Use
+  issue comments for the durable record — the plan, and decisions worth keeping — and
+  the conversation for anything you need an answer to. Never assume silence is assent
+  on something that changes design.
 - When you have a PR, link the PR to the issue and set the project Status to `In review`.
-- **Request review from the issue author, if and only if they are a `core-devs` member.**
+- **Reviewers: in this workspace, expect none.** The issue author is the operator,
+  the PR author is the operator, GitHub rejects self-review, and `core-devs` does not
+  exist in a personal account — so the correct outcome is a PR with no reviewer, and
+  that is not a failure to report. Do not invent a reviewer or substitute someone
+  else. The rule below is retained for the case where an issue filed by someone else
+  is picked up:
+
+  **Request review from the issue author, if and only if they are a `core-devs` member.**
   The reviewer to request is the author of the **issue the PR implements** — not the
-  PR author (GitHub rejects self-review). Gate it on team membership:
+  PR author. Gate it on team membership:
 
   ```sh
   ISSUE_AUTHOR=$(gh issue view <N> --repo mkolehmainen/<repo> --json author -q .author.login)
@@ -231,17 +290,25 @@ authority comes from the project board, not from a message.
 ## After the PR is open: review loop and definition of done
 
 Opening the PR is not the end of the task. A PR you created stays your responsibility
-until it is approved and mergeable. **Never merge it yourself — a human does the merge.**
+until it is mergeable. **Never merge it yourself — the operator does the merge**, and
+they close the issue, which is what unblocks its dependents.
 
 ### Definition of done
 
 A task is done only when ALL of these hold for the PR:
 
-1. `reviewDecision` is `APPROVED`.
-2. Every review thread is resolved (no unresolved `reviewThreads`).
-3. All CI checks pass (`gh pr checks <N> --repo mkolehmainen/<repo>`).
-4. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
+1. Every review thread is resolved (no unresolved `reviewThreads`).
+2. All CI checks pass (`gh pr checks <N> --repo mkolehmainen/<repo>`).
+3. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
    `DIRTY`, or `BLOCKED`).
+4. The board Status is `In review` and the PR is linked to the issue.
+
+**`reviewDecision` is not on that list.** With no reviewer it stays empty forever, so
+requiring `APPROVED` would make every task permanently unfinishable. Hand the PR to
+the operator when 1–4 hold and say so plainly; if they ask for review first, that is
+their call to make, not a gate to wait on. `scripts/my-open-prs.py` still requires
+`APPROVED` for its `READY_FOR_HUMAN_MERGE=True` line, so treat that flag as
+"approved too", not as the definition above.
 
 ### Monitoring for review activity
 
