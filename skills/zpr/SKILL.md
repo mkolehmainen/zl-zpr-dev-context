@@ -410,6 +410,19 @@ What that does and does not mean for assignment:
   positive lookups ever start 404ing too, suspect the token, not the roster. `gh`
   warns this endpoint "needs the admin:org scope" on failure — that message is
   misleading; `read:org` resolves members fine.
+- **Ask Codex for a review.** Codex is integrated with GitHub on these repositories
+  and reviews on mention, which is the one review you always get — the human reviewer
+  rule above usually resolves to nobody. Once the PR is out of draft and the build gate
+  passes, post the mention **as a standalone comment whose entire body is the trigger**:
+
+  ```sh
+  gh pr comment <PR> --repo mkolehmainen/<repo> --body '@codex review'
+  ```
+
+  Nothing else in the body — no preamble, no summary — or the mention may not fire.
+  Codex answers with ordinary review comments and inline threads, so the polling and
+  response rules below cover it unchanged: address every thread, and re-mention after a
+  round of fixes if you want another pass.
 
 ## After the PR is open: review loop and definition of done
 
@@ -429,7 +442,10 @@ dependents stay blocked and `next-issue.py` keeps reporting the issue as underwa
 
 A task is done only when ALL of these hold for the PR:
 
-1. Every review thread is resolved (no unresolved `reviewThreads`).
+1. Every review thread is resolved (no unresolved `reviewThreads`). This includes
+   Codex's: the `@codex review` mention has been posted, its review has come back, and
+   every comment in it is answered. Its review typically lands within minutes — poll for
+   it rather than declaring done on an unanswered mention.
 2. **The full local build gate passes** — build, `cargo fmt --check`, test,
    `-D warnings` — with its output quoted in the PR description. This replaces CI:
    Actions is disabled on every fork, so `gh pr checks` reports nothing and there is
