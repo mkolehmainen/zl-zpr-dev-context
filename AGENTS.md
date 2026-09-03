@@ -37,8 +37,7 @@ paths, so they can be opened directly.
 | Building, testing, or changing a cross-repository dependency | `docs/BUILD.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
-| Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md`, `docs/OIDC.md` |
-| Implementing or reviewing OpenID Connect (OIDC) work | `docs/OIDC.md`, `docs/plans/2026-09-02-oidc-implementation-plan.md` |
+| Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
 | Changing packet formats, links, docking sessions, forwarding, or compression | `docs/ZDP.md` |
 | Changing routing, topology, or address assignment | `docs/SYSTEM_OVERVIEW.md`, `docs/ZDP.md`, `docs/VISA_SERVICE.md` |
 | Changing anything cryptographic, or touching the enforcement path | `docs/SECURITY_MODEL.md` |
