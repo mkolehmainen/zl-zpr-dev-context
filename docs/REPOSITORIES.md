@@ -38,12 +38,15 @@ Each is a fork of the corresponding upstream repository in the
 [`org-zpr`](https://github.com/org-zpr) organization — `zl-zpr-core` forks
 `org-zpr/zpr-core`, `zl-zpr-common` forks `org-zpr/zpr-common`, and so on.
 
-> **The forks are renamed, not rewired.** Only the repository names and the
-> clone URLs in `workspace.yaml` changed. Inside each fork, cross-repository
-> references are untouched and still resolve to `org-zpr`: the Cargo Git
-> dependencies in `Cargo.toml`, the submodule URLs in `zl-zpr-common`'s
-> `.gitmodules`, and the reusable CI workflow in every `.github/workflows/`.
-> Repointing those is separate work — see the notes in `BUILD.md`.
+> **The forks are partly rewired** by `mkolehmainen/zipline#17`, whose four PRs
+> are open and unmerged at the time of writing. The `zpr` crate dependency and
+> `zl-zpr-common`'s submodules now resolve to `mkolehmainen`
+> (`mkolehmainen/zipline#17`). Two classes of reference still point at
+> `org-zpr`, both deliberately: everything sourced from **`zpr-utils`**, because
+> its crates cross-pin each other by URL and moving one side breaks the build
+> (`mkolehmainen/zipline#18`), and the **reusable CI workflow** in every
+> `.github/workflows/`, which resolves fine from a public fork. See
+> "Cross-repository dependencies" in `BUILD.md` for the detail.
 
 Use `zpr-dev status` to see the state of every checkout at once.
 
@@ -190,11 +193,12 @@ here rather than being duplicated.
 - Shared Rust types: addresses, DNs, packet metadata, and the helpers for
   writing and serializing them.
 - Feature-gated wrappers over the policy and VSAPI types.
-- IDL sources for the ZPR sub-protocols, included as **Git submodules** —
-  the directories are still named `zpr-policy/` and `zpr-vsapi/` and still point
-  at `org-zpr`, because `.gitmodules` was not rewritten when the fork was
-  renamed. Clone recursively, or run `git submodule update --init`, or the build
-  will not find the schemas.
+- IDL sources for the ZPR sub-protocols, included as **Git submodules** — the
+  directories are still named `zpr-policy/` and `zpr-vsapi/`, but `.gitmodules`
+  now points at `mkolehmainen/zl-zpr-policy` and `mkolehmainen/zl-zpr-vsapi`.
+  Clone recursively, or run `git submodule update --init`, or the build will not
+  find the schemas. An existing checkout needs `git submodule sync --recursive`
+  to pick up the new URLs; the pinned commits did not move.
 
 ### `zl-zpr-visaservice`
 

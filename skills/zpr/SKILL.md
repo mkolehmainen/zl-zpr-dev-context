@@ -35,9 +35,11 @@ repository default, and **`main`** is a read-only mirror of upstream that nothin
 should ever commit to. Work targets `zipline`. See "Git / PR conventions" for the
 `gh pr create` footgun this creates.
 
-Nothing inside the forks has been repointed — their `Cargo.toml` Git
-dependencies, submodule URLs, and CI workflow references still resolve to
-`org-zpr`.
+The forks are **partly** repointed (`zipline#17`, PRs open and unmerged at the
+time of writing): the `zpr` crate dependency
+and `zl-zpr-common`'s submodules resolve to `mkolehmainen`, while everything
+sourced from `zpr-utils` and every reusable CI workflow reference still resolve
+to `org-zpr`, both deliberately. `docs/BUILD.md` has the reasoning.
 
 This skill covers **process**: how a task gets from an issue to a merged PR, and
 the traps specific to these repositories. It deliberately does *not* restate the

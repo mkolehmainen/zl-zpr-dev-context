@@ -91,9 +91,18 @@ cargo fmt --check
 cargo build --all-targets --config 'build.rustflags = ["-D", "warnings"]'
 ```
 
+**`zl-zpr-core` has no root `make check`** — only its `libnode2` member does.
+Run the CI equivalent above from the workspace root there instead.
+
 CI builds every Rust repository through the shared reusable workflows in
 `zl-zpr-dev-tools/.github/workflows/` (`rust-build-test.yml`, `rust-test.yml`), so
 a green local `make test && make check` is a good predictor of a green CI run.
+
+On the forks that prediction currently does not hold, because CI does not run
+there at all: every job calling a reusable workflow fails immediately with
+`Secret ZPR_CICD_RO_TOKEN is required, but not provided while calling` (forks
+inherit no secrets), and several forks have no workflows registered. The local
+gate is the evidence until that is fixed.
 
 ---
 
@@ -247,17 +256,32 @@ cd zpr-dev && cargo build && cargo test
 Shared Rust crates are consumed **from Git by tag**, not by local path:
 
 ```toml
-zpr       = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.25.0", ... }
-zpr-ext   = { git = "https://github.com/org-zpr/zpr-utils.git",  tag = "zpr-ext-v0.5.3" }
-cbpf-rs   = { git = "https://github.com/org-zpr/zpr-utils.git",  tag = "cbpf-rs-v0.2.0" }
+zpr       = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.25.1", ... }
+zpr-ext   = { git = "https://github.com/org-zpr/zpr-utils.git",       tag = "zpr-ext-v0.5.3" }
+cbpf-rs   = { git = "https://github.com/org-zpr/zpr-utils.git",       tag = "cbpf-rs-v0.2.0" }
 ```
 
-> **These URLs still point upstream.** Renaming the workspace repositories to
-> `zl-zpr-*` under `mkolehmainen` did not rewrite anything inside them, so a
-> `zl-zpr-core` build resolves `zpr` from `org-zpr/zpr-common`, not from
-> `mkolehmainen/zl-zpr-common`. Until the dependency URLs are repointed, a change
-> you tag in `zl-zpr-common` will not reach any consumer. The local-path override
-> below is the way to test across the forks.
+> **Which URLs point where is split, on purpose.** (As of `zipline#17`; its
+> four PRs are open and unmerged at the time of writing, so on an unrebased
+> `zipline` you may still see the all-`org-zpr` arrangement.) `zpr` (the `zl-zpr-common`
+> crate) is consumed from `mkolehmainen/zl-zpr-common` in `zl-zpr-compiler`,
+> `zl-zpr-visaservice` and `zl-zpr-core`, and `zl-zpr-common` pulls its
+> submodules and `rcu` from the forks too, so a tag you cut in `zl-zpr-common`
+> does reach its consumers.
+>
+> Everything sourced from **`zpr-utils` still points at `org-zpr`** — `cbpf-rs`,
+> `zpr-ext`, `zpr-utils`, and `cslab`/`rcu` in `zl-zpr-core/adapter/ph`. That is
+> deliberate: the crates in that repository cross-pin each other by URL
+> (`rcu-v0.1.1` pins `cslab` at `org-zpr/zpr-utils`), so repointing only the
+> consumer gives cargo two `cslab` crates from the same commit but different
+> sources, and `RcuBox<RcuCslabReader<T>>` loses its inherent methods. Moving
+> them needs `zl-zpr-utils` repointed and re-tagged first; both manifests carry
+> a comment, and `mkolehmainen/zipline#18` tracks it.
+>
+> The practical consequence: **the `zl-zpr-utils` checkout in the workspace is
+> not what any build consumes.** It is there so #18 can be done, since the fork
+> is the only pushable copy. A local edit or tag in it changes nothing until
+> consumers are repointed.
 
 Two consequences worth knowing:
 

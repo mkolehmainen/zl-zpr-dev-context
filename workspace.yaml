@@ -55,7 +55,12 @@ repositories:
     url: git@github.com:mkolehmainen/zl-zpr-demo.git
     default_branch: zipline
 
-  # Non-ZPR-specific utilities used by ZPR
+  # Non-ZPR-specific utilities used by ZPR.
+  #
+  # No build in this workspace consumes this checkout: its crates are still
+  # pinned from `org-zpr/zpr-utils` by tag, because they cross-pin each other by
+  # URL and repointing one side breaks `zl-zpr-core` (zipline#17, #18). The fork
+  # is kept here because it is the only pushable copy, so #18 gets done in it.
   - name: zl-zpr-utils
     url: git@github.com:mkolehmainen/zl-zpr-utils.git
     default_branch: zipline
