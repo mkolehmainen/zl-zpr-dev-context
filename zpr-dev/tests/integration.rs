@@ -370,6 +370,45 @@ fn validate_broken_doc_reference_exits_one() {
     assert!(!out.contains("docs/EXAMPLE.md"), "{out}");
 }
 
+/// A document nothing indexes warns but does not fail: it is documentation
+/// drift, not a broken workspace.
+#[test]
+fn validate_orphaned_doc_warns_and_exits_zero() {
+    let fixture = synced_fixture();
+    fixture.write("zl-zpr-dev-context/docs/ORPHAN.md", "# Nobody links me\n");
+
+    let out = output_with_code(&fixture.run(&["validate"]), 0);
+    assert!(
+        out.contains("[WARN] no index references docs/ORPHAN.md"),
+        "{out}"
+    );
+    // The indexed document is not reported.
+    assert!(!out.contains("docs/EXAMPLE.md"), "{out}");
+    assert!(
+        out.contains("Validation completed with 1 warning."),
+        "{out}"
+    );
+}
+
+/// Linking the document from the shared context clears the warning, which is
+/// the fix the message tells the reader to apply.
+#[test]
+fn validate_indexed_doc_reports_ok() {
+    let fixture = synced_fixture();
+    fixture.write("zl-zpr-dev-context/docs/ORPHAN.md", "# Now linked\n");
+    let agents = fixture.read(&format!("{CONTEXT}/AGENTS.md"));
+    fixture.write(
+        &format!("{CONTEXT}/AGENTS.md"),
+        &format!("{agents}\nSee [the new one](docs/ORPHAN.md).\n"),
+    );
+
+    let out = output_with_code(&fixture.run(&["validate"]), 0);
+    assert!(out.contains("documentation is indexed"), "{out}");
+    // Editing the shared context makes the generated files stale, which is a
+    // separate and expected warning; what must be absent is the orphan one.
+    assert!(!out.contains("no index references"), "{out}");
+}
+
 #[test]
 fn validate_missing_repo_directory_exits_one() {
     let fixture = Fixture::new();

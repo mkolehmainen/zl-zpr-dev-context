@@ -631,7 +631,8 @@ fn check_shared_context(ctx: &Ctx, manifest: &Manifest, report: &mut Report) {
         Err(err) => report.error(format!("generated context: {err:#}")),
     }
 
-    let broken = broken_doc_references(&body, &ctx.context, &manifest.documentation.root);
+    let docs_root = &manifest.documentation.root;
+    let broken = broken_doc_references(&body, &ctx.context, docs_root);
     if broken.is_empty() {
         report.ok("documentation references");
     } else {
@@ -641,17 +642,46 @@ fn check_shared_context(ctx: &Ctx, manifest: &Manifest, report: &mut Report) {
             ));
         }
     }
+
+    // The other direction: a document no index reaches. The roots are the index
+    // files -- the shared context and every repository-specific one -- and
+    // `orphaned_docs` follows references onward from there. The documents are
+    // deliberately NOT roots: a document may only vouch for another once
+    // something already reaches it.
+    let mut roots = vec![body];
+    for repo in &manifest.repositories {
+        let local = ctx.workspace.join(&repo.name).join(&repo.context.local);
+        if let Ok(text) = std::fs::read_to_string(&local) {
+            roots.push(text);
+        }
+    }
+
+    // A warning, not an error: a document can be legitimately new, or reachable
+    // only from a GitHub issue. Failing `validate` over it would train people
+    // to stop running `validate`.
+    let orphans = orphaned_docs(&ctx.context, docs_root, &roots);
+    if orphans.is_empty() {
+        report.ok("documentation is indexed");
+    } else {
+        for orphan in orphans {
+            report.warn(format!(
+                "no index references {orphan} (add a row to the required-reading \
+                 table in {}, or link it from a document that is indexed)",
+                generate::SHARED_CONTEXT_FILE
+            ));
+        }
+    }
 }
 
-/// The documentation references in `body` that do not resolve to a real file
-/// under the context checkout (spec §7). A reference is any token starting with
-/// the manifest's documentation root; tokens are split on whitespace and on the
-/// punctuation that surrounds a Markdown link, so `[x](docs/A.md)` yields
-/// `docs/A.md`. Deliberately independent of §4.4's rewrite list, which names
-/// only directories and so cannot say which document beneath one is missing.
-fn broken_doc_references(body: &str, context: &Path, docs_root: &str) -> Vec<String> {
+/// Every documentation reference in `body`, in order of appearance and without
+/// duplicates. A reference is any token starting with the manifest's
+/// documentation root; tokens are split on whitespace and on the punctuation
+/// that surrounds a Markdown link, so `[x](docs/A.md)` yields `docs/A.md`.
+/// Deliberately independent of §4.4's rewrite list, which names only
+/// directories and so cannot say which document beneath one is meant.
+fn doc_references(body: &str, docs_root: &str) -> Vec<String> {
     let prefix = format!("{docs_root}/");
-    let mut broken: Vec<String> = Vec::new();
+    let mut found: Vec<String> = Vec::new();
     for token in body.split(|c: char| c.is_whitespace() || "()[]<>\"'`,;:!".contains(c)) {
         // A leading `./` is the same reference; a trailing `.` is sentence
         // punctuation, not part of the path.
@@ -659,16 +689,86 @@ fn broken_doc_references(body: &str, context: &Path, docs_root: &str) -> Vec<Str
             .strip_prefix("./")
             .unwrap_or(token)
             .trim_end_matches('.');
-        // `exists`, not `is_file`: a reference to the documentation
-        // directory itself (`docs/`) names a real thing and is not broken.
-        if !reference.starts_with(&prefix) || context.join(reference).exists() {
-            continue;
-        }
-        if !broken.iter().any(|seen| seen == reference) {
-            broken.push(reference.to_string());
+        if reference.starts_with(&prefix) && !found.iter().any(|seen| seen == reference) {
+            found.push(reference.to_string());
         }
     }
-    broken
+    found
+}
+
+/// The documentation references in `body` that do not resolve to a real file
+/// under the context checkout (spec §7).
+fn broken_doc_references(body: &str, context: &Path, docs_root: &str) -> Vec<String> {
+    doc_references(body, docs_root)
+        .into_iter()
+        // `exists`, not `is_file`: a reference to the documentation directory
+        // itself (`docs/`) names a real thing and is not broken.
+        .filter(|reference| !context.join(reference).exists())
+        .collect()
+}
+
+/// Documents under the documentation root that no index **reaches** -- the
+/// inverse of `broken_doc_references`, and the drift it cannot see. A document
+/// no index reaches is invisible to an agent following the required-reading
+/// table, which is how `docs/OIDC.md`, its implementation plan and
+/// `docs/ROUTING.md` all sat unreferenced.
+///
+/// Reachability, not mere mention: starting from the index files in `roots`,
+/// follow references into documents and then the references those documents
+/// make, transitively. "Mentioned by any document" is not enough, because two
+/// unindexed documents citing each other vouch for one another -- which is
+/// exactly what `docs/OIDC.md` and its plan do.
+fn orphaned_docs(context: &Path, docs_root: &str, roots: &[String]) -> Vec<String> {
+    let mut reached: Vec<String> = Vec::new();
+    let mut queue: Vec<String> = roots
+        .iter()
+        .flat_map(|body| doc_references(body, docs_root))
+        .collect();
+
+    while let Some(reference) = queue.pop() {
+        if reached.iter().any(|seen| *seen == reference) {
+            continue;
+        }
+        reached.push(reference.clone());
+        // Follow the document's own references onward. An unreadable path is
+        // either a directory mention or a broken reference; the other check
+        // reports the latter.
+        if let Ok(body) = std::fs::read_to_string(context.join(&reference)) {
+            queue.extend(doc_references(&body, docs_root));
+        }
+    }
+
+    let mut orphans: Vec<String> = markdown_files(&context.join(docs_root))
+        .into_iter()
+        .filter_map(|path| {
+            // Compare on the manifest-relative path, which is the spelling a
+            // reference uses.
+            let relative = path.strip_prefix(context).ok()?;
+            let reference = relative.to_string_lossy().replace('\\', "/");
+            (!reached.iter().any(|seen| *seen == reference)).then_some(reference)
+        })
+        .collect();
+    orphans.sort();
+    orphans
+}
+
+/// Every `.md` file under `dir`, recursively. An unreadable directory yields
+/// nothing rather than failing: this feeds an advisory check, and the
+/// documentation root's absence is already reported elsewhere.
+fn markdown_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(markdown_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            found.push(path);
+        }
+    }
+    found
 }
 
 /// `agent.hermes.shared_skills`, checked for existence only — nothing else acts
@@ -985,5 +1085,103 @@ mod tests {
             broken_doc_references(body, dir.path(), "docs"),
             vec!["docs/GONE.md".to_string()]
         );
+    }
+
+    /// A documentation tree with one indexed document and one nobody names.
+    fn docs_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs/plans")).unwrap();
+        std::fs::write(dir.path().join("docs/INDEXED.md"), "x").unwrap();
+        std::fs::write(dir.path().join("docs/ORPHAN.md"), "x").unwrap();
+        std::fs::write(dir.path().join("docs/plans/PLAN.md"), "x").unwrap();
+        dir
+    }
+
+    /// The regression this check exists for: a document no index reaches.
+    #[test]
+    fn unreferenced_documents_are_orphans() {
+        let dir = docs_fixture();
+        let bodies = vec!["See [it](docs/INDEXED.md).".to_string()];
+        assert_eq!(
+            orphaned_docs(dir.path(), "docs", &bodies),
+            vec![
+                "docs/ORPHAN.md".to_string(),
+                "docs/plans/PLAN.md".to_string()
+            ]
+        );
+    }
+
+    /// Reachability is transitive: an indexed document vouches for what it
+    /// links, and for what that links in turn.
+    #[test]
+    fn reachable_through_an_indexed_document_is_not_an_orphan() {
+        let dir = docs_fixture();
+        std::fs::write(
+            dir.path().join("docs/INDEXED.md"),
+            "The plan is docs/plans/PLAN.md.",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("docs/plans/PLAN.md"), "See docs/ORPHAN.md.").unwrap();
+
+        let roots = vec!["See [it](docs/INDEXED.md).".to_string()];
+        assert!(orphaned_docs(dir.path(), "docs", &roots).is_empty());
+    }
+
+    /// The blind spot a "mentioned by any document" rule has, and the reason
+    /// this walks from the indexes instead: two unindexed documents citing each
+    /// other must not vouch for one another. This is exactly the shape of
+    /// `docs/OIDC.md` and its implementation plan.
+    #[test]
+    fn documents_citing_each_other_are_both_orphans() {
+        let dir = docs_fixture();
+        std::fs::write(
+            dir.path().join("docs/ORPHAN.md"),
+            "Plan: docs/plans/PLAN.md.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("docs/plans/PLAN.md"),
+            "Spec: docs/ORPHAN.md.",
+        )
+        .unwrap();
+
+        let roots = vec!["See [it](docs/INDEXED.md).".to_string()];
+        assert_eq!(
+            orphaned_docs(dir.path(), "docs", &roots),
+            vec![
+                "docs/ORPHAN.md".to_string(),
+                "docs/plans/PLAN.md".to_string()
+            ]
+        );
+    }
+
+    /// A reference cycle must terminate rather than spin.
+    #[test]
+    fn a_reference_cycle_terminates() {
+        let dir = docs_fixture();
+        std::fs::write(dir.path().join("docs/INDEXED.md"), "Loop: docs/ORPHAN.md.").unwrap();
+        std::fs::write(dir.path().join("docs/ORPHAN.md"), "Back: docs/INDEXED.md.").unwrap();
+
+        let roots = vec!["See [it](docs/INDEXED.md).".to_string()];
+        assert_eq!(
+            orphaned_docs(dir.path(), "docs", &roots),
+            vec!["docs/plans/PLAN.md".to_string()]
+        );
+    }
+
+    /// A bare `docs/` mention indexes the directory, never the files under it.
+    #[test]
+    fn directory_reference_does_not_index_its_contents() {
+        let dir = docs_fixture();
+        let bodies = vec!["- `docs/` -> technical knowledge.".to_string()];
+        assert_eq!(orphaned_docs(dir.path(), "docs", &bodies).len(), 3);
+    }
+
+    /// An absent documentation root is reported by another check, so this one
+    /// stays quiet rather than failing.
+    #[test]
+    fn missing_documentation_root_yields_no_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(orphaned_docs(dir.path(), "docs", &[]).is_empty());
     }
 }
