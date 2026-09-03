@@ -104,6 +104,11 @@ there at all: every job calling a reusable workflow fails immediately with
 inherit no secrets), and several forks have no workflows registered. The local
 gate is the evidence until that is fixed.
 
+`skills/zpr/scripts/fork-ci.sh` reports the Actions switch for every fork and
+turns it off (`--disable`) or back on (`--enable`), so the dead red checks can be
+silenced at the repository level without deleting workflow files and diverging
+`.github/` from upstream.
+
 ---
 
 ## Per-repository builds
