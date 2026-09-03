@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.2.0
+version: 2.3.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -341,22 +341,29 @@ What that does and does not mean for assignment:
   issue comments for the durable record — the plan, and decisions worth keeping — and
   the conversation for anything you need an answer to. Never assume silence is assent
   on something that changes design.
-- When you have a PR, **name it in a comment on the issue** and set the project Status
-  to `In review`. That comment is the link. A GitHub *closing* link is impossible here:
+- When you have a PR, **name it in a comment on the issue**, set the project Status
+  to `In review`, and **set the PR's assignee and reviewer per the next two bullets —
+  at creation time, not as an afterthought.** The issue comment is the link. A GitHub
+  *closing* link is impossible here:
   closing keywords only work when the PR and the issue are in the same repository, and
   the issues live in `mkolehmainen/zipline` while the PRs live in the forks. So
   `Closes #17` in a fork PR is an ordinary cross-reference — `closingIssuesReferences`
   stays empty and merging closes nothing. Do not write one; it reads like a link that
   will fire, and it will not. List every PR for the issue in one comment, with what
   each one covers.
-- **Reviewers: in this workspace, expect none.** The issue author is the operator,
-  the PR author is the operator, GitHub rejects self-review, and `core-devs` does not
-  exist in a personal account — so the correct outcome is a PR with no reviewer, and
-  that is not a failure to report. Do not invent a reviewer or substitute someone
-  else. The rule below is retained for the case where an issue filed by someone else
-  is picked up:
+- **Every PR gets an assignee — the person who will merge it.** Assign the issue
+  author if they are an active `core-devs` member (same membership check as the
+  reviewer rule below); otherwise assign `mkolehmainen`. In this workspace the issue
+  author is normally `mkolehmainen`, so both branches land on the same login. This is
+  deliberately different from *issue* assignment, which marks who is doing the work
+  (you): the PR assignee marks whose action the open PR is waiting on, and the agent
+  never merges.
 
-  **Request review from the issue author, if and only if they are a `core-devs` member.**
+  ```sh
+  gh pr edit <PR> --repo mkolehmainen/<repo> --add-assignee <login>
+  ```
+- **Request review from the issue author, if and only if they are a `core-devs`
+  member.**
   The reviewer to request is the author of the **issue the PR implements** — not the
   PR author. Gate it on team membership:
 
@@ -377,9 +384,9 @@ What that does and does not mean for assignment:
   your own fork yourself, the author is you, self-review is rejected, and the correct
   outcome is a PR with no reviewer.
 
-  If they are not a member, open the PR with no reviewer and let the humans assign
-  one. Never invent a reviewer, and never fall back to requesting review from someone
-  else.
+  If they are not a member, open the PR with no reviewer — the assignee rule above
+  still applies, so the PR is never left without an owner. Never invent a reviewer,
+  and never fall back to requesting review from someone else.
 
   Caveats: a bare 404 is also what a caller who cannot read the team gets, so if
   positive lookups ever start 404ing too, suspect the token, not the roster. `gh`
@@ -415,8 +422,9 @@ A task is done only when ALL of these hold for the PR:
    `DIRTY`, or `BLOCKED`). `UNSTABLE` is acceptable **only** when it traces to check
    runs recorded before Actions was switched off, as on `zl-zpr-core#1`; confirm that
    before accepting it, and never accept it for a run that postdates the switch.
-4. The board Status is `In review`, and every PR for the issue is named in a comment
-   on it. "Linked" means exactly that comment — see "Git / PR conventions" for why a
+4. The board Status is `In review`, every PR for the issue is named in a comment
+   on it, and every PR carries its assignee (the merger — see "Git / PR
+   conventions"). "Linked" means exactly that comment — see "Git / PR conventions" for why a
    real closing link cannot exist across repositories.
 
 **Never report a check as passing when it did not run**, and never present the local
