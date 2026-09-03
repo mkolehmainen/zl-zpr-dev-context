@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List org-zpr "zipline" (project #5) items assigned to a user in the CURRENT iteration.
+"""List "mk zl-zpr project" (mkolehmainen project #1) items assigned to a user in the CURRENT iteration.
 
 Current iteration = the iteration in the Iteration field configuration whose
 [startDate, startDate+duration) window contains today.
@@ -9,15 +9,21 @@ Usage:
   python3 my-current-tasks.py --json     # machine-readable (for automation/diffing)
   python3 my-current-tasks.py --user X   # different assignee login
   python3 my-current-tasks.py --retry-marker
-        Append a volatile "PENDING-TODO ... tick=<epoch>" line IFF at least one
-        item has Status "Todo". Intended for output-hash-based monitors that
+        Append a volatile "PENDING-READY ... tick=<epoch>" line IFF at least one
+        item has Status READY_STATUS. Intended for output-hash-based monitors that
         suppress a run when the output is unchanged: without the marker, a run
-        that fails after the hash was recorded would leave the Todo item
+        that fails after the hash was recorded would leave the unstarted item
         unstarted and never retried. With it, output keeps changing every tick
-        while a Todo is outstanding. Idle (no Todo) output stays byte-stable.
+        while one is outstanding. Idle output stays byte-stable.
         Off by default so interactive runs stay clean.
 
-Requires: gh authenticated with scopes read:org, read:project, repo.
+The board is owned by a USER, not an organization, so the queries below use the
+`user(login:)` root field. If the board ever moves to an org, swap that for
+`organization(login:)` in both queries and change the two `["user"]` response
+lookups to `["organization"]`.
+
+Requires: gh authenticated with scopes repo and read:project (the broader
+`project` scope also works). read:org is not needed for a user-owned board.
 """
 import datetime
 import json
@@ -27,12 +33,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghretry import gh_login, run_gh  # noqa: E402
 
-ORG = "org-zpr"
-PROJECT_NUMBER = 5
+OWNER = "mkolehmainen"
+PROJECT_NUMBER = 1
+
+# The project's "unblocked, not started" Status value. This board uses
+# Backlog / Ready / In progress / In review / Done -- there is no "Todo".
+# Renaming the column means changing this one string.
+READY_STATUS = "Ready"
 
 QUERY = """
-query($org:String!, $num:Int!, $cursor:String) {
-  organization(login:$org) {
+query($owner:String!, $num:Int!, $cursor:String) {
+  user(login:$owner) {
     projectV2(number:$num) {
       title
       items(first:100, after:$cursor) {
@@ -72,8 +83,8 @@ query($org:String!, $num:Int!, $cursor:String) {
 """
 
 ITER_CFG_QUERY = """
-query($org:String!, $num:Int!) {
-  organization(login:$org) {
+query($owner:String!, $num:Int!) {
+  user(login:$owner) {
     projectV2(number:$num) {
       field(name:"Iteration") {
         ... on ProjectV2IterationField {
@@ -99,8 +110,8 @@ def gh_graphql(query, **variables):
 
 def current_iteration_title(today=None):
     today = today or datetime.date.today()
-    d = gh_graphql(ITER_CFG_QUERY, org=ORG, num=PROJECT_NUMBER)
-    cfg = d["data"]["organization"]["projectV2"]["field"]["configuration"]
+    d = gh_graphql(ITER_CFG_QUERY, owner=OWNER, num=PROJECT_NUMBER)
+    cfg = d["data"]["user"]["projectV2"]["field"]["configuration"]
     for it in cfg["iterations"]:
         start = datetime.date.fromisoformat(it["startDate"])
         end = start + datetime.timedelta(days=it["duration"])
@@ -112,8 +123,8 @@ def current_iteration_title(today=None):
 def fetch_items():
     cursor, items = None, []
     while True:
-        d = gh_graphql(QUERY, org=ORG, num=PROJECT_NUMBER, cursor=cursor)
-        page = d["data"]["organization"]["projectV2"]["items"]
+        d = gh_graphql(QUERY, owner=OWNER, num=PROJECT_NUMBER, cursor=cursor)
+        page = d["data"]["user"]["projectV2"]["items"]
         items.extend(page["nodes"])
         if not page["pageInfo"]["hasNextPage"]:
             return items
@@ -132,21 +143,23 @@ def field_values(node):
 
 
 def retry_marker(matches):
-    """Volatile line emitted only while at least one item is in Todo.
+    """Volatile line emitted only while at least one item is in READY_STATUS.
 
     Forces an output-hash monitor to differ on every tick so a tick that
     failed to start the work is retried on the next one. Disappears (restoring
-    a stable hash) as soon as nothing is in Todo. Note only the exact string
-    "Todo" fires it — renaming that project column silently disables it.
+    a stable hash) as soon as nothing is unstarted. Note only the exact
+    READY_STATUS string fires it — renaming that project column without
+    updating the constant silently disables it.
     """
-    todo = [m for m in matches if (m.get("status") or "") == "Todo"]
-    if not todo:
+    pending = [m for m in matches if (m.get("status") or "") == READY_STATUS]
+    if not pending:
         return None
-    ids = ",".join(f"{m['repo']}#{m['number']}" for m in todo)
+    ids = ",".join(f"{m['repo']}#{m['number']}" for m in pending)
     tick = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     return (
-        f"PENDING-TODO {len(todo)} [{ids}] tick={tick}"
-        "  (volatile line: forces re-check until these leave Todo; not a change signal)"
+        f"PENDING-READY {len(pending)} [{ids}] tick={tick}"
+        f"  (volatile line: forces re-check until these leave {READY_STATUS};"
+        " not a change signal)"
     )
 
 

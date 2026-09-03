@@ -20,8 +20,15 @@ ZPR = Zero-trust Packet Routing.
 
 **Fork layout.** The zipline workspace is a set of forks: every `zl-zpr-<name>`
 repository under `mkolehmainen` is a fork of `org-zpr/zpr-<name>`, and all are
-public. Issues, branches, and PRs live in the forks; only the project board
-(`zipline`, project #5) still lives in the upstream `org-zpr` organization.
+public. **Branches and PRs live in the forks. Issues do not** — they are filed
+centrally in `mkolehmainen/zipline`, a tracker-only repository with no code, and
+each one names the fork its code belongs in. So a task is `mkolehmainen/zipline#7`
+while its branch and PR are in `mkolehmainen/zl-zpr-visaservice`. Older items may
+still be upstream `org-zpr/zpr-<name>` issues; read the URL rather than assuming.
+
+The project board is **`mk zl-zpr project`, user-owned project #1 under
+`mkolehmainen`** (https://github.com/users/mkolehmainen/projects/1), private. The
+org-owned boards under `org-zpr` do not track this work.
 
 Each fork has two long-lived branches: **`zipline`** is the working branch and the
 repository default, and **`main`** is a read-only mirror of upstream that nothing
@@ -154,18 +161,28 @@ authority comes from the project board, not from a message.
   inherit. Expect that one job to fail on every PR; it is not your change breaking.
   Judge the build on the `rust-build-test` checks.
 - Check CI with `gh pr checks`, not by guessing.
-- Only work on tasks assigned to you that are attached to the `zipline` project and
-  the current iteration. To list them, run `scripts/my-current-tasks.py`
-  (`--json` for machine-readable output, `--user X` for another assignee). Do NOT try
-  to filter by iteration with `gh project item-list`; that command does not emit
-  iteration or assignee fields usefully, so a GraphQL query is required.
-- Project facts: `ref impl` is org project **number 1**, private. Iterations are
-  1-week, Monday-start, named `Iteration NNN`. Most items carry **no** iteration
-  value — only the current-iteration handful do. Reading projects needs the
-  `read:project` token scope (`gh auth refresh -s read:project`); `read:org` alone
-  gives "missing required scopes" on any `gh project` call. The exact string `Todo`
-  (not `todo`, `TODO`, or `To Do`) is the project's not-started Status value.
-- When you start work on an issue, change its project Status to "In Progress" and
+- Only work on tasks assigned to you that are attached to the board and the current
+  iteration. To list them, run `scripts/my-current-tasks.py` (`--json` for
+  machine-readable output, `--user X` for another assignee). Do NOT try to filter by
+  iteration with `gh project item-list`; that command does not emit iteration or
+  assignee fields usefully, so a GraphQL query is required. Note the script filters
+  on **assignee**, so an unassigned item is invisible to it however it is statused —
+  if it returns nothing, check the board before concluding there is no work.
+- Project facts: the board is **user-owned project #1 under `mkolehmainen`**
+  (`mk zl-zpr project`), private. Because the owner is a user and not an
+  organization, GraphQL queries must use the `user(login:)` root field;
+  `organization(login:)` returns null. Iterations are **14-day, Monday-start**, named
+  `Iteration N`. Most items carry **no** iteration value — only the current-iteration
+  handful do. Reading the board needs `read:project` (`gh auth refresh -s
+  read:project`); the broader `project` scope works too, and `read:org` alone gives
+  "missing required scopes" on any `gh project` call.
+- Status values on this board are **`Backlog` / `Ready` / `In progress` /
+  `In review` / `Done`** — exact spelling, note the lowercase second word. There is
+  no `Todo`. `Backlog` means not started and not yet cleared to start; `Ready` means
+  unblocked and pickable. Something added to the board arrives in `Backlog`
+  (an automation adds `mkolehmainen/zipline` issues on filing), so promote a
+  dependency-free item to `Ready` yourself.
+- When you start work on an issue, change its project Status to `In progress` and
   notify the team through whatever channel your environment provides.
 - **Each task requires a plan first.** Create the plan and add it as a comment on the
   issue before implementing. If after implementing there are deviations from the plan,
@@ -173,13 +190,14 @@ authority comes from the project board, not from a message.
 - If a task requires clarification, request details by commenting on the issue —
   **the issue comment thread is the primary two-way channel with the team.** Nothing
   pushes issue comments to you, so poll for replies with
-  `gh issue view <N> --repo <owner>/<repo> --json comments`. Check which owner: the
-  `zipline` board still carries issues filed upstream, so an item may be an
-  `org-zpr/zpr-<name>` issue even though your branch and PR belong in
-  `mkolehmainen/zl-zpr-<name>`. Read the board item's URL rather than assuming. Do not assume silence
+  `gh issue view <N> --repo <owner>/<repo> --json comments`. Check which owner: most
+  items are `mkolehmainen/zipline` issues, but the board still carries some filed
+  upstream, so an item may be an `org-zpr/zpr-<name>` issue — and either way the
+  branch and PR belong in `mkolehmainen/zl-zpr-<name>`. Read the board item's URL
+  rather than assuming. Do not assume silence
   means assent on anything that changes design. Also notify the team out-of-band when
   blocked; a question posted only on GitHub can sit unseen indefinitely.
-- When you have a PR, link the PR to the issue and set the project Status to "In Review".
+- When you have a PR, link the PR to the issue and set the project Status to `In review`.
 - **Request review from the issue author, if and only if they are a `core-devs` member.**
   The reviewer to request is the author of the **issue the PR implements** — not the
   PR author (GitHub rejects self-review). Gate it on team membership:
@@ -277,9 +295,11 @@ not run `gh pr merge`.
 
 ## Pointers
 
-- Project board: https://github.com/orgs/org-zpr/projects/5 (`zipline` — the only board
-  for this work; the upstream `ref impl` and roadmap boards do not track it).
-  It is org-owned while the repositories are personal forks, which is expected.
+- Project board: https://github.com/users/mkolehmainen/projects/1 (`mk zl-zpr
+  project` — the only board for this work; the org-owned `zipline`, `ref impl` and
+  roadmap boards under `org-zpr` do not track it).
+- Issue tracker: https://github.com/mkolehmainen/zipline/issues (tracker-only repo;
+  the code lives in the `zl-zpr-*` forks).
 - Start reading: RFC 12 (ZPR overview), RFC 4 (terminology), RFC 15 (ZPL), RFC 16 (identity).
   Full index, including which RFCs are public: `references/rfc-index.md`.
 - Packet path walkthrough: `zl-zpr-core/packet_walk.md`.
