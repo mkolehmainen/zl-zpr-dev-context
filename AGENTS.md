@@ -24,6 +24,15 @@ Additional coding guidelines:
 - `zpr-dev/` -> binary for configuring the ZPR development environment.
 
 
+## Before you start
+
+**This file and everything it points at are a checkout, so they go stale.** Run
+`zpr-dev update` first: with no arguments it fetches and fast-forwards the
+`zl-zpr-dev-context` checkout only, then regenerates these context files. It never
+resets, rebases, stashes or switches branches. Read its output — it skips a dirty or
+detached checkout and says so — and if `HEAD` moved, re-read the documents below and
+`skills/zpr/SKILL.md` before acting on them.
+
 ## Required reading by task
 
 Read these before making the change, not after. Paths are relative to the

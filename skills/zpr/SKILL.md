@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.3.0
+version: 2.4.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -85,7 +85,8 @@ in it.
 | Need | Command |
 |---|---|
 | A repository that is not checked out yet | `zpr-dev setup` |
-| Up-to-date `main` before starting work | `zpr-dev update --all` |
+| This skill and the docs up to date before pickup | `zpr-dev update` (context checkout only) |
+| Up-to-date source repositories before starting work | `zpr-dev update --all` |
 | Which checkouts are dirty, behind, or stale | `zpr-dev status` |
 | Context files regenerated after a `docs/` change | `zpr-dev sync` |
 | Workspace health, exit 1 on problems | `zpr-dev validate` |
@@ -164,6 +165,23 @@ advance that issue — poll its PRs, answer review comments — not to start ano
 Ignore this only when the operator names a specific second issue.
 
 **The pickup sequence.** On *"work on the next issue"*:
+
+0. **Refresh this skill before you follow it.** Run `zpr-dev update` — with no
+   arguments it fetches and fast-forwards the `zl-zpr-dev-context` checkout only, on
+   whatever branch it is on (`zipline`), then regenerates the context files. It never
+   resets, rebases, stashes or switches branches, so it cannot eat work.
+
+   **Read its output rather than assuming it worked.** It deliberately skips a
+   checkout that is dirty, on a detached HEAD, or has no upstream, and says so — if
+   yours was skipped, the copy of this document you are holding may be stale. If the
+   fast-forward moved `HEAD`, **re-read this file before acting on it**: the process
+   rules below change, and a stale copy is how an agent ends up self-approving a plan
+   or waiting forever on CI that no longer runs.
+
+   The limit of this instruction is worth naming: an agent already running a stale
+   copy cannot be told by that copy to refresh. So whatever launches the agent should
+   pull the context checkout too. This step catches the second and later pickups; the
+   launcher is what catches the first.
 
 1. Run `scripts/next-issue.py`. Name the issue and why it is next before touching
    anything. If the operator wanted a different one, they will say so.
