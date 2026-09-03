@@ -63,25 +63,46 @@ always a fast-forward that can never conflict, `git diff main...zipline` is
 exactly the zipline delta, and contributing a change back upstream means
 branching off `main` and cherry-picking rather than untangling merges.
 
-Sync `main` from upstream server-side, which needs no local checkout:
+### Taking upstream changes into zipline
+
+Two steps. A checkout made by `zpr-dev` has only one remote — `origin`, the fork
+— and no `upstream` remote, so step 1 is done on GitHub rather than locally.
+
+**1. Fast-forward the fork's `main` from upstream.** No local checkout needed:
 
 ```bash
-gh repo sync mkolehmainen/zl-zpr-<name> --source org-zpr/zpr-<name>
+gh repo sync mkolehmainen/zl-zpr-<name> --source org-zpr/zpr-<name> --branch main
 ```
+
+Pass `--branch main` explicitly. `gh repo sync` defaults to a default branch,
+and ours is now `zipline` — being explicit removes the ambiguity. (Aiming it at
+`zipline` by mistake is not destructive without `--force`: upstream `main` will
+not fast-forward onto a `zipline` that has commits, so it errors out.)
+
+**2. Merge it into `zipline` locally, then push:**
+
+```bash
+git fetch origin
+git checkout zipline
+git merge origin/main
+git push origin zipline
+```
+
+Merging `origin/main` directly means local `main` never has to be checked out or
+updated. If you want it current anyway — for a local `git diff main...zipline` —
+add `git checkout main && git merge --ff-only origin/main` before the merge.
+
+**Merge, never rebase.** `zipline` is long-lived and published, so rebasing it
+rewrites history other checkouts already have. Merge commits on `zipline` are
+expected and fine.
 
 Do **not** point `main` at the upstream remote with
 `git branch main --set-upstream-to=upstream/main` — a later `git push` on `main`
 would then try to write to `org-zpr`, which will fail confusingly.
 
-To bring upstream work into zipline, **merge, never rebase**:
-
-```bash
-git checkout zipline
-git merge main          # after main has been synced
-```
-
-`zipline` is long-lived and shared, so rebasing it rewrites published history.
-Merge commits on `zipline` are expected and fine.
+Note that `zpr-dev update` is *not* part of this. It fetches and fast-forwards
+the current branch from `origin` only, so it picks up `zipline` commits already
+pushed to the fork; it never contacts upstream.
 
 ### Tag names need a `zl-` prefix
 

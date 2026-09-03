@@ -51,9 +51,17 @@ command):
 **Routine, whenever you want upstream changes:**
 
 ```bash
-gh repo sync mkolehmainen/zl-zpr-<name> --source org-zpr/zpr-<name>   # main only
-git checkout zipline && git merge main                                # then merge in
+# 1. fast-forward the fork's main from upstream (--branch main is required:
+#    the repository default is now zipline)
+gh repo sync mkolehmainen/zl-zpr-<name> --source org-zpr/zpr-<name> --branch main
+
+# 2. merge it into zipline and push
+git fetch origin && git checkout zipline && git merge origin/main
+git push origin zipline
 ```
+
+`zpr-dev update` does not do this — it only fast-forwards the current branch from
+`origin`, never from upstream.
 
 ## `zpr-dev`
 
