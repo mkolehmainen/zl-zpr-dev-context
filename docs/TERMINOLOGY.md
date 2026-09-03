@@ -3,7 +3,7 @@
 Definitions of the terms used when discussing ZPR and its components.
 
 The authoritative source is section 4, "Terminology", of the ZPR RFCs
-(`zpr-rfcs/src/4-Terminology/body.md`). This document mirrors it so agents and
+(`zl-zpr-rfcs/src/4-Terminology/body.md`). This document mirrors it so agents and
 developers working in the workspace do not need the RFC checkout; when the two
 disagree, the RFC is correct and this file needs updating.
 

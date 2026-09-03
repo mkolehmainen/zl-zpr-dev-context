@@ -5,8 +5,11 @@ Two sources:
 1. **Full set (internal)**: distributed to team members as `ZPR_RFC-<n>[.<rev>].pdf`
    and `.docx` files. The highest `<rev>` for a given `<n>` is current
    (`ZPR_RFC-8.5.pdf` supersedes `ZPR_RFC-8.pdf`). Only a subset is public.
-2. **Public subset**: https://github.com/org-zpr/zpr-rfcs — sources in `src/`,
-   built PDFs in `pdf/` (https://github.com/org-zpr/zpr-rfcs/tree/main/pdf).
+2. **Public subset**: https://github.com/mkolehmainen/zl-zpr-rfcs — sources in
+   `src/`, built PDFs in `pdf/`
+   (https://github.com/mkolehmainen/zl-zpr-rfcs/tree/main/pdf). This is the
+   zipline fork; the upstream original is https://github.com/org-zpr/zpr-rfcs,
+   which is where newly published RFCs land first.
 
 The PDFs have a clean text layer; `pdftotext` extracts them fine.
 
@@ -32,7 +35,7 @@ The PDFs have a clean text layer; `pdftotext` extracts them fine.
 | 15 | 15.5 | Overview of the ZPL Policy Language |
 | 16 | 16.1 | ZPR's Concept of Identity |
 | 17 | 17 | ZDP Protocol Definition |
-| 19 | src only | ZPR Policy Delegation (source in `zpr-rfcs/src`) |
+| 19 | src only | ZPR Policy Delegation (source in `zl-zpr-rfcs/src`) |
 
 ## Suggested reading order
 

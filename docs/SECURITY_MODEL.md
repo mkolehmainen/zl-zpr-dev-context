@@ -22,7 +22,7 @@ Distilled from the ZPR RFCs, principally:
 | RFC-12 | Overview of Zero-trust Packet Routing | Published. |
 | RFC-4 | ZPR Terminology | Published. |
 
-RFCs 4, 12, 15, 16, and 19 are published in `zpr-rfcs`. The rest are internal
+RFCs 4, 12, 15, 16, and 19 are published in `zl-zpr-rfcs`. The rest are internal
 to Applied Invention; cited here by number, they live in the private RFC
 repository.
 
@@ -322,7 +322,7 @@ the above.
 ## Implementation status
 
 What the code does today, checked against the RFCs while writing this.
-`zpr-core` is a **pre-release reference implementation** whose README states
+`zl-zpr-core` is a **pre-release reference implementation** whose README states
 that the full suite of end-to-end security features is not yet implemented — do
 not read the RFCs as a description of current guarantees.
 
@@ -353,7 +353,7 @@ not read the RFCs as a description of current guarantees.
   Case 1 table's payload-encryption row is a design goal, not a current
   guarantee.
 - **Anti-replay enforcement.** ZDP headers carry sequence numbers, but no
-  receiver-side sliding window or duplicate rejection appears in `zpr-core`;
+  receiver-side sliding window or duplicate rejection appears in `zl-zpr-core`;
   searches for anti-replay logic came up empty. Treat replay protection as
   specified but unverified, and confirm before depending on it.
 - **Quantitative limits.** Caps on bandwidth, connections, and transferred data
@@ -375,16 +375,16 @@ not read the RFCs as a description of current guarantees.
 
 | Guarantee | Enforced in |
 |---|---|
-| Policy decision | `zpr-visaservice/libeval` |
-| Visa issuance and revocation | `zpr-visaservice/vs` — `visareq_worker.rs`, `visa_reconciler.rs`, `policy_mgr.rs` |
-| Endpoint admission | `zpr-visaservice/vs/src/connection_control.rs`, `auth.rs` |
-| Attribute sourcing and expiry | `zpr-visaservice/vs/src/trusted_services/` |
-| A2A integrity | `zpr-core/adapter/ph` — `zdp.rs`, `fastpath.rs`, `adapter_tables.rs` |
-| Link crypto and key management | `zpr-core/adapter/ph` — `km_noise.rs`, `km_cert_exchange.rs`, `pki.rs` |
-| Per-packet visa enforcement | `zpr-core/libnode2`, and the dock path in `zpr-core/adapter` |
-| What policy can express | `zpr-compiler` — see [ZPL.md](ZPL.md) |
+| Policy decision | `zl-zpr-visaservice/libeval` |
+| Visa issuance and revocation | `zl-zpr-visaservice/vs` — `visareq_worker.rs`, `visa_reconciler.rs`, `policy_mgr.rs` |
+| Endpoint admission | `zl-zpr-visaservice/vs/src/connection_control.rs`, `auth.rs` |
+| Attribute sourcing and expiry | `zl-zpr-visaservice/vs/src/trusted_services/` |
+| A2A integrity | `zl-zpr-core/adapter/ph` — `zdp.rs`, `fastpath.rs`, `adapter_tables.rs` |
+| Link crypto and key management | `zl-zpr-core/adapter/ph` — `km_noise.rs`, `km_cert_exchange.rs`, `pki.rs` |
+| Per-packet visa enforcement | `zl-zpr-core/libnode2`, and the dock path in `zl-zpr-core/adapter` |
+| What policy can express | `zl-zpr-compiler` — see [ZPL.md](ZPL.md) |
 
-`zpr-core/packet_walk.md` traces a flow end to end and is the best orientation
+`zl-zpr-core/packet_walk.md` traces a flow end to end and is the best orientation
 to the data path.
 
 Related: [VISA_SERVICE.md](VISA_SERVICE.md), [ZPL.md](ZPL.md),

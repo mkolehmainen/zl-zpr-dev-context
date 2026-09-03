@@ -51,5 +51,5 @@ Two rules that apply to every task above:
   it matters. **The code wins.** Check the status section before assuming a
   feature exists, and verify against the source before relying on a detail.
 - **A change to what policy can express usually spans three repositories** --
-  the grammar and compiler in `zpr-compiler`, the schema in `zpr-policy`, and
-  the evaluator in `zpr-visaservice`. See `docs/REPOSITORIES.md`.
+  the grammar and compiler in `zl-zpr-compiler`, the schema in `zl-zpr-policy`, and
+  the evaluator in `zl-zpr-visaservice`. See `docs/REPOSITORIES.md`.

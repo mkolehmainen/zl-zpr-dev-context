@@ -21,9 +21,9 @@ evaluation. Changes to issuance behavior should also be read against
 | Source | Status |
 |---|---|
 | *ZPR Visa Service Specification / Design Document* (2025-09-03) | The design intent. Explicitly work-in-progress, and parts are marked sketchy or TODO by its authors. |
-| `zpr-visaservice/` | What actually runs. Workspace version 0.18.0. |
-| `zpr-visaservice/admin-http-api.txt` | The admin API, current as of 2026-08-10 and changing frequently. |
-| `zpr-visaservice/libeval/README.md` | The evaluator's API and staging model. |
+| `zl-zpr-visaservice/` | What actually runs. Workspace version 0.18.0. |
+| `zl-zpr-visaservice/admin-http-api.txt` | The admin API, current as of 2026-08-10 and changing frequently. |
+| `zl-zpr-visaservice/libeval/README.md` | The evaluator's API and staging model. |
 
 The design document predates the current implementation and has drifted; §
 "Where the implementation diverges from the design document" records the gaps
@@ -60,7 +60,7 @@ parallel, and federated visa services for load balancing.
 | `integration-test` | Shell-driven integration tests, including `libeval` evaluation tests through `zpt`. |
 | `tools` | Helper scripts, including `zpr-pki` for PKI operations. |
 
-Most of it depends on `zpr-common` for the NODE–VS API structures and the
+Most of it depends on `zl-zpr-common` for the NODE–VS API structures and the
 binary policy format, pulled by Git tag in `Cargo.toml` — no manual setup.
 Requires Rust edition 2024, `make`, OpenSSL, and a running Redis/Valkey.
 
@@ -346,7 +346,7 @@ instruction file, with `-j` for JSONL output.
 
 - **Cap'n Proto, not Thrift.** The design document specifies Thrift for the
   binary policy and the node APIs. The implementation uses Cap'n Proto
-  throughout (see `zpr-policy/policy.capnp`, `zpr-vsapi/vs.capnp`); there is no
+  throughout (see `zl-zpr-policy/policy.capnp`, `zl-zpr-vsapi/vs.capnp`); there is no
   Thrift anywhere in the tree.
 - **Trusted-service attribute stores are file-backed only.** The factory
   accepts `api = "file"` — attributes loaded from a local `<service-id>.json`
@@ -384,7 +384,7 @@ instruction file, with `-j` for JSONL output.
 | State | `vs/src/db/` |
 | Admin API | `vs/src/admin_service.rs`, `admin_apikeys.rs`, `admin-http-api.txt` |
 | Configuration and constants | `vs/src/config.rs` |
-| Wire formats | `zpr-vsapi/vs.capnp`, `zpr-policy/policy.capnp` |
+| Wire formats | `zl-zpr-vsapi/vs.capnp`, `zl-zpr-policy/policy.capnp` |
 
 A change to what policy can express usually spans three repositories — see
 [ZPL.md](ZPL.md) and [REPOSITORIES.md](REPOSITORIES.md).

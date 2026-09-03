@@ -19,11 +19,11 @@ setup.
 | Source | What it governs |
 |---|---|
 | **ZRFC 6.4** §5.12 "Route Generation and Distribution", §5.11.2 "Next Hop Selection" | The intended design. Two pages, and its own editorial note says routing "should be moved into a new document that just covers ZPR Routing" — that document does not exist. |
-| **`zpr-compiler/README_ZPLC.md`**, §Nodes / §Topology / §Link attributes | The topology schema as the compiler accepts it. |
-| **`zpr-policy/policy.capnp`** — `Peering`, `CPolicy.linkConds` | How topology and link constraints are carried in a compiled policy. |
-| **`zpr-visaservice/vs/src/router.rs`**, `topology_mgr.rs` | Path computation and the live graph, as implemented. |
-| **`zpr-visaservice/vs/src/visa_policy.rs`**, `visa_mgr.rs` | Route selection and how a route becomes per-node visas. |
-| **`zpr-vsapi/vs.capnp`** — `FwdPep`, `Link`, `setTopology` | The wire contract between visa service and node. |
+| **`zl-zpr-compiler/README_ZPLC.md`**, §Nodes / §Topology / §Link attributes | The topology schema as the compiler accepts it. |
+| **`zl-zpr-policy/policy.capnp`** — `Peering`, `CPolicy.linkConds` | How topology and link constraints are carried in a compiled policy. |
+| **`zl-zpr-visaservice/vs/src/router.rs`**, `topology_mgr.rs` | Path computation and the live graph, as implemented. |
+| **`zl-zpr-visaservice/vs/src/visa_policy.rs`**, `visa_mgr.rs` | Route selection and how a route becomes per-node visas. |
+| **`zl-zpr-vsapi/vs.capnp`** — `FwdPep`, `Link`, `setTopology` | The wire contract between visa service and node. |
 
 Related: [ZPL.md](ZPL.md) for the `over` clause, [ZDP.md](ZDP.md) for what the
 data plane does with a next hop, [TERMINOLOGY.md](TERMINOLOGY.md).
@@ -105,7 +105,7 @@ ZPRnet" and then documents multi-node topology below. Read it as a statement
 about the data plane: the compiler and visa service both handle many nodes (see
 §Implementation status). Relatedly, the undocumented `[visa_service]` section —
 whose only key is `dock_node` — may be omitted, and the compiler fills it in on
-the assumption there is one node (`zpr-compiler` issue 100).
+the assumption there is one node (`zl-zpr-compiler` issue 100).
 
 `README_ZPLC.md` states that only `device`, `user`, and `service` namespaces are
 valid for attributes. That rule is about actor attributes; link attributes are
@@ -194,7 +194,7 @@ Three caveats, all documented in the code as TODOs:
   Meanwhile the node *is* still told the link exists (topology messages come
   from policy, not the router), so its visa requests over that link deny
   `NoRoute` with nothing node-side to explain why.
-  (`zpr-visaservice` issue 302.)
+  (`zl-zpr-visaservice` issue 302.)
 - **Multi-homed nodes are not supported** by `substrate_addr_from_topology`,
   which takes a node's own substrate address from the first resolved link it
   finds.
@@ -311,8 +311,8 @@ a `forwardOnly` visa (`"Forward only visas not yet supported"`).
 The consequence is worth stating plainly: **the control plane computes
 multi-hop routes that the data plane cannot yet use.** Everything above —
 Dijkstra, all-paths DFS, path orientation, per-role visa actualization — is
-built, tested, and exercised by unit tests, while `zpr-core`'s integration
-tests are `one-node-test.sh` and `one-node-v6-test.sh`. `zpr-demo/multinode-demo`
+built, tested, and exercised by unit tests, while `zl-zpr-core`'s integration
+tests are `one-node-test.sh` and `one-node-v6-test.sh`. `zl-zpr-demo/multinode-demo`
 is the two-node deployment being built out against this gap.
 
 ---
@@ -332,7 +332,7 @@ The full pipeline exists in outline and is disconnected at every runtime joint:
 |---|---|
 | Compiler parses `over`, checks satisfiability against declared links | **works** |
 | Compiler emits `CPolicy.linkConds` into the policy binary | **works** |
-| `libeval` reads `linkConds` | **never read** — no reference to the field anywhere in `zpr-visaservice` |
+| `libeval` reads `linkConds` | **never read** — no reference to the field anywhere in `zl-zpr-visaservice` |
 | `RoutePredicate` (`DirectOnly`, `RequireLinkedPath`, `AnyLinkHas`, `NoLinkHas`, `AllLinksHave`, `And`, `Or`) | defined, never constructed |
 | `PartialEvalResult::NeedsRoute` | defined, never returned — evaluation always yields `AllowWithoutRoute` or `Deny` |
 | `RouteResidualEvaluator::eval_route` / `eval_routes` | `Err(InternalError("route evaluation not implemented"))`, with the intended algorithm written out in comments |
@@ -381,7 +381,7 @@ service's VSAPI port to connect at all. `visa_bootstrap` resolves the circularit
   and asks for what it needs.
 
 The whole module is labelled a HACK to get initial multi-node working
-(`zpr-visaservice` issue 301) and is meant to be deleted.
+(`zl-zpr-visaservice` issue 301) and is meant to be deleted.
 
 ---
 
@@ -458,13 +458,13 @@ distributes next hops **per visa** instead. Nodes hold no routing table at all.
 
 | Concern | Location |
 |---|---|
-| Topology schema (`nodes`, `substrate_addrs`, `links`) | `zpr-compiler/src/config/mod.rs`, `config_api.rs` |
-| Link → `Peering` emission, `over` satisfiability checks | `zpr-compiler/src/weaver.rs`, `fabric.rs` |
-| Topology and link-condition schema | `zpr-policy/policy.capnp` (`Peering`, `CPolicy.linkConds`) |
-| Peer table, link attributes, `describe_link`, default cost | `zpr-visaservice/libeval/src/policy.rs` |
+| Topology schema (`nodes`, `substrate_addrs`, `links`) | `zl-zpr-compiler/src/config/mod.rs`, `config_api.rs` |
+| Link → `Peering` emission, `over` satisfiability checks | `zl-zpr-compiler/src/weaver.rs`, `fabric.rs` |
+| Topology and link-condition schema | `zl-zpr-policy/policy.capnp` (`Peering`, `CPolicy.linkConds`) |
+| Peer table, link attributes, `describe_link`, default cost | `zl-zpr-visaservice/libeval/src/policy.rs` |
 | Route and predicate types | `libeval/src/route.rs` |
 | Route-constraint evaluator (unimplemented) | `libeval/src/eval_route.rs` |
-| Graph, Dijkstra, all-paths DFS, route cache | `zpr-visaservice/vs/src/router.rs` |
+| Graph, Dijkstra, all-paths DFS, route cache | `zl-zpr-visaservice/vs/src/router.rs` |
 | Live graph, persistence, policy revalidation | `vs/src/topology_mgr.rs`, `vs/src/db/link.rs` |
 | DNS resolution of substrate hostnames | `vs/src/policy_mgr.rs` (`PolicyResolver`) |
 | Docking-node resolution, route selection, `NoRoute` | `vs/src/visa_policy.rs` |
@@ -473,12 +473,12 @@ distributes next hops **per visa** instead. Nodes hold no routing table at all.
 | Link install on node connect | `vs/src/vsapi_worker.rs` |
 | `setTopology` send path | `vs/src/vss_worker.rs` |
 | Address pools, AAA prefixes | `vs/src/net_mgr.rs` |
-| Wire contract (`FwdPep`, `Link`, `setTopology`) | `zpr-vsapi/vs.capnp` |
-| Node: visa install, next hop → egress link | `zpr-core/adapter/ph/src/visa_mgmt.rs`, `visa_table.rs`, `assembly.rs` |
-| Node: `setTopology` receive (stub) | `zpr-core/adapter/ph/src/vss_worker.rs`, `libnode2/src/vss.rs` |
-| Two-node deployment | `zpr-demo/multinode-demo/` |
+| Wire contract (`FwdPep`, `Link`, `setTopology`) | `zl-zpr-vsapi/vs.capnp` |
+| Node: visa install, next hop → egress link | `zl-zpr-core/adapter/ph/src/visa_mgmt.rs`, `visa_table.rs`, `assembly.rs` |
+| Node: `setTopology` receive (stub) | `zl-zpr-core/adapter/ph/src/vss_worker.rs`, `libnode2/src/vss.rs` |
+| Two-node deployment | `zl-zpr-demo/multinode-demo/` |
 
 A change to the topology model usually touches all four repositories: the schema
-in `zpr-compiler`, the wire format in `zpr-policy` and/or `zpr-vsapi`, the graph
-and route selection in `zpr-visaservice`, and the consumer in `zpr-core`. See
+in `zl-zpr-compiler`, the wire format in `zl-zpr-policy` and/or `zl-zpr-vsapi`, the graph
+and route selection in `zl-zpr-visaservice`, and the consumer in `zl-zpr-core`. See
 [REPOSITORIES.md](REPOSITORIES.md).

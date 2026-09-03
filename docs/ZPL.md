@@ -13,9 +13,9 @@ service evaluates policy.
 
 | Source | What it governs |
 |---|---|
-| **ZRFC 15** — `zpr-rfcs/src/15-ZPL-Overview/body.md`, published as `pdf/15-ZPL-Overview.pdf` | The language as designed. The specification. |
-| **`zpr-compiler/zpl.bnf`** | The grammar **as actually implemented**, reconciled against `lex.rs`, `parser.rs`, `allow.rs`, `define.rs`, and `never.rs`. Its inline comments mark every divergence from ZRFC 15. |
-| **`zpr-compiler/README_ZPLC.md`** | The ZPLC configuration format (TOML). |
+| **ZRFC 15** — `zl-zpr-rfcs/src/15-ZPL-Overview/body.md`, published as `pdf/15-ZPL-Overview.pdf` | The language as designed. The specification. |
+| **`zl-zpr-compiler/zpl.bnf`** | The grammar **as actually implemented**, reconciled against `lex.rs`, `parser.rs`, `allow.rs`, `define.rs`, and `never.rs`. Its inline comments mark every divergence from ZRFC 15. |
+| **`zl-zpr-compiler/README_ZPLC.md`** | The ZPLC configuration format (TOML). |
 
 The two disagree in places, deliberately — the compiler is still catching up.
 `zpl.bnf` is the truth about what compiles today; ZRFC 15 is the truth about
@@ -292,7 +292,7 @@ supported.
 
 ### Configuration (`.zplc`)
 
-TOML, documented in full in `zpr-compiler/README_ZPLC.md`. The blocks, in the
+TOML, documented in full in `zl-zpr-compiler/README_ZPLC.md`. The blocks, in the
 suggested order:
 
 | Block | Purpose |
@@ -316,7 +316,7 @@ returns_attributes = [
 identity_attributes = [ "bas_id" ]   # service-side names, not ZPL names
 ```
 
-A worked pair to read first: `zpr-compiler/test-data/m3-ping-and-http.zpl` and
+A worked pair to read first: `zl-zpr-compiler/test-data/m3-ping-and-http.zpl` and
 its `.zplc`.
 
 ### Building and testing the compiler
@@ -370,15 +370,15 @@ fixture that uses it.
 
 | Concern | Location |
 |---|---|
-| Lexer, parser | `zpr-compiler/src/lex.rs`, `parser.rs` |
+| Lexer, parser | `zl-zpr-compiler/src/lex.rs`, `parser.rs` |
 | Statement handling | `allow.rs`, `never.rs`, `define.rs` |
-| Configuration parsing | `zpr-compiler/src/config/` |
+| Configuration parsing | `zl-zpr-compiler/src/config/` |
 | Policy assembly and output | `weaver.rs`, `policybuilder.rs`, `policywriter.rs`, `policybinaryv2.rs` |
 | Binaries | `src/bin/zplc.rs`, `src/bin/zpdump.rs` |
-| Grammar | `zpr-compiler/zpl.bnf` |
-| Binary policy schema | `zpr-policy/policy.capnp` |
-| Evaluation at runtime | `zpr-visaservice/libeval`, exercised by the `zpt` CLI |
+| Grammar | `zl-zpr-compiler/zpl.bnf` |
+| Binary policy schema | `zl-zpr-policy/policy.capnp` |
+| Evaluation at runtime | `zl-zpr-visaservice/libeval`, exercised by the `zpt` CLI |
 
 A change to the language usually touches all three repositories: the grammar
-and compiler in `zpr-compiler`, the schema in `zpr-policy`, and the evaluator
-in `zpr-visaservice`. See [REPOSITORIES.md](REPOSITORIES.md).
+and compiler in `zl-zpr-compiler`, the schema in `zl-zpr-policy`, and the evaluator
+in `zl-zpr-visaservice`. See [REPOSITORIES.md](REPOSITORIES.md).

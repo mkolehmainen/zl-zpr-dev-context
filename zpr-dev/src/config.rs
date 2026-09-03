@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use serde::Deserialize;
 
 /// Directory name of the context checkout inside the workspace (spec §3.3).
-pub const CONTEXT_DIR_NAME: &str = "zpr-dev-context";
+pub const CONTEXT_DIR_NAME: &str = "zl-zpr-dev-context";
 
 /// The manifest's file name inside the context checkout (spec §3.1).
 pub const MANIFEST_FILE: &str = "workspace.yaml";
@@ -156,12 +156,12 @@ pub fn parse(text: &str) -> Result<Manifest> {
 }
 
 /// Picks the workspace directory: explicit flag, then `$ZPR_WORKSPACE`, then
-/// `<home>/src/zpr`. Pure so it is testable without touching the environment.
+/// `<home>/src/zl_zpr`. Pure so it is testable without touching the environment.
 pub fn resolve_workspace(flag: Option<&Path>, env: Option<&str>, home: &Path) -> PathBuf {
     match (flag, env) {
         (Some(path), _) => path.to_path_buf(),
         (None, Some(value)) => PathBuf::from(value),
-        (None, None) => home.join("src").join("zpr"),
+        (None, None) => home.join("src").join("zl_zpr"),
     }
 }
 
@@ -182,8 +182,8 @@ mod tests {
     const MINIMAL: &str = "
 version: 1
 repositories:
-  - name: zpr-core
-    url: git@github.com:org-zpr/zpr-core.git
+  - name: zl-zpr-core
+    url: git@github.com:mkolehmainen/zl-zpr-core.git
 ";
 
     #[test]
@@ -215,13 +215,13 @@ repositories:
 
     #[test]
     fn duplicate_repository_names_are_rejected() {
-        let text = format!("{MINIMAL}  - name: zpr-core\n    url: other\n");
+        let text = format!("{MINIMAL}  - name: zl-zpr-core\n    url: other\n");
         assert!(parse(&text).is_err());
     }
 
     #[test]
     fn empty_repository_name_is_rejected() {
-        let text = MINIMAL.replace("name: zpr-core", "name: \"\"");
+        let text = MINIMAL.replace("name: zl-zpr-core", "name: \"\"");
         assert!(parse(&text).is_err());
     }
 
@@ -239,31 +239,38 @@ repositories:
         );
         assert_eq!(
             resolve_workspace(None, None, home),
-            PathBuf::from("/home/dev/src/zpr")
+            PathBuf::from("/home/dev/src/zl_zpr")
         );
     }
 
     #[test]
     fn context_resolution_prefers_flag_then_workspace_child() {
-        let workspace = Path::new("/home/dev/src/zpr");
+        let workspace = Path::new("/home/dev/src/zl_zpr");
         assert_eq!(
             resolve_context(Some(Path::new("/elsewhere/ctx")), workspace),
             PathBuf::from("/elsewhere/ctx")
         );
         assert_eq!(
             resolve_context(None, workspace),
-            PathBuf::from("/home/dev/src/zpr/zpr-dev-context")
+            PathBuf::from("/home/dev/src/zl_zpr/zl-zpr-dev-context")
         );
     }
 
     /// The real manifest at the repository root must parse and match spec §3.2:
-    /// ten repositories, all on `main` by way of the serde default.
+    /// ten repositories, every one pinned explicitly to `zipline`. In the
+    /// zipline forks `main` is a read-only mirror of upstream, so a repository
+    /// that fell back to the `main` serde default would check out the wrong
+    /// branch — this asserts none of them do.
     #[test]
-    fn real_workspace_yaml_parses_with_ten_repositories() {
+    fn real_workspace_yaml_parses_with_ten_repositories_on_zipline() {
         let manifest = parse(include_str!("../../workspace.yaml")).expect("real manifest parses");
         assert_eq!(manifest.repositories.len(), 10);
         for repo in &manifest.repositories {
-            assert_eq!(repo.default_branch, "main", "{} is not on main", repo.name);
+            assert_eq!(
+                repo.default_branch, "zipline",
+                "{} is not on zipline",
+                repo.name
+            );
         }
     }
 }

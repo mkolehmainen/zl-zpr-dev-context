@@ -24,7 +24,7 @@ configuration file:
 ```yaml
 skills:
   external_dirs:
-    - /home/mathias/src/zpr/zpr-dev-context/skills
+    - /home/mathias/src/zl_zpr/zl-zpr-dev-context/skills
 ```
 
 Setting that key by hand is the last manual step in workspace setup. This
@@ -121,13 +121,13 @@ workspace.
 
 ```text
 $ zpr-dev agent configure hermes
-configured hermes shared skills: /home/mathias/src/zpr/zpr-dev-context/skills
+configured hermes shared skills: /home/mathias/src/zl_zpr/zl-zpr-dev-context/skills
 ```
 
 Already configured — no write, no backup, exit 0:
 
 ```text
-hermes shared skills already configured: /home/mathias/src/zpr/zpr-dev-context/skills
+hermes shared skills already configured: /home/mathias/src/zl_zpr/zl-zpr-dev-context/skills
 ```
 
 Under `--dry-run` the verb is `would configure`, and nothing is read for write,
@@ -270,7 +270,7 @@ nothing else — not a neighbouring value, not a nesting level, not a key's type
 Hermes
   installed          yes (/home/mathias/.hermes/config.yaml)
   shared skills      configured
-  skill source       /home/mathias/src/zpr/zpr-dev-context/skills
+  skill source       /home/mathias/src/zl_zpr/zl-zpr-dev-context/skills
   context            ready
 ```
 
@@ -280,7 +280,7 @@ On a machine where Hermes has never run:
 Hermes
   installed          no (/home/mathias/.hermes/config.yaml not found)
   shared skills      not configured
-  skill source       /home/mathias/src/zpr/zpr-dev-context/skills
+  skill source       /home/mathias/src/zl_zpr/zl-zpr-dev-context/skills
   context            ready
 ```
 

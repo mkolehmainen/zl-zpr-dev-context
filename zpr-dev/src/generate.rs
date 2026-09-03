@@ -197,7 +197,10 @@ fn render_agents(shared_body: &str, local: Option<&str>, sha: &str, docs_dir: &P
     let mut out = String::new();
     out.push_str(GENERATED_MARKER);
     out.push('\n');
-    out.push_str(&format!("<!-- Source: zpr-dev-context @ {sha} -->\n"));
+    out.push_str(&format!(
+        "<!-- Source: {context} @ {sha} -->\n",
+        context = crate::config::CONTEXT_DIR_NAME
+    ));
     out.push_str(&format!("<!-- Shared docs: {} -->\n", docs_dir.display()));
     out.push_str("\n# Shared ZPR Development Context\n\n");
     out.push_str(shared_body.trim());
@@ -336,13 +339,13 @@ mod tests {
 
     impl Fixture {
         /// Builds a context checkout with a committed `AGENTS.md` referencing
-        /// `docs/EXAMPLE.md`, and a workspace holding `zpr-core`.
+        /// `docs/EXAMPLE.md`, and a workspace holding `zl-zpr-core`.
         fn new(shared_body: &str) -> Self {
             let tmp = tempfile::tempdir().unwrap();
-            let context = tmp.path().join("zpr-dev-context");
+            let context = tmp.path().join(crate::config::CONTEXT_DIR_NAME);
             let workspace = tmp.path().join("workspace");
             std::fs::create_dir_all(context.join("docs")).unwrap();
-            std::fs::create_dir_all(workspace.join("zpr-core")).unwrap();
+            std::fs::create_dir_all(workspace.join("zl-zpr-core")).unwrap();
             std::fs::write(context.join(SHARED_CONTEXT_FILE), shared_body).unwrap();
             std::fs::write(context.join("docs/EXAMPLE.md"), "example\n").unwrap();
 
@@ -373,14 +376,14 @@ mod tests {
                 "
 version: 1
 repositories:
-  - name: zpr-core
+  - name: zl-zpr-core
     url: file:///dev/null
 ",
             )
             .unwrap()
         }
 
-        /// The plan for `zpr-core`.
+        /// The plan for `zl-zpr-core`.
         fn repo_plan(&self) -> RepoPlan {
             plan(&self.ctx, &self.manifest())
                 .unwrap()
@@ -388,7 +391,7 @@ repositories:
                 .expect("one repository")
         }
 
-        /// The rendered `AGENTS.md` body for `zpr-core`.
+        /// The rendered `AGENTS.md` body for `zl-zpr-core`.
         fn rendered_agents(&self) -> String {
             self.repo_plan().files.remove(0).content
         }
@@ -476,7 +479,10 @@ repositories:
         let rendered = fixture.rendered_agents();
         assert!(rendered.starts_with(GENERATED_MARKER), "{rendered}");
         assert!(
-            rendered.contains(&format!("<!-- Source: zpr-dev-context @ {sha} -->")),
+            rendered.contains(&format!(
+                "<!-- Source: {} @ {sha} -->",
+                crate::config::CONTEXT_DIR_NAME
+            )),
             "{rendered}"
         );
         assert!(
@@ -499,7 +505,7 @@ repositories:
     fn includes_repo_section_when_agents_repo_md_present() {
         let fixture = Fixture::new("shared body\n");
         std::fs::write(
-            fixture.ctx.workspace.join("zpr-core/AGENTS.repo.md"),
+            fixture.ctx.workspace.join("zl-zpr-core/AGENTS.repo.md"),
             "core specifics\n",
         )
         .unwrap();
@@ -520,7 +526,7 @@ repositories:
     #[test]
     fn plan_reports_repo_missing_for_absent_directory() {
         let fixture = Fixture::new("shared body\n");
-        std::fs::remove_dir_all(fixture.ctx.workspace.join("zpr-core")).unwrap();
+        std::fs::remove_dir_all(fixture.ctx.workspace.join("zl-zpr-core")).unwrap();
         let repo_plan = fixture.repo_plan();
         assert_eq!(repo_plan.action, Action::RepoMissing);
         assert!(repo_plan.files.is_empty());
@@ -546,14 +552,14 @@ repositories:
         assert!(second.files.iter().all(|f| f.action == Action::Unchanged));
     }
 
-    /// The regression this guard exists for: `zpr-visaservice` kept its own
+    /// The regression this guard exists for: `zl-zpr-visaservice` kept its own
     /// hand-written `AGENTS.md`, and generation overwrote it, silently losing
     /// the repository's coding conventions.
     #[test]
     fn apply_refuses_to_overwrite_a_file_it_did_not_generate() {
         let fixture = Fixture::new("shared body\n");
         let hand_written = "# AGENTS.md\n\nOur own conventions.\n";
-        let path = fixture.ctx.workspace.join("zpr-core/AGENTS.md");
+        let path = fixture.ctx.workspace.join("zl-zpr-core/AGENTS.md");
         std::fs::write(&path, hand_written).unwrap();
 
         let repo_plan = fixture.repo_plan();
@@ -576,7 +582,7 @@ repositories:
     fn force_overwrites_a_file_it_did_not_generate() {
         let mut fixture = Fixture::new("shared body\n");
         fixture.ctx.force = true;
-        let path = fixture.ctx.workspace.join("zpr-core/AGENTS.md");
+        let path = fixture.ctx.workspace.join("zl-zpr-core/AGENTS.md");
         std::fs::write(&path, "# AGENTS.md\n\nOur own conventions.\n").unwrap();
 
         // The plan still calls it foreign; only `apply` acts differently.
@@ -599,7 +605,7 @@ repositories:
     #[test]
     fn apply_updates_a_file_carrying_the_generated_marker() {
         let fixture = Fixture::new("shared body\n");
-        let path = fixture.ctx.workspace.join("zpr-core/AGENTS.md");
+        let path = fixture.ctx.workspace.join("zl-zpr-core/AGENTS.md");
         std::fs::write(&path, format!("{GENERATED_MARKER}\nstale content\n")).unwrap();
 
         let repo_plan = fixture.repo_plan();

@@ -15,7 +15,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// Default context repository, cloned by `setup` when absent (spec §5.2).
-const DEFAULT_CONTEXT_URL: &str = "git@github.com:org-zpr/zpr-dev-context.git";
+const DEFAULT_CONTEXT_URL: &str = "git@github.com:mkolehmainen/zl-zpr-dev-context.git";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -28,7 +28,7 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     workspace: Option<PathBuf>,
 
-    /// Override the zpr-dev-context checkout
+    /// Override the zl-zpr-dev-context checkout
     #[arg(long, global = true, value_name = "PATH")]
     context: Option<PathBuf>,
 
@@ -136,7 +136,7 @@ enum AgentName {
 pub struct Ctx {
     /// Directory holding the repository checkouts.
     pub workspace: PathBuf,
-    /// The `zpr-dev-context` checkout providing the shared context.
+    /// The `zl-zpr-dev-context` checkout providing the shared context.
     pub context: PathBuf,
     /// When set, no mutation of any kind is performed (spec §5.1).
     pub dry_run: bool,

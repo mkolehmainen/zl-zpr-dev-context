@@ -15,7 +15,7 @@ The design comes from the ZPR RFCs, principally internal RFC-1.4
 (*Zero-Trust Packet Routing*), published RFC-12 (*Overview*), internal RFC-7
 (*Topology, Address Assignment and Forwarding*), internal RFC-9 (*Threat
 Resistance*), and internal RFC-10.2 (*ZPR as Software-Defined Networking*).
-RFCs 4, 12, 15, 16, and 19 are published in `zpr-rfcs`; the rest are internal
+RFCs 4, 12, 15, 16, and 19 are published in `zl-zpr-rfcs`; the rest are internal
 to Applied Invention and cited here by number.
 
 Implementation details are read from the code in the workspace. Where design
@@ -275,14 +275,14 @@ live graph and selects routes.
 
 | Concept | Binary | Repository |
 |---|---|---|
-| Node | `ph node` | `zpr-core/adapter/ph` |
-| Adapter | `ph adapter` | `zpr-core/adapter/ph` |
-| Visa service | `vs` | `zpr-visaservice/vs` |
-| Policy evaluation | `libeval` (library) | `zpr-visaservice/libeval` |
-| Policy compiler | `zplc`, `zpdump` | `zpr-compiler` |
-| Admin client / dashboard | `vs-admin`, `zpr-dashboard` | `zpr-visaservice` |
-| Policy testing without a network | `zpt` | `zpr-visaservice/zpt` |
-| Shared types and wire formats | `zpr` crate | `zpr-common`, with `zpr-policy` and `zpr-vsapi` as submodules |
+| Node | `ph node` | `zl-zpr-core/adapter/ph` |
+| Adapter | `ph adapter` | `zl-zpr-core/adapter/ph` |
+| Visa service | `vs` | `zl-zpr-visaservice/vs` |
+| Policy evaluation | `libeval` (library) | `zl-zpr-visaservice/libeval` |
+| Policy compiler | `zplc`, `zpdump` | `zl-zpr-compiler` |
+| Admin client / dashboard | `vs-admin`, `zpr-dashboard` | `zl-zpr-visaservice` |
+| Policy testing without a network | `zpt` | `zl-zpr-visaservice/zpt` |
+| Shared types and wire formats | `zpr` crate | `zl-zpr-common`, with `zl-zpr-policy` and `zl-zpr-vsapi` as submodules |
 
 **The node and the adapter are the same binary.** `ph` — the packet handler —
 runs as either depending on its subcommand. Both use a TUN interface for the IP
@@ -290,15 +290,15 @@ side.
 
 A minimal working ZPRnet is: one node, one visa service (with its own adapter),
 a Valkey/Redis for visa service state, a compiled policy, and at least one more
-adapter for something to talk to. `zpr-core/README.md` walks through building
-one, key by key; `zpr-demo` packages containerized, multi-node, and IoT demos.
+adapter for something to talk to. `zl-zpr-core/README.md` walks through building
+one, key by key; `zl-zpr-demo` packages containerized, multi-node, and IoT demos.
 See [BUILD.md](BUILD.md) and [REPOSITORIES.md](REPOSITORIES.md).
 
 ---
 
 ## Implementation status
 
-`zpr-core` is a **pre-release reference implementation**; its README says the
+`zl-zpr-core` is a **pre-release reference implementation**; its README says the
 full suite of end-to-end security features is not yet implemented. Read the
 RFCs as design intent, not as a description of current behavior.
 
@@ -344,5 +344,5 @@ properties specifically, including anti-replay and k-of-n administration.
 | [REPOSITORIES.md](REPOSITORIES.md) | Which repository implements what. |
 | [BUILD.md](BUILD.md) | Building and testing everything. |
 
-`zpr-core/packet_walk.md` follows a packet through the whole system and is the
+`zl-zpr-core/packet_walk.md` follows a packet through the whole system and is the
 best next read for anyone working on the data path.

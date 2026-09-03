@@ -53,7 +53,7 @@ design decision made here; each can be added without restructuring.
 
 - Policy B: generated `AGENTS.md` files are **not** committed (§7, §14.1).
 - The context repository is checked out under its own name,
-  `zpr-dev-context` (§14.2).
+  `zl-zpr-dev-context` (§14.2).
 - `update` is conservative: context only by default, source repositories
   only with `--all` (§14.3).
 - No repository groups (§14.4), no agent launching (§14.5).
@@ -73,7 +73,7 @@ design decision made here; each can be added without restructuring.
 3. **No ignore-file management.** Generated files are left untracked and
    visible.
 4. **Checkout directory name equals the repository name** for source
-   repositories, matching the treatment of `zpr-dev-context`.
+   repositories, matching the treatment of `zl-zpr-dev-context`.
 5. **Generated-file drift is a warning, not an error, in `validate`.** A
    hand-edited generated file and a merely stale one are indistinguishable on
    disk; neither should fail validation outright.
@@ -95,14 +95,14 @@ Resolved in order, first match wins:
 
 1. `--workspace <path>`
 2. `$ZPR_WORKSPACE`
-3. `~/src/zpr`
+3. `~/src/zl_zpr`
 
 ### 2.2 Context checkout
 
 Resolved in order:
 
 1. `--context <path>`
-2. `<workspace>/zpr-dev-context`
+2. `<workspace>/zl-zpr-dev-context`
 
 ### 2.3 Source repository checkout
 
@@ -113,15 +113,15 @@ Resolved in order:
 ### 2.4 Resulting layout
 
 ```text
-~/src/zpr/
-├── zpr-dev-context/
+~/src/zl_zpr/
+├── zl-zpr-dev-context/
 │   ├── AGENTS.md
 │   ├── docs/
 │   ├── skills/
 │   └── workspace.yaml
-├── zpr-core/
-├── zpr-common/
-├── zpr-visaservice/
+├── zl-zpr-core/
+├── zl-zpr-common/
+├── zl-zpr-visaservice/
 └── ...
 ```
 
@@ -131,7 +131,7 @@ The workspace root is a plain directory and is not a Git repository.
 
 ## 3. Workspace Manifest
 
-`workspace.yaml` lives at the root of `zpr-dev-context`.
+`workspace.yaml` lives at the root of `zl-zpr-dev-context`.
 
 ### 3.1 Schema
 
@@ -139,11 +139,11 @@ The workspace root is a plain directory and is not a Git repository.
 version: 1                      # required, must equal 1
 
 workspace:
-  name: zpr                     # optional, informational
+  name: zl_zpr                  # optional, informational
 
 repositories:                   # required, non-empty
-  - name: zpr-core              # required, unique, non-empty
-    url: git@github.com:org-zpr/zpr-core.git   # required
+  - name: zl-zpr-core              # required, unique, non-empty
+    url: git@github.com:mkolehmainen/zl-zpr-core.git   # required
     default_branch: main        # optional, default "main"
     context:                    # optional block
       local: AGENTS.repo.md     # optional, default "AGENTS.repo.md"
@@ -167,26 +167,28 @@ grow ahead of the tool.
 
 ### 3.2 Initial repository set
 
-Public `org-zpr` repositories with the `zpr-` prefix, excluding `zpr-bas`
-(excluded by request) and `zpr-dev-context` (it is the context repository and
-is cloned separately):
+Public `mkolehmainen` repositories with the `zl-zpr-` prefix — the zipline forks
+of the upstream `org-zpr/zpr-*` set — excluding `zpr-bas` (deprecated, not
+forked) and `zl-zpr-dev-context` (it is the context repository and is cloned
+separately):
 
 ```text
-zpr-core          Core ZPR components
-zpr-common        Shared zpr crate
-zpr-visaservice   ZPR Visa Service component
-zpr-vsapi         Visa Service API
-zpr-compiler      The ZPL Compiler
-zpr-policy        ZPR Policy descriptor source
-zpr-rfcs          Zero-Trust Packet Routing RFCs
-zpr-demo          Resources to run ZPRnet demos
-zpr-utils         Non-ZPR-specific utilities used by ZPR
-zpr-dev-tools     Development tools for the ZPR project
+zl-zpr-core          Core ZPR components
+zl-zpr-common        Shared zpr crate
+zl-zpr-visaservice   ZPR Visa Service component
+zl-zpr-vsapi         Visa Service API
+zl-zpr-compiler      The ZPL Compiler
+zl-zpr-policy        ZPR Policy descriptor source
+zl-zpr-rfcs          Zero-Trust Packet Routing RFCs
+zl-zpr-demo          Resources to run ZPRnet demos
+zl-zpr-utils         Non-ZPR-specific utilities used by ZPR
+zl-zpr-dev-tools     Development tools for the ZPR project
 ```
 
-All ten default to branch `main`. The shipped `workspace.yaml` omits
-`default_branch` entirely and relies on the serde default, so each entry is two
-lines plus a descriptive comment.
+All ten are pinned to branch `zipline`. The serde default is still `main`, but
+the shipped `workspace.yaml` sets `default_branch: zipline` explicitly on every
+entry, because in the zipline forks `main` is a read-only mirror of upstream and
+falling back to the default would check out the wrong branch.
 
 ### 3.3 Local state
 
@@ -201,8 +203,8 @@ derived from the filesystem and from `git`. There is no
 ### 4.1 Inputs and outputs
 
 ```text
-Inputs:   zpr-dev-context/AGENTS.md          (required)
-          zpr-dev-context/*/                 (for reference rewriting)
+Inputs:   zl-zpr-dev-context/AGENTS.md          (required)
+          zl-zpr-dev-context/*/                 (for reference rewriting)
           <repo>/AGENTS.repo.md              (optional)
 
 Outputs:  <repo>/AGENTS.md                   (generated)
@@ -213,8 +215,8 @@ Outputs:  <repo>/AGENTS.md                   (generated)
 
 ```markdown
 <!-- Generated by zpr-dev. Do not edit manually. -->
-<!-- Source: zpr-dev-context @ 4ba137c -->
-<!-- Shared docs: /home/mathias/src/zpr/zpr-dev-context/docs -->
+<!-- Source: zl-zpr-dev-context @ 4ba137c -->
+<!-- Shared docs: /home/mathias/src/zl_zpr/zl-zpr-dev-context/docs -->
 
 # Shared ZPR Development Context
 
@@ -249,7 +251,7 @@ See [AGENTS.md](./AGENTS.md) for shared ZPR development context.
 The shared `AGENTS.md` refers to the context checkout's own contents
 relatively — `docs/VISA_SERVICE.md`, or the directories `docs/` and `skills/`
 — which is correct there but wrong once the text is embedded in
-`zpr-core/AGENTS.md`, where an agent would look in `zpr-core/docs/`.
+`zl-zpr-core/AGENTS.md`, where an agent would look in `zl-zpr-core/docs/`.
 
 `zpr-dev` therefore enumerates the **top-level directories** of the context
 checkout and replaces occurrences of each directory reference with its
@@ -257,10 +259,10 @@ absolute path:
 
 ```text
 docs/
-  -> /home/mathias/src/zpr/zpr-dev-context/docs/
+  -> /home/mathias/src/zl_zpr/zl-zpr-dev-context/docs/
 
 docs/VISA_SERVICE.md
-  -> /home/mathias/src/zpr/zpr-dev-context/docs/VISA_SERVICE.md
+  -> /home/mathias/src/zl_zpr/zl-zpr-dev-context/docs/VISA_SERVICE.md
 ```
 
 Keying on the directory rather than on each enumerated document is what makes
@@ -303,7 +305,7 @@ makes this a warning.
 One case is *not* mere staleness: a file at a generated path that does not begin
 with the generated marker was never written by `zpr-dev`. That is a repository
 maintaining its own `AGENTS.md`, and overwriting it destroys content nothing
-else holds — `zpr-visaservice` lost its coding conventions exactly this way. The
+else holds — `zl-zpr-visaservice` lost its coding conventions exactly this way. The
 marker is therefore load-bearing, not decorative: absence of it means **do not
 write this file**. See `Action::Foreign` in §4.6. The remedy is for the
 repository to rename its file to `AGENTS.repo.md`, which §4.2 includes in the
@@ -371,7 +373,7 @@ One code path, three consumers. `Unchanged` entries are never written, so
 
 ```text
 --workspace <path>    Override workspace directory
---context <path>      Override zpr-dev-context checkout
+--context <path>      Override zl-zpr-dev-context checkout
 -v, --verbose         Show additional detail
 -q, --quiet           Suppress non-error output
 --dry-run             Show intended changes without modifying anything
@@ -402,7 +404,7 @@ remains renaming that file to `AGENTS.repo.md`.
 ### 5.2 `setup`
 
 ```text
---context-url <git-url>   Default git@github.com:org-zpr/zpr-dev-context.git
+--context-url <git-url>   Default git@github.com:mkolehmainen/zl-zpr-dev-context.git
 --branch <branch>         Branch to clone for the context repository
 --no-clone                Do not clone missing source repositories
 ```
@@ -499,17 +501,17 @@ Regeneration runs afterward unless `--no-generate`.
 Human output:
 
 ```text
-WORKSPACE /home/mathias/src/zpr
+WORKSPACE /home/mathias/src/zl_zpr
 
 REPOSITORY        BRANCH       STATUS       UPSTREAM
-zpr-dev-context   main         clean        current
-zpr-core          feature-x    modified     ahead 2
-zpr-visaservice   main         clean        behind 3
+zl-zpr-dev-context   main         clean        current
+zl-zpr-core          feature-x    modified     ahead 2
+zl-zpr-visaservice   main         clean        behind 3
 
 AGENT CONTEXT
-zpr-core          current
-zpr-visaservice   stale
-zpr-utils         missing repository
+zl-zpr-core          current
+zl-zpr-visaservice   stale
+zl-zpr-utils         missing repository
 ```
 
 `STATUS` has four values, not the two the parent spec implies: `clean` and
@@ -716,8 +718,8 @@ own test binary):
    origins live **outside** the workspace so a stray `origins/` entry never
    appears in `status` or `validate` output.
 2. `git init --bare` three origin repositories — two source repositories and
-   `zpr-dev-context` — each seeded with one commit through a throwaway clone.
-3. Clone the context origin into `<workspace>/zpr-dev-context`. It is cloned
+   `zl-zpr-dev-context` — each seeded with one commit through a throwaway clone.
+3. Clone the context origin into `<workspace>/zl-zpr-dev-context`. It is cloned
    rather than `git init`'d in place so that it has an upstream, which
    `update`'s default target set needs. It contains `AGENTS.md` (referencing
    `docs/EXAMPLE.md`), `docs/EXAMPLE.md`, and a `workspace.yaml` whose
@@ -768,7 +770,7 @@ In `generate.rs`:
 Written as part of this work:
 
 ```text
-zpr-dev-context/
+zl-zpr-dev-context/
 ├── workspace.yaml          new: the ten repositories from §3.2
 ├── README.md               new: command table, install and bootstrap notes
 └── zpr-dev/
@@ -790,21 +792,21 @@ repository, so they do not depend on it.
 ## 10. Installation and Bootstrap
 
 ```bash
-cargo install --path zpr-dev-context/zpr-dev
+cargo install --path zl-zpr-dev-context/zpr-dev
 ```
 
 There is a bootstrap ordering wrinkle worth documenting in the README: the
 tool ships inside the repository it clones. A developer who clones
-`zpr-dev-context` to an arbitrary location and then runs `zpr-dev setup` will
-have a second copy cloned into `<workspace>/zpr-dev-context`.
+`zl-zpr-dev-context` to an arbitrary location and then runs `zpr-dev setup` will
+have a second copy cloned into `<workspace>/zl-zpr-dev-context`.
 
 The recommended sequence avoids this by cloning into the workspace from the
 start:
 
 ```bash
-mkdir -p ~/src/zpr
-git clone git@github.com:org-zpr/zpr-dev-context.git ~/src/zpr/zpr-dev-context
-cargo install --path ~/src/zpr/zpr-dev-context/zpr-dev
+mkdir -p ~/src/zl_zpr
+git clone git@github.com:mkolehmainen/zl-zpr-dev-context.git ~/src/zl_zpr/zl-zpr-dev-context
+cargo install --path ~/src/zl_zpr/zl-zpr-dev-context/zpr-dev
 zpr-dev setup
 ```
 

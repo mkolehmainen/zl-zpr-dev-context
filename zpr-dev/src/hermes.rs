@@ -421,7 +421,7 @@ _config_version: 38
 #   provider: openrouter
 ";
 
-    const PATH: &str = "/home/dev/src/zpr/zpr-dev-context/skills";
+    const PATH: &str = "/home/dev/src/zl_zpr/zl-zpr-dev-context/skills";
 
     /// The edited document, asserting that an edit happened.
     fn edited(text: &str) -> String {

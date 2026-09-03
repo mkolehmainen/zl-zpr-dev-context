@@ -2,54 +2,68 @@
 # side by side, and the shared context it renders into each one. See
 # zpr-dev/docs/specs/spec-001-zpr-dev.md §3.
 #
-# Every optional field has a default, so the common repository entry is three
-# lines. Unknown keys are ignored, so this file may grow ahead of the tool.
+# Unknown keys are ignored, so this file may grow ahead of the tool.
+#
+# `default_branch` is spelled out on every entry rather than left to its `main`
+# default: in the zipline forks `main` is a read-only mirror of upstream and all
+# work happens on `zipline`, so a checkout must land on `zipline`. See
+# docs/REPOSITORIES.md.
 
 version: 1
 
 workspace:
-  name: zpr
+  name: zl_zpr
 
 repositories:
   # Core ZPR components
-  - name: zpr-core
-    url: git@github.com:org-zpr/zpr-core.git
+  - name: zl-zpr-core
+    url: git@github.com:mkolehmainen/zl-zpr-core.git
+    default_branch: zipline
 
   # Shared zpr crate
-  - name: zpr-common
-    url: git@github.com:org-zpr/zpr-common.git
+  - name: zl-zpr-common
+    url: git@github.com:mkolehmainen/zl-zpr-common.git
+    default_branch: zipline
 
   # ZPR Visa Service component
-  - name: zpr-visaservice
-    url: git@github.com:org-zpr/zpr-visaservice.git
+  - name: zl-zpr-visaservice
+    url: git@github.com:mkolehmainen/zl-zpr-visaservice.git
+    default_branch: zipline
 
   # Visa Service API
-  - name: zpr-vsapi
-    url: git@github.com:org-zpr/zpr-vsapi.git
+  - name: zl-zpr-vsapi
+    url: git@github.com:mkolehmainen/zl-zpr-vsapi.git
+    default_branch: zipline
 
   # The ZPL Compiler
-  - name: zpr-compiler
-    url: git@github.com:org-zpr/zpr-compiler.git
+  - name: zl-zpr-compiler
+    url: git@github.com:mkolehmainen/zl-zpr-compiler.git
+    default_branch: zipline
 
   # ZPR Policy descriptor source
-  - name: zpr-policy
-    url: git@github.com:org-zpr/zpr-policy.git
+  - name: zl-zpr-policy
+    url: git@github.com:mkolehmainen/zl-zpr-policy.git
+    default_branch: zipline
 
   # Zero-Trust Packet Routing RFCs
-  - name: zpr-rfcs
-    url: git@github.com:org-zpr/zpr-rfcs.git
+  - name: zl-zpr-rfcs
+    url: git@github.com:mkolehmainen/zl-zpr-rfcs.git
+    default_branch: zipline
 
   # Resources to run ZPRnet demos
-  - name: zpr-demo
-    url: git@github.com:org-zpr/zpr-demo.git
+  - name: zl-zpr-demo
+    url: git@github.com:mkolehmainen/zl-zpr-demo.git
+    default_branch: zipline
 
   # Non-ZPR-specific utilities used by ZPR
-  - name: zpr-utils
-    url: git@github.com:org-zpr/zpr-utils.git
+  - name: zl-zpr-utils
+    url: git@github.com:mkolehmainen/zl-zpr-utils.git
+    default_branch: zipline
 
   # Development tools for the ZPR project
-  - name: zpr-dev-tools
-    url: git@github.com:org-zpr/zpr-dev-tools.git
+  - name: zl-zpr-dev-tools
+    url: git@github.com:mkolehmainen/zl-zpr-dev-tools.git
+    default_branch: zipline
 
 documentation:
   root: docs

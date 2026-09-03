@@ -2,7 +2,7 @@
 
 A small command-line tool that creates and maintains the standard ZPR
 development workspace: it clones the repositories listed in
-`zpr-dev-context/workspace.yaml` side by side, and renders the shared
+`zl-zpr-dev-context/workspace.yaml` side by side, and renders the shared
 `AGENTS.md` — plus each repository's optional `AGENTS.repo.md` — into a
 generated `<repo>/AGENTS.md` and `<repo>/CLAUDE.md` that any coding agent
 picks up automatically.
@@ -18,10 +18,10 @@ Install and bootstrap ordering: [`../README.md`](../README.md).
 ## Install
 
 ```bash
-cargo install --path ~/src/zpr/zpr-dev-context/zpr-dev
+cargo install --path ~/src/zl_zpr/zl-zpr-dev-context/zpr-dev
 ```
 
-Clone `zpr-dev-context` *into* the workspace first — the tool ships inside the
+Clone `zl-zpr-dev-context` *into* the workspace first — the tool ships inside the
 repository it clones. See the root README for the full sequence.
 
 ---
@@ -29,13 +29,13 @@ repository it clones. See the root README for the full sequence.
 ## Workspace layout
 
 ```text
-~/src/zpr/                    workspace root — a plain directory, not a repository
-├── zpr-dev-context/          the context checkout
+~/src/zl_zpr/                    workspace root — a plain directory, not a repository
+├── zl-zpr-dev-context/          the context checkout
 │   ├── AGENTS.md             shared agent instructions
 │   ├── docs/                 shared technical documentation
 │   ├── skills/               shared agent skills
 │   └── workspace.yaml        the repository manifest
-├── zpr-core/
+├── zl-zpr-core/
 │   ├── AGENTS.repo.md        optional, hand-maintained, committed
 │   ├── AGENTS.md             generated, untracked
 │   └── CLAUDE.md             generated, untracked
@@ -46,8 +46,8 @@ Paths resolve in this order, first match wins:
 
 | Setting | Order |
 |---|---|
-| workspace | `--workspace <path>` → `$ZPR_WORKSPACE` → `~/src/zpr` |
-| context | `--context <path>` → `<workspace>/zpr-dev-context` |
+| workspace | `--workspace <path>` → `$ZPR_WORKSPACE` → `~/src/zl_zpr` |
+| context | `--context <path>` → `<workspace>/zl-zpr-dev-context` |
 
 ---
 
@@ -55,7 +55,7 @@ Paths resolve in this order, first match wins:
 
 ```text
 --workspace <path>    Override the workspace directory
---context <path>      Override the zpr-dev-context checkout
+--context <path>      Override the zl-zpr-dev-context checkout
 -v, --verbose         Show additional detail
 -q, --quiet           Suppress progress output (results are still printed)
 --dry-run             Show intended changes without modifying anything
@@ -91,11 +91,11 @@ Create or repair the workspace. Safe to re-run.
 
 ```bash
 zpr-dev setup
-zpr-dev setup --workspace ~/work/zpr --context-url git@github.com:org-zpr/zpr-dev-context.git
+zpr-dev setup --workspace ~/work/zl_zpr --context-url git@github.com:mkolehmainen/zl-zpr-dev-context.git
 ```
 
 ```text
---context-url <git-url>   Default git@github.com:org-zpr/zpr-dev-context.git
+--context-url <git-url>   Default git@github.com:mkolehmainen/zl-zpr-dev-context.git
 --branch <branch>         Branch to clone for the context repository
 --no-clone                Do not clone missing source repositories
 ```
@@ -114,7 +114,7 @@ Fetch and fast-forward, conservatively.
 ```bash
 zpr-dev update              # context repository only
 zpr-dev update --all        # every repository in the manifest
-zpr-dev update --repo zpr-core
+zpr-dev update --repo zl-zpr-core
 ```
 
 ```text
@@ -139,9 +139,9 @@ A repository is skipped, with its reason reported, when it is:
 
 ```text
 $ zpr-dev update --all
-zpr-dev-context: 4ba137c -> 650ad18
-zpr-core: current
-zpr-visaservice: skipped, local modifications
+zl-zpr-dev-context: 4ba137c -> 650ad18
+zl-zpr-core: current
+zl-zpr-visaservice: skipped, local modifications
 wrote generated context: 0 created, 2 updated, 18 unchanged
 ```
 
@@ -154,23 +154,23 @@ reflects the last fetch.
 
 ```bash
 zpr-dev status
-zpr-dev status --repo zpr-core
+zpr-dev status --repo zl-zpr-core
 zpr-dev status --porcelain
 ```
 
 ```text
-WORKSPACE /home/alice/src/zpr
+WORKSPACE /home/alice/src/zl_zpr
 
 REPOSITORY        BRANCH       STATUS       UPSTREAM
-zpr-dev-context   main         clean        current
-zpr-core          feature-x    modified     ahead 2
-zpr-visaservice   main         clean        behind 3
-zpr-utils         -            missing      no upstream
+zl-zpr-dev-context   main         clean        current
+zl-zpr-core          feature-x    modified     ahead 2
+zl-zpr-visaservice   main         clean        behind 3
+zl-zpr-utils         -            missing      no upstream
 
 AGENT CONTEXT
-zpr-core          current
-zpr-visaservice   stale
-zpr-utils         missing repository
+zl-zpr-core          current
+zl-zpr-visaservice   stale
+zl-zpr-utils         missing repository
 ```
 
 `STATUS` is `clean`, `modified`, `missing`, or `not a git repository`.
@@ -192,7 +192,7 @@ pull, no network access. Run it after editing `AGENTS.md`, a shared document,
 or a repository's `AGENTS.repo.md`.
 
 ```bash
-cd ~/src/zpr/zpr-dev-context
+cd ~/src/zl_zpr/zl-zpr-dev-context
 vim AGENTS.md
 zpr-dev sync
 ```
@@ -236,8 +236,8 @@ a merely stale one are indistinguishable on disk.
 
 ```markdown
 <!-- Generated by zpr-dev. Do not edit manually. -->
-<!-- Source: zpr-dev-context @ 4ba137c -->
-<!-- Shared docs: /home/alice/src/zpr/zpr-dev-context/docs -->
+<!-- Source: zl-zpr-dev-context @ 4ba137c -->
+<!-- Shared docs: /home/alice/src/zl_zpr/zl-zpr-dev-context/docs -->
 
 # Shared ZPR Development Context
 
@@ -253,8 +253,8 @@ from one source.
 
 Documentation references are rewritten by enumerating the real files under
 `<context>/docs/` and replacing each manifest-relative path with its absolute
-path — so `docs/VISA_SERVICE.md` inside `zpr-core/AGENTS.md` points at the
-context checkout, not at a `zpr-core/docs/` that does not exist. A reference to
+path — so `docs/VISA_SERVICE.md` inside `zl-zpr-core/AGENTS.md` points at the
+context checkout, not at a `zl-zpr-core/docs/` that does not exist. A reference to
 a document that does not exist is left untouched, and `validate` reports it.
 
 Both generated files are deliberately **untracked and not committed**;
@@ -312,20 +312,20 @@ blocked by a design decision; each can be added without restructuring.
 
 | Deferred | Why, and what it would take |
 |---|---|
-| `agent configure hermes` | The one with real value left on the table. Configuration 7 of the parent spec — pointing Hermes at `zpr-dev-context/skills` via `skills.external_dirs` — is entirely unbuilt; `agent.hermes.shared_skills` is parsed and checked for existence, nothing more. Deferred because Hermes is not installed on the development machine and its configuration path and schema are unknown. Needs a Hermes install to test a non-destructive YAML merge against. |
+| `agent configure hermes` | The one with real value left on the table. Configuration 7 of the parent spec — pointing Hermes at `zl-zpr-dev-context/skills` via `skills.external_dirs` — is entirely unbuilt; `agent.hermes.shared_skills` is parsed and checked for existence, nothing more. Deferred because Hermes is not installed on the development machine and its configuration path and schema are unknown. Needs a Hermes install to test a non-destructive YAML merge against. |
 | `agent configure codex` / `claude` | Genuinely a no-op today: the generated `AGENTS.md` and `CLAUDE.md` already give both agents their context with no global configuration. Add only if an agent gains a discovery mechanism these files do not satisfy. |
 | `doctor` | Diagnostic sugar — git version, SSH reachability, agent installations. `validate` covers the failures that matter today. |
 | `regenerate` | Would be an alias for `sync`, which already writes only on difference and is idempotent. |
 | `repo list` / `repo path <name>` / `docs [topic]` | Convenience lookups so scripts can avoid hard-coded paths. `status` already prints the repository set. |
 | `update --rebase` | The parent spec requires rebase to be explicit; nothing needs it yet. |
 | `status --short` | `--porcelain` covers the scripting case. |
-| Workspace discovery by walking up from the current directory | `--workspace`, `$ZPR_WORKSPACE`, and the `~/src/zpr` default cover the real cases. |
+| Workspace discovery by walking up from the current directory | `--workspace`, `$ZPR_WORKSPACE`, and the `~/src/zl_zpr` default cover the real cases. |
 | Repository groups (`setup --group core`) | Deferred by the parent spec (§14.4) until the repository set is large enough to hurt. |
-| Launching agents (`zpr-dev hermes zpr-core`) | Deferred by the parent spec (§14.5). |
+| Launching agents (`zpr-dev hermes zl-zpr-core`) | Deferred by the parent spec (§14.5). |
 | `.gitignore` / `.git/info/exclude` management | **Decided against**, not merely deferred. Generated files stay visible as untracked entries. |
 
 Separately, before tagging v0.1, three checks need a real workspace of the ten
-`org-zpr` repositories over SSH — their fixture equivalents pass, but the real
+`mkolehmainen/zl-zpr-*` repositories over SSH — their fixture equivalents pass, but the real
 thing has not been run:
 
 - `git status` in each source repository shows only the two untracked

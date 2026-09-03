@@ -5,14 +5,14 @@
 //! from one of them. No network access and no credentials are ever required.
 //!
 //! ```text
-//! <tmp>/origins/zpr-dev-context.git    bare, seeded with the shared context
-//! <tmp>/origins/zpr-core.git           bare, seeded with a README
-//! <tmp>/origins/zpr-common.git         bare, seeded with a README
-//! <tmp>/workspace/zpr-dev-context/     cloned checkout (has an upstream)
-//! <tmp>/workspace/<name>/              only after `clone_repos` or `setup`
-//! <tmp>/home/                          $HOME for the binary, so the Hermes
-//!                                      cases can never reach the developer's
-//!                                      own ~/.hermes/config.yaml
+//! <tmp>/origins/zl-zpr-dev-context.git    bare, seeded with the shared context
+//! <tmp>/origins/zl-zpr-core.git           bare, seeded with a README
+//! <tmp>/origins/zl-zpr-common.git         bare, seeded with a README
+//! <tmp>/workspace/zl-zpr-dev-context/     cloned checkout (has an upstream)
+//! <tmp>/workspace/<name>/                 only after `clone_repos` or `setup`
+//! <tmp>/home/                             $HOME for the binary, so the Hermes
+//!                                         cases can never reach the developer's
+//!                                         own ~/.hermes/config.yaml
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -23,10 +23,10 @@ use std::time::SystemTime;
 use tempfile::TempDir;
 
 /// Directory name of the context checkout inside the workspace (spec §3.3).
-pub const CONTEXT: &str = "zpr-dev-context";
+pub const CONTEXT: &str = "zl-zpr-dev-context";
 
 /// The source repositories every fixture provides.
-pub const REPOS: [&str; 2] = ["zpr-core", "zpr-common"];
+pub const REPOS: [&str; 2] = ["zl-zpr-core", "zl-zpr-common"];
 
 /// The fixture's shared context body. The documentation reference is what
 /// Step 5's rewriting turns into an absolute path.
@@ -94,7 +94,7 @@ pub struct Fixture {
     pub root: PathBuf,
     /// Passed to the binary as `--workspace`.
     pub workspace: PathBuf,
-    /// `<workspace>/zpr-dev-context`, where the binary resolves it by default.
+    /// `<workspace>/zl-zpr-dev-context`, where the binary resolves it by default.
     pub context: PathBuf,
     /// Passed to the binary as `$HOME` (spec-002 §7.2), so a command that reads
     /// another program's configuration reads a fixture instead of the

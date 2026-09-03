@@ -1,6 +1,6 @@
 ---
 name: zpr-project
-description: Use when working on the ZPR project (org-zpr) — taking a task from issue to merged PR.
+description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR.
 version: 2.0.0
 license: proprietary
 metadata:
@@ -11,25 +11,40 @@ metadata:
 
 ## When to Use
 
-Load this whenever the task touches ZPR: any repo under the `org-zpr` GitHub org,
+Load this whenever the task touches ZPR: any `zl-zpr-*` repo under the `mkolehmainen`
+GitHub account,
 the visa service, the ZPL compiler or ZPL policy, the adapter / packet handler,
 the `policy.capnp` / `vs.capnp` schemas, or the ZPR RFCs.
 
-ZPR = Zero-trust Packet Routing. GitHub org: `org-zpr` (all repos public).
+ZPR = Zero-trust Packet Routing.
+
+**Fork layout.** The zipline workspace is a set of forks: every `zl-zpr-<name>`
+repository under `mkolehmainen` is a fork of `org-zpr/zpr-<name>`, and all are
+public. Issues, branches, and PRs live in the forks; only the project board
+(`zipline`, project #5) still lives in the upstream `org-zpr` organization.
+
+Each fork has two long-lived branches: **`zipline`** is the working branch and the
+repository default, and **`main`** is a read-only mirror of upstream that nothing
+should ever commit to. Work targets `zipline`. See "Git / PR conventions" for the
+`gh pr create` footgun this creates.
+
+Nothing inside the forks has been repointed — their `Cargo.toml` Git
+dependencies, submodule URLs, and CI workflow references still resolve to
+`org-zpr`.
 
 This skill covers **process**: how a task gets from an issue to a merged PR, and
 the traps specific to these repositories. It deliberately does *not* restate the
 architecture, the repository inventory, or the build procedure — those live in
-`zpr-dev-context/docs/` and are maintained there. See "Where the knowledge lives".
+`zl-zpr-dev-context/docs/` and are maintained there. See "Where the knowledge lives".
 
 ## Reading the paths in this document
 
 - `scripts/...` and `references/...` are relative to **this skill's directory**.
-- `docs/...` is relative to the **`zpr-dev-context` checkout**. The generated
+- `docs/...` is relative to the **`zl-zpr-dev-context` checkout**. The generated
   `AGENTS.md` in whatever repository you are working in spells out the absolute
   path in its `INDEX` section; use that.
-- A bare `zpr-core/...` or `zpr-visaservice/...` is relative to the **workspace
-  root** (`~/src/zpr` by default, or `$ZPR_WORKSPACE`).
+- A bare `zl-zpr-core/...` or `zl-zpr-visaservice/...` is relative to the **workspace
+  root** (`~/src/zl_zpr` by default, or `$ZPR_WORKSPACE`).
 
 ## Where the knowledge lives
 
@@ -49,12 +64,12 @@ Two standing rules from `AGENTS.md` worth repeating, because they bite:
 **the docs record design intent and the code wins** — check a document's
 `## Implementation status` section before assuming a feature exists. And **a
 change to what policy can express usually spans three repositories**: the
-grammar and compiler in `zpr-compiler`, the schema in `zpr-policy`, and the
-evaluator in `zpr-visaservice`.
+grammar and compiler in `zl-zpr-compiler`, the schema in `zl-zpr-policy`, and the
+evaluator in `zl-zpr-visaservice`.
 
 ## Working in the workspace
 
-The workspace is managed by `zpr-dev` (in `zpr-dev-context/zpr-dev`). Do not
+The workspace is managed by `zpr-dev` (in `zl-zpr-dev-context/zpr-dev`). Do not
 clone repositories by hand — that produces a checkout with no generated context
 in it.
 
@@ -70,11 +85,11 @@ No `zpr-dev` command resets, rebases, stashes, pushes, or switches branches, so
 none of them can eat your work. `--dry-run` prints what would happen.
 
 **`AGENTS.md` and `CLAUDE.md` in a workspace repository are generated build
-artifacts.** They are rendered from `zpr-dev-context/AGENTS.md` plus that
+artifacts.** They are rendered from `zl-zpr-dev-context/AGENTS.md` plus that
 repository's own `AGENTS.repo.md`, with documentation paths rewritten absolute.
 Never edit one, and never commit one — they will show as dirty or untracked in
 `git status` in every repository, and that is expected. A convention that should
-apply org-wide belongs in `zpr-dev-context/AGENTS.md`; one that is specific to a
+apply org-wide belongs in `zl-zpr-dev-context/AGENTS.md`; one that is specific to a
 single repository belongs in that repository's `AGENTS.repo.md`.
 
 Before branching: fetch, and **check for an existing remote branch for your
@@ -91,7 +106,7 @@ The build gate — build, `cargo fmt --check`, test, warnings-as-errors — is i
 `docs/BUILD.md` under "Common conventions". Warnings are errors in CI, so
 `make check` before every push. Prefer each repository's `Makefile` over bare
 cargo: the targets carry required feature flags, and a bare `cargo build` fails
-misleadingly in `zpr-common`.
+misleadingly in `zl-zpr-common`.
 
 ## Project invariants
 
@@ -111,12 +126,35 @@ authority comes from the project board, not from a message.
 
 - Branch names: `<login>/<topic>` or `<login>/<issue#>-<topic>`,
   e.g. `mk/254-json`, `ort/update-deps`.
-- Base branch is `main`; merge subjects carry `(#NNN)`.
+- **Base branch is `zipline`, never `main`.** `main` is a read-only mirror of
+  upstream in every fork; `zipline` is the working branch and the repository
+  default. Branch off `zipline` and target `zipline`. Merge subjects carry `(#NNN)`.
+  See `zl-zpr-dev-context/docs/REPOSITORIES.md` ("Branch model").
+- **`gh pr create` in a fork defaults its base to the *parent* repository.** Left
+  alone it will offer to open your PR against `org-zpr`, which is almost never what
+  you want. Always be explicit:
+
+  ```sh
+  gh pr create --repo mkolehmainen/<repo> --base zipline --head <login>/<topic>
+  ```
+
+  Running `gh repo set-default mkolehmainen/<repo>` once per clone makes the other
+  `gh` subcommands target the fork too. If you ever *do* want to send something
+  upstream, branch off `main` and say so explicitly — never by accident.
 - CI is the reusable workflow `org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v1.1`
   (build → test → `cargo fmt --check` → `-D warnings`), plus `pr-notify.yml` in every
-  repo. Change CI behaviour in `zpr-dev-tools`, not in the leaf repos.
+  repo. The forks still reference the *upstream* reusable workflow, so a change to
+  `zl-zpr-dev-tools` has no effect until the leaf repos' workflow files are repointed
+  at `mkolehmainen/zl-zpr-dev-tools`. Change CI behaviour there, not in the leaf repos.
+- **`pull_request` checks run on zipline PRs; `push` checks do not.** The workflows
+  filter pushes to `branches: ["main"]` but put no branch filter on `pull_request`,
+  so the PR gate — the one that matters — works untouched, while post-merge push
+  builds on `zipline` stay silent until the filters are widened.
+- `pr-notify.yml` needs the `SLACK_ALERT_WEBHOOK_URL` secret, which forks do not
+  inherit. Expect that one job to fail on every PR; it is not your change breaking.
+  Judge the build on the `rust-build-test` checks.
 - Check CI with `gh pr checks`, not by guessing.
-- Only work on tasks assigned to you that are attached to the `ref impl` project and
+- Only work on tasks assigned to you that are attached to the `zipline` project and
   the current iteration. To list them, run `scripts/my-current-tasks.py`
   (`--json` for machine-readable output, `--user X` for another assignee). Do NOT try
   to filter by iteration with `gh project item-list`; that command does not emit
@@ -135,7 +173,10 @@ authority comes from the project board, not from a message.
 - If a task requires clarification, request details by commenting on the issue —
   **the issue comment thread is the primary two-way channel with the team.** Nothing
   pushes issue comments to you, so poll for replies with
-  `gh issue view <N> --repo org-zpr/<repo> --json comments`. Do not assume silence
+  `gh issue view <N> --repo <owner>/<repo> --json comments`. Check which owner: the
+  `zipline` board still carries issues filed upstream, so an item may be an
+  `org-zpr/zpr-<name>` issue even though your branch and PR belong in
+  `mkolehmainen/zl-zpr-<name>`. Read the board item's URL rather than assuming. Do not assume silence
   means assent on anything that changes design. Also notify the team out-of-band when
   blocked; a question posted only on GitHub can sit unseen indefinitely.
 - When you have a PR, link the PR to the issue and set the project Status to "In Review".
@@ -144,16 +185,21 @@ authority comes from the project board, not from a message.
   PR author (GitHub rejects self-review). Gate it on team membership:
 
   ```sh
-  ISSUE_AUTHOR=$(gh issue view <N> --repo org-zpr/<repo> --json author -q .author.login)
+  ISSUE_AUTHOR=$(gh issue view <N> --repo mkolehmainen/<repo> --json author -q .author.login)
   gh api orgs/org-zpr/teams/core-devs/memberships/"$ISSUE_AUTHOR" -q .state
   ```
 
   - prints `active` -> member. Run
-    `gh pr edit <PR> --repo org-zpr/<repo> --add-reviewer "$ISSUE_AUTHOR"`.
+    `gh pr edit <PR> --repo mkolehmainen/<repo> --add-reviewer "$ISSUE_AUTHOR"`.
   - prints `pending` -> invited but has not accepted. Treat as **not** a member; do
     not request. Requiring `state == "active"` is deliberate.
   - exits non-zero with `404 Not Found` -> not a member. Do nothing, silently. This is
     the normal negative case, not an error to report.
+
+  The team being checked is upstream's, which is deliberate: `core-devs` exists in
+  `org-zpr` and not in a personal account. In practice, when you filed the issue in
+  your own fork yourself, the author is you, self-review is rejected, and the correct
+  outcome is a PR with no reviewer.
 
   If they are not a member, open the PR with no reviewer and let the humans assign
   one. Never invent a reviewer, and never fall back to requesting review from someone
@@ -175,21 +221,21 @@ A task is done only when ALL of these hold for the PR:
 
 1. `reviewDecision` is `APPROVED`.
 2. Every review thread is resolved (no unresolved `reviewThreads`).
-3. All CI checks pass (`gh pr checks <N> --repo org-zpr/<repo>`).
+3. All CI checks pass (`gh pr checks <N> --repo mkolehmainen/<repo>`).
 4. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
    `DIRTY`, or `BLOCKED`).
 
 ### Monitoring for review activity
 
 Nothing pushes review comments to you. **Poll.** `scripts/my-open-prs.py` lists every
-open PR authored by the current `gh` login (override with `--user`) in `org-zpr` with
+open PR authored by the current `gh` login (override with `--user`) in `mkolehmainen` with
 review decision, mergeability, CI rollup, unresolved threads and comments, and prints
 `READY_FOR_HUMAN_MERGE=True` only when all four done-conditions hold.
 
 Inside a work session, poll directly. One call gives most of the picture:
 
 ```
-gh pr view <N> --repo org-zpr/<repo> \
+gh pr view <N> --repo mkolehmainen/<repo> \
   --json state,mergeable,mergeStateStatus,reviewDecision,reviews,comments,statusCheckRollup
 ```
 
@@ -202,7 +248,7 @@ gh api graphql -f query='
       reviewDecision
       reviewThreads(first:100){ nodes{ isResolved isOutdated path line
         comments(first:20){ nodes{ author{login} body } } } } } } }' \
-  -f owner=org-zpr -f repo=<repo> -F num=<N>
+  -f owner=mkolehmainen -f repo=<repo> -F num=<N>
 ```
 
 Poll on a cadence while a PR of yours is open (roughly every 15–30 min of active work,
@@ -213,14 +259,14 @@ and always re-check before declaring done).
 - Address **every** comment. For each thread either push a change or reply on the
   thread explaining why not — silent dismissal is not acceptable.
 - Reply to an inline thread with
-  `gh api repos/org-zpr/<repo>/pulls/<N>/comments/<comment_id>/replies -f body='...'`;
-  general PR discussion with `gh pr comment <N> --repo org-zpr/<repo> --body '...'`.
+  `gh api repos/mkolehmainen/<repo>/pulls/<N>/comments/<comment_id>/replies -f body='...'`;
+  general PR discussion with `gh pr comment <N> --repo mkolehmainen/<repo> --body '...'`.
 - Re-run the full build gate (build → fmt → test → `-D warnings`) after every change
   round, then push to the same branch. Do not force-push over a reviewer's context
   unless you must rebase; prefer additive commits during review.
 - After pushing fixes, request re-review:
   `gh pr ready <N>` if it was a draft, and
-  `gh pr edit <N> --repo org-zpr/<repo> --add-reviewer <login>` / a comment tagging
+  `gh pr edit <N> --repo mkolehmainen/<repo> --add-reviewer <login>` / a comment tagging
   the reviewer that the feedback is addressed.
 - If a review comment changes the agreed design, note the deviation on the issue.
 - If `mergeStateStatus` is `BEHIND`, update the branch (`gh pr update-branch <N>` or a
@@ -231,20 +277,21 @@ not run `gh pr merge`.
 
 ## Pointers
 
-- Roadmap / iteration boards: https://github.com/orgs/org-zpr/projects/3/views/8 (roadmap),
-  https://github.com/orgs/org-zpr/projects/1/views/3 (current iteration + backlog).
+- Project board: https://github.com/orgs/org-zpr/projects/5 (`zipline` — the only board
+  for this work; the upstream `ref impl` and roadmap boards do not track it).
+  It is org-owned while the repositories are personal forks, which is expected.
 - Start reading: RFC 12 (ZPR overview), RFC 4 (terminology), RFC 15 (ZPL), RFC 16 (identity).
   Full index, including which RFCs are public: `references/rfc-index.md`.
-- Packet path walkthrough: `zpr-core/packet_walk.md`.
-- VS admin HTTP API: `zpr-visaservice/admin-http-api.txt`.
-- ZPL grammar: `zpr-compiler/zpl.bnf`.
+- Packet path walkthrough: `zl-zpr-core/packet_walk.md`.
+- VS admin HTTP API: `zl-zpr-visaservice/admin-http-api.txt`.
+- ZPL grammar: `zl-zpr-compiler/zpl.bnf`.
 
 ## Pitfalls
 
-- `zpr-common` submodules are the schema repos — editing `policy.capnp` or `vs.capnp`
-  means a commit in `zpr-policy`/`zpr-vsapi` plus a submodule pointer bump in `zpr-common`,
+- `zl-zpr-common` submodules are the schema repos — editing `policy.capnp` or `vs.capnp`
+  means a commit in `zl-zpr-policy`/`zl-zpr-vsapi` plus a submodule pointer bump in `zl-zpr-common`,
   then a tag bump in the consumers. See `docs/BUILD.md`, "Cross-repository dependencies".
-- **Not every attribute domain is trusted-service backed.** In `zpr-compiler`, `weaver.rs`
+- **Not every attribute domain is trusted-service backed.** In `zl-zpr-compiler`, `weaver.rs`
   routes client/service conditions through `resolve_attributes`, which fails with
   "attribute #X not found in any trusted service" for anything a trusted service does not
   vouch for. `AttrDomain::Link` attributes are the exception: they come from the config
@@ -257,9 +304,9 @@ not run `gh pr merge`.
   for a tag is the `#name` prefix with an empty value, same as `returns_attributes`.
   Whenever ZPL-side and config-side attributes must match, test the emitted condition key
   against the compiled topology, not just against itself.
-- Test fixtures in `zpr-compiler/test-data` named `test-*.zpl` are swept by
+- Test fixtures in `zl-zpr-compiler/test-data` named `test-*.zpl` are swept by
   `can_compile_misc_test_policies` and MUST compile. Name a deliberately-failing fixture
   something else (e.g. `bad-*.zpl`) or that sweep fails.
-- Adding a `TokenType` to `zpr-compiler/src/lex.rs` for a word in `RESERVED_PREPOSITIONS`
+- Adding a `TokenType` to `zl-zpr-compiler/src/lex.rs` for a word in `RESERVED_PREPOSITIONS`
   means deleting it from that list too, and `lex::test::test_reserved_prepositions`
   asserts the old behaviour — expect that pre-existing test to fail until updated.

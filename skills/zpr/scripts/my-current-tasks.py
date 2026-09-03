@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List org-zpr "ref impl" (project #1) items assigned to a user in the CURRENT iteration.
+"""List org-zpr "zipline" (project #5) items assigned to a user in the CURRENT iteration.
 
 Current iteration = the iteration in the Iteration field configuration whose
 [startDate, startDate+duration) window contains today.
@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghretry import gh_login, run_gh  # noqa: E402
 
 ORG = "org-zpr"
-PROJECT_NUMBER = 1
+PROJECT_NUMBER = 5
 
 QUERY = """
 query($org:String!, $num:Int!, $cursor:String) {

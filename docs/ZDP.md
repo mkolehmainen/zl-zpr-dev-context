@@ -16,8 +16,8 @@ a message type, or changing anything about how packets are secured on the wire.
 |---|---|
 | **Internal RFC 17** — "ZDP Protocol Definition" | The current protocol definition: procedures, packet formats, message types. |
 | **Internal RFC 6.4** — "ZPR Data Protocols" | The predecessor. Still the best source for **substrate** requirements and encapsulations (§3), the addressing model (§4), and the rationale behind field sizes. Its packet formats are superseded. |
-| **`zpr-core/adapter/ph/src/zdp.rs`** | The wire format **as actually implemented** — header structs and the message-type enum. |
-| **`zpr-core/packet_walk.md`** | The intended life of a packet, written as an implementation guide. |
+| **`zl-zpr-core/adapter/ph/src/zdp.rs`** | The wire format **as actually implemented** — header structs and the message-type enum. |
+| **`zl-zpr-core/packet_walk.md`** | The intended life of a packet, written as an implementation guide. |
 
 The ZDP RFCs live only as `.docx`/`.pdf`; unlike internal RFCs 4, 12, 15, 16,
 and 19 there is no Markdown source. Extract text with `pdftotext -layout`.
@@ -37,7 +37,7 @@ For policy see [ZPL.md](ZPL.md); for terms see [TERMINOLOGY.md](TERMINOLOGY.md).
 The same entity has three names across three eras, and all three are in the
 tree right now:
 
-| Internal RFC 6.4 | Internal RFC 17 | `zpr-core` code |
+| Internal RFC 6.4 | Internal RFC 17 | `zl-zpr-core` code |
 |---|---|---|
 | Agent | Endpoint | **Actor** |
 | Agent Packet | Endpoint Packet | actor packet |
@@ -55,7 +55,7 @@ translate.
 
 Internal RFC 6.4 §1 names five protocols. ZDP is the transport under the others:
 
-| Protocol | Between | Status in `zpr-core` |
+| Protocol | Between | Status in `zl-zpr-core` |
 |---|---|---|
 | **ZDP** — data protocol | any two ZPR entities | implemented |
 | **ZIP** — ZPR Interface Protocol | adapter ↔ dock | implemented as ZDP management messages |
@@ -76,7 +76,7 @@ fragmentation, no delivery notification. Substrate addresses are required only
 where an interface can reach more than one peer.
 
 The RFC defines encapsulations for raw links, PPP, bare Ethernet, IP, and
-IP/UDP. **`zpr-core` implements IP/UDP only** — `ph` binds
+IP/UDP. **`zl-zpr-core` implements IP/UDP only** — `ph` binds
 `std::net::UdpSocket` per configured interface (`main.rs`), IPv4 and IPv6 both.
 `self_addr = "129.6.7.1:5000"` in a node config is the substrate address.
 
@@ -106,7 +106,7 @@ syntax is unconstrained — strings, DNs, or IP addresses all work:
 Routing is to a **Tether Address**; because NA ⊃ DA ⊃ TA as prefixes, a route
 to a dock covers every tether on it.
 
-**Data-plane identifiers** (6.4 §4.2, `zpr-common/src/packet_info.rs`):
+**Data-plane identifiers** (6.4 §4.2, `zl-zpr-common/src/packet_info.rs`):
 
 | Name | Type | Notes |
 |---|---|---|
@@ -134,7 +134,7 @@ byte, which is always the first byte and never encrypted. The RFC therefore
 specifies a **Baseline Configuration** that every implementation must hard-code
 and that is used when nothing else is active.
 
-The layouts below are what `zpr-core` actually builds. Headers are pushed
+The layouts below are what `zl-zpr-core` actually builds. Headers are pushed
 inner-to-outer with `alloc_zeroed_header`, so read the source in reverse.
 
 ### Transit packet (Type 0)
@@ -257,12 +257,12 @@ As implemented:
 **ZPI 0** is the NULL SA (6.4 §5.25.2): no encryption, a 2-byte unkeyed
 Internet checksum for error detection, Baseline Configuration. It exists
 because the keying protocol has to run before any SA exists, and it is
-self-securing. `zpr-core` enforces the restriction on ingress — under ZPI 0,
+self-securing. `zl-zpr-core` enforces the restriction on ingress — under ZPI 0,
 **only Key Management messages are accepted**; anything else is dropped and
 counted.
 
 **Keying.** The RFC specifies IKEv2, with a long editorial aside about
-redefining it to run over non-IP substrates. `zpr-core` implements **Noise**
+redefining it to run over non-IP substrates. `zl-zpr-core` implements **Noise**
 (`km_noise.rs`, `KM_ID_NOISE = 2`) with X.509 certificates carrying Noise
 public keys, signed by a CA (`km_cert_exchange.rs`, `pki.rs`). `KM_ID_IKEV2 = 1`
 exists as a constant and a predicate; there is no IKEv2 implementation.
@@ -277,10 +277,10 @@ stop-and-wait ARQ: window of exactly 1, 64-bit non-wrapping sequence numbers
 per link, 1-second timer, 3 retries. The RFC argues the simplicity is worth the
 throughput because these are low-frequency operations.
 
-`zpr-core` implements a sliding-window version in `zdpr.rs` (`Sender` /
+`zl-zpr-core` implements a sliding-window version in `zdpr.rs` (`Sender` /
 `Receiver`, one pair per direction per link) with cancellation:
 
-| | Internal RFC 6.4 | `zpr-core` |
+| | Internal RFC 6.4 | `zl-zpr-core` |
 |---|---|---|
 | Window | 1 | `DEFAULT_ZDPR_RECEIVE_WINDOW_SIZE = 32` |
 | Retry timer | 1 s | `DEFAULT_ZDPR_RETRY_TIMER = 600 ms` |
@@ -422,12 +422,12 @@ handler, and a handler does not imply the RFC describes it.
 
 ## Where the code lives
 
-All paths under `zpr-core/adapter/ph/src/` unless noted.
+All paths under `zl-zpr-core/adapter/ph/src/` unless noted.
 
 | Concern | Location |
 |---|---|
 | Wire format: header structs, type enum, constants | `zdp.rs` |
-| Shared identifier types, ZPI, KM IDs, compression modes | `zpr-common/src/packet_info.rs` |
+| Shared identifier types, ZPI, KM IDs, compression modes | `zl-zpr-common/src/packet_info.rs` |
 | Datapath: ingress, egress, forwarding, encrypt/decrypt | `fastpath.rs`, `fastpath_io.rs`, `batch_io.rs` |
 | Packet buffer: metadata / headroom / body / tailroom | `packet.rs` |
 | 5-tuple classification | `classifier.rs` |
@@ -445,5 +445,5 @@ All paths under `zpr-core/adapter/ph/src/` unless noted.
 
 A change to the wire format usually touches `zdp.rs`, the datapath in
 `fastpath.rs`, the management plane in `mgmt/`, and — if an identifier type or
-constant is shared — `zpr-common`. The visa service side of visa issuance lives
-in `zpr-visaservice`; see [REPOSITORIES.md](REPOSITORIES.md).
+constant is shared — `zl-zpr-common`. The visa service side of visa issuance lives
+in `zl-zpr-visaservice`; see [REPOSITORIES.md](REPOSITORIES.md).
