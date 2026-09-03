@@ -98,16 +98,21 @@ CI builds every Rust repository through the shared reusable workflows in
 `zl-zpr-dev-tools/.github/workflows/` (`rust-build-test.yml`, `rust-test.yml`), so
 a green local `make test && make check` is a good predictor of a green CI run.
 
-On the forks that prediction currently does not hold, because CI does not run
-there at all: every job calling a reusable workflow fails immediately with
-`Secret ZPR_CICD_RO_TOKEN is required, but not provided while calling` (forks
-inherit no secrets), and several forks have no workflows registered. The local
-gate is the evidence until that is fixed.
+**On the forks there is no CI at all: Actions is disabled on all ten, by
+decision.** So that prediction is moot — the local gate is not a predictor of a
+remote one, it *is* the gate. A PR reporting no checks is the intended state.
 
-`skills/zpr/scripts/fork-ci.sh` reports the Actions switch for every fork and
-turns it off (`--disable`) or back on (`--enable`), so the dead red checks can be
-silenced at the repository level without deleting workflow files and diverging
-`.github/` from upstream.
+None of that CI could run. `pr-notify.yml` needs `SLACK_ALERT_WEBHOOK_URL`, and
+every caller of the shared `rust-build-test.yml` / `rust-test.yml` /
+`go-build-test.yml` reusable workflows needs `ZPR_CICD_RO_TOKEN`, which the
+reusable workflow declares **required** — and a fork inherits no secrets, so
+those jobs failed within seconds, before any step ran, leaving every PR red for
+a reason no PR could fix.
+
+The switch is repository-level, so the workflow files are untouched and nothing
+in `.github/` diverges from upstream. `skills/zpr/scripts/fork-ci.sh` reports the
+state and reverses it (`--enable`); re-enabling means also supplying the two
+secrets, or the same failures return.
 
 ---
 

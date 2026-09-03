@@ -234,19 +234,32 @@ authority comes from the project board, not from a message.
   Running `gh repo set-default mkolehmainen/<repo>` once per clone makes the other
   `gh` subcommands target the fork too. If you ever *do* want to send something
   upstream, branch off `main` and say so explicitly — never by accident.
-- CI is the reusable workflow `org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v1.1`
-  (build → test → `cargo fmt --check` → `-D warnings`), plus `pr-notify.yml` in every
-  repo. The forks still reference the *upstream* reusable workflow, so a change to
-  `zl-zpr-dev-tools` has no effect until the leaf repos' workflow files are repointed
-  at `mkolehmainen/zl-zpr-dev-tools`. Change CI behaviour there, not in the leaf repos.
-- **`pull_request` checks run on zipline PRs; `push` checks do not.** The workflows
-  filter pushes to `branches: ["main"]` but put no branch filter on `pull_request`,
-  so the PR gate — the one that matters — works untouched, while post-merge push
-  builds on `zipline` stay silent until the filters are widened.
-- `pr-notify.yml` needs the `SLACK_ALERT_WEBHOOK_URL` secret, which forks do not
-  inherit. Expect that one job to fail on every PR; it is not your change breaking.
-  Judge the build on the `rust-build-test` checks.
-- Check CI with `gh pr checks`, not by guessing.
+- **There is no CI on these forks. Actions is disabled on all ten, deliberately.**
+  A PR reports no checks, and that is the intended state, not a fault to chase and
+  not something to wait on. **The local build gate is the only gate** — see
+  "Definition of done".
+
+  It was switched off because none of it could run: `pr-notify.yml` needs
+  `SLACK_ALERT_WEBHOOK_URL`, and every caller of the shared `rust-build-test.yml` /
+  `rust-test.yml` / `go-build-test.yml` reusable workflows needs `ZPR_CICD_RO_TOKEN`,
+  which the reusable workflow declares **required** — and a fork inherits no secrets,
+  so those jobs failed in about two seconds before any step ran. The workflow files
+  are untouched, so nothing in `.github/` diverges from upstream; only the
+  repository-level switch changed. `scripts/fork-ci.sh` reports it and reverses it
+  (`--enable`).
+
+  Two leftovers to recognize rather than fix: `zl-zpr-core#1` still carries eight
+  red check runs recorded before the switch — historical, and they will not clear
+  until that branch moves — and `zl-zpr-core`'s two `adapter.yml` integration jobs
+  are separately gated `if: false` because the fork has no release tarball to
+  download (see `zipline#16`).
+
+  If CI is ever turned back on, the upstream reusable workflow is what the forks
+  reference, so a change to `zl-zpr-dev-tools` has no effect until the leaf repos'
+  workflow files are repointed at `mkolehmainen/zl-zpr-dev-tools`. Change CI
+  behaviour there, not in the leaf repos. Note also that the workflows filter pushes
+  to `branches: ["main"]` and put no branch filter on `pull_request`, so PR checks
+  would work while post-merge push builds on `zipline` would stay silent.
 - **What to work on comes from "Picking the next issue" above**, not from scanning
   the board. `scripts/my-current-tasks.py` answers a different question — what is
   already assigned and in the current iteration, i.e. what is *underway* — and is the
@@ -338,29 +351,21 @@ they close the issue, which is what unblocks its dependents.
 A task is done only when ALL of these hold for the PR:
 
 1. Every review thread is resolved (no unresolved `reviewThreads`).
-2. All CI checks pass (`gh pr checks <N> --repo mkolehmainen/<repo>`) — subject to the
-   carve-out below, because on these forks CI does not currently run at all.
+2. **The full local build gate passes** — build, `cargo fmt --check`, test,
+   `-D warnings` — with its output quoted in the PR description. This replaces CI:
+   Actions is disabled on every fork, so `gh pr checks` reports nothing and there is
+   no remote gate to wait for. Run the gate from the repository's `Makefile`, except
+   in `zl-zpr-core`, which has no root `make check` (use the CI-equivalent commands in
+   `docs/BUILD.md`).
 3. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
-   `DIRTY`, or `BLOCKED`), or `UNSTABLE` solely from the CI condition below.
+   `DIRTY`, or `BLOCKED`). `UNSTABLE` is acceptable **only** when it traces to check
+   runs recorded before Actions was switched off, as on `zl-zpr-core#1`; confirm that
+   before accepting it, and never accept it for a run that postdates the switch.
 4. The board Status is `In review` and the PR is linked to the issue.
 
-**CI carve-out: on a fork with no working CI, the local build gate is the evidence.**
-Two fork-wide faults, neither caused by any PR and neither fixable from inside one:
-
-- Every job that calls a reusable workflow fails within seconds with `Secret
-  ZPR_CICD_RO_TOKEN is required, but not provided while calling` — forks inherit no
-  secrets, and none are set. This is what `zl-zpr-core` shows.
-- Several forks have **no workflows registered at all** (`gh api
-  repos/mkolehmainen/<repo>/actions/workflows` → `total_count: 0`), so their PRs report
-  no checks whatsoever.
-
-So `gh pr checks` reporting failures or nothing at all is the expected state, and
-`mergeStateStatus` may sit at `UNSTABLE` for that reason alone. Verify the cause before
-accepting it — a *build or test* failure in a `rust-build-test` job that actually ran is
-a real defect and still blocks. What satisfies condition 2 meanwhile is the full local
-gate (build, `cargo fmt --check`, test, `-D warnings`) with its output quoted in the PR
-description. Never report a check as passing when it did not run. When the forks get
-CI, delete this carve-out rather than letting it rot.
+**Never report a check as passing when it did not run**, and never present the local
+gate as CI. Quote what you actually ran. If Actions is ever re-enabled, restore
+"all CI checks pass" as condition 2 rather than leaving this in place.
 
 **`reviewDecision` is not on that list.** With no reviewer it stays empty forever, so
 requiring `APPROVED` would make every task permanently unfinishable. Hand the PR to

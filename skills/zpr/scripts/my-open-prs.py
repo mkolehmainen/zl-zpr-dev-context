@@ -27,8 +27,10 @@ retried instead of silently dropped.
 "Needs work from the bot" is deliberately keyed on conditions the BOT clears,
 never on reviewer-side state:
   - an unresolved review thread whose LAST comment is not by the bot
-  - CI rollup FAILURE/ERROR
   - mergeStateStatus BEHIND or DIRTY
+CI rollup is NOT among them: Actions is disabled on the forks, so a FAILURE can
+only come from runs recorded before that switch, which nothing the bot does will
+clear.
 reviewDecision=CHANGES_REQUESTED alone is deliberately EXCLUDED: it persists
 until a human re-reviews, so keying on it would re-wake the automation every
 tick for days while merely awaiting re-review. A bare changes-requested review
@@ -123,18 +125,64 @@ def login(node: dict | None) -> str:
     return (node.get("author") or {}).get("login") or "?"
 
 
+WORKSPACE_YAML = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "workspace.yaml"
+)
+
+
+def parse_workspace_repos(text: str) -> list[str]:
+    """Repository names from workspace.yaml's `- name:` entries, in file order."""
+    names = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- name:"):
+            name = stripped.split(":", 1)[1].strip()
+            if name.startswith("zl-zpr-"):
+                names.append(name)
+    return names
+
+
+def workspace_repos() -> list[str]:
+    """The workspace repository set, which is what gets polled."""
+    try:
+        with open(WORKSPACE_YAML) as fh:
+            names = parse_workspace_repos(fh.read())
+    except FileNotFoundError:
+        raise SystemExit(
+            f"cannot read {WORKSPACE_YAML}. This script enumerates the workspace "
+            "repository set from it; run it from its place in the zl-zpr-dev-context "
+            "checkout."
+        )
+    if not names:
+        raise SystemExit(f"no zl-zpr-* repositories found in {WORKSPACE_YAML}")
+    return names
+
+
 def list_open_prs(user: str, org: str) -> list[dict]:
-    out = run_gh(
-        [
-            "search", "prs",
-            "--author", user,
-            "--owner", org,
-            "--state", "open",
-            "--limit", "100",
-            "--json", "number,title,repository,url",
-        ]
-    )
-    prs = json.loads(out or "[]")
+    """Open PRs authored by `user`, asked of each repository in turn.
+
+    Deliberately NOT `gh search prs --owner`: owner-scoped search does not index
+    pull requests in **forks**, and every repository here is a fork, so that call
+    returns an empty list however many PRs are open -- silently, which for the
+    review-polling loop means never noticing a review. An explicit `repo:`
+    qualifier does find them, but per-repository `gh pr list` also avoids the
+    search index's lag, so a PR opened seconds ago shows up immediately.
+    """
+    prs = []
+    for name in workspace_repos():
+        out = run_gh(
+            [
+                "pr", "list",
+                "--repo", f"{org}/{name}",
+                "--author", user,
+                "--state", "open",
+                "--limit", "100",
+                "--json", "number,title,url",
+            ]
+        )
+        for pr in json.loads(out or "[]"):
+            pr["repository"] = {"name": name, "nameWithOwner": f"{org}/{name}"}
+            prs.append(pr)
     return sorted(prs, key=lambda p: (p["repository"]["name"], p["number"]))
 
 
@@ -222,8 +270,12 @@ def needs_work(item: dict, user: str) -> bool:
         return False
     if any(t["author"] != user for t in item.get("unresolvedThreads") or []):
         return True
-    if item.get("checksState") in ("FAILURE", "ERROR"):
-        return True
+    # CI rollup is deliberately NOT a trigger: Actions is disabled on every fork,
+    # so a rollup can only be FAILURE from check runs recorded before the switch
+    # (zl-zpr-core#1 carries eight). Those never clear -- no push the bot makes
+    # can re-run a workflow that cannot run -- so keying on them would re-wake
+    # the automation every tick forever. Restore this if the forks get CI again;
+    # see "Definition of done" in ../SKILL.md.
     if item.get("mergeStateStatus") in ("BEHIND", "DIRTY"):
         return True
     return False
