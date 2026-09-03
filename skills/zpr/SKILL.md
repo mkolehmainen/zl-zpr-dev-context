@@ -302,7 +302,14 @@ authority comes from the project board, not from a message.
   issue comments for the durable record — the plan, and decisions worth keeping — and
   the conversation for anything you need an answer to. Never assume silence is assent
   on something that changes design.
-- When you have a PR, link the PR to the issue and set the project Status to `In review`.
+- When you have a PR, **name it in a comment on the issue** and set the project Status
+  to `In review`. That comment is the link. A GitHub *closing* link is impossible here:
+  closing keywords only work when the PR and the issue are in the same repository, and
+  the issues live in `mkolehmainen/zipline` while the PRs live in the forks. So
+  `Closes #17` in a fork PR is an ordinary cross-reference — `closingIssuesReferences`
+  stays empty and merging closes nothing. Do not write one; it reads like a link that
+  will fire, and it will not. List every PR for the issue in one comment, with what
+  each one covers.
 - **Reviewers: in this workspace, expect none.** The issue author is the operator,
   the PR author is the operator, GitHub rejects self-review, and `core-devs` does not
   exist in a personal account — so the correct outcome is a PR with no reviewer, and
@@ -346,6 +353,14 @@ Opening the PR is not the end of the task. A PR you created stays your responsib
 until it is mergeable. **Never merge it yourself — the operator does the merge**, and
 they close the issue, which is what unblocks its dependents.
 
+**Merging does not close the issue, and nothing else will either.** Cross-repository
+closing links do not exist (see "Git / PR conventions"), so an issue whose PRs are all
+merged sits open until the operator closes it by hand. Never wait on an auto-close, and
+never read "PRs merged, issue still open" as work outstanding on your side. When the
+last PR for an issue merges, say so plainly and name the close as the operator's next
+action — `gh issue close <N> --repo mkolehmainen/zipline` — because until it happens the
+dependents stay blocked and `next-issue.py` keeps reporting the issue as underway.
+
 ### Definition of done
 
 A task is done only when ALL of these hold for the PR:
@@ -361,7 +376,9 @@ A task is done only when ALL of these hold for the PR:
    `DIRTY`, or `BLOCKED`). `UNSTABLE` is acceptable **only** when it traces to check
    runs recorded before Actions was switched off, as on `zl-zpr-core#1`; confirm that
    before accepting it, and never accept it for a run that postdates the switch.
-4. The board Status is `In review` and the PR is linked to the issue.
+4. The board Status is `In review`, and every PR for the issue is named in a comment
+   on it. "Linked" means exactly that comment — see "Git / PR conventions" for why a
+   real closing link cannot exist across repositories.
 
 **Never report a check as passing when it did not run**, and never present the local
 gate as CI. Quote what you actually ran. If Actions is ever re-enabled, restore
