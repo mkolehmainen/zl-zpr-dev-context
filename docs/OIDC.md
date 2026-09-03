@@ -821,9 +821,10 @@ model wrongly.
 
 ## Implementation status
 
-Checked against the code on 2026-09-02 (`zpr-compiler` 0.16.0 at `c58b532`,
-`zpr-visaservice` 0.18.0 at `5b73daa`, `zpr-core` at `2e17c92`). **Nothing in
-this document's OIDC design is implemented yet.** Work is tracked under
+Re-checked against the forks' `zipline` branches on 2026-09-03 (`zl-zpr-compiler`
+0.16.0, `zl-zpr-visaservice` 0.18.0, `zl-zpr-core`). **Nothing in this document's
+OIDC design is implemented yet**; what is done is the prerequisite work underneath
+it. Work is tracked under
 [zipline#1](https://github.com/mkolehmainen/zipline/issues/1)
 and sequenced by `docs/plans/2026-09-02-oidc-implementation-plan.md`; the
 plan's *What changed since the spec* table is authoritative where this document
@@ -841,18 +842,29 @@ and the code disagree.
   actors with no CN.
 - **CN is not promoted to an authenticated claim** by `authorize_connection`;
   only the RSA path does so after verifying the signature.
+- **The `zpr.` sub-namespace is reserved from declared trusted services** —
+  zpr-compiler#146, merged as PR #147 (`zl-zpr-compiler` e2eecd6). The authority
+  marker is now enforced, not advisory.
+- **Namespaced authority attributes in the visa service** — zpr-visaservice#324,
+  merged as PR #331 (`zl-zpr-visaservice` 72230cf). `device.zpr.authority` and
+  `user.zpr.authority` replace the single `zpr.authority`,
+  `POLICY_MIN_COMPILER_MINOR` is 16, and `get_authentication_expiration` takes the
+  minimum over both authorities and the identity keys. A compiler-0.16 policy's
+  bare `allow users ...` rule now behaves as designed.
 
 **Not yet:**
 
-- The visa service still installs the single `zpr.authority` attribute and
-  accepts compiler 0.15 policies, so a 0.16 policy's bare `allow users ...`
-  rule matches nothing until the visa service adopts the namespaced markers
-  (plan issue C0).
 - `api = "oidc"`, `OidcConfig`, the `oidc` auth blob, JWT validation, the JWKS
   source, the `AuthAgent` RPC, and the `ph-cli` relying-party flow do not exist.
-- The reserved `zpr.` sub-namespace check for trusted-service declarations
-  (zpr-compiler#146) is open with PR #147 in review; until it merges the
-  authority marker is advisory.
+- The visa service still rejects a `ConnectRequest` carrying more than one blob
+  (`connection_control.rs:221`), so the two-credential cases cannot be reached
+  (plan issue C1).
+- **The forks' cross-repository dependencies still resolve to `org-zpr`** —
+  `zl-zpr-common/.gitmodules`, and the `zpr` git dependency in `zl-zpr-compiler`,
+  `zl-zpr-visaservice` and `zl-zpr-core`. Until they are repointed, no schema
+  change made in `zl-zpr-policy` or `zl-zpr-vsapi` can reach its consumers. This
+  is plan issue A0 ([zipline#17](https://github.com/mkolehmainen/zipline/issues/17))
+  and it blocks the whole schema fan-out.
 - `zpr-bas` and the adapter's `OAuthRsa` client are deprecated and still
   present; the hardcoded BAS certificate expired on 2026-04-16.
 

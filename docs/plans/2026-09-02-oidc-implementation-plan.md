@@ -14,6 +14,23 @@
 
 **Repo state this plan was written against:** `zpr-compiler` `c58b532` (0.16.0), `zpr-visaservice` `5b73daa` (0.18.0), `zpr-core` `2e17c92`, `zpr-common` `v0.25.1`, `zpr-policy` `v0.10.0`.
 
+> **Status note, re-verified against the forks 2026-09-03.** Two things changed since this
+> plan was written, one in each direction:
+>
+> - **B0 and C0 are already merged** on the forks' `zipline` branches
+>   (`zl-zpr-compiler` e2eecd6 for #146/#147, `zl-zpr-visaservice` 72230cf for #324/#331).
+>   Nothing in the plan is urgent or blocked on them; their task sections below are
+>   retained for reference only.
+> - **A0 is new and blocks A3 and everything downstream:** nothing inside the forks was
+>   repointed away from `org-zpr`, so no `zl-zpr-policy` / `zl-zpr-vsapi` / `zl-zpr-common`
+>   change can reach its consumers. See the *What changed* table and
+>   [zipline#17](https://github.com/mkolehmainen/zipline/issues/17).
+>
+> **Naming.** Repository names and file paths in this plan are written in their upstream
+> `zpr-<name>` form. Every one means the fork `mkolehmainen/zl-zpr-<name>`, which has an
+> identical layout; work targets its `zipline` branch. Bare `zpr-<name>#NNN` issue and PR
+> references *are* upstream `org-zpr` references and are left as they are.
+
 ## Global Constraints
 
 - **Security review posture:** every item under *Security requirements* in the spec is non-negotiable; none may be simplified away. In particular: match on `hd` never on email domain, absent `hd` fails; `email_verified` required before mapping `email`; validate `iss`, `aud`, `exp`, `nonce`, `kid`; reject `alg: none` and anything outside an explicit allowlist (`RS256` only for Google); never log tokens, codes, verifiers, or refresh tokens; `CONNECT` forward proxy only, JWKS URL never rewritten; PKCE S256 mandatory; loopback on `127.0.0.1` only, single use, `state` verified; ordinary TLS verification against system roots on every Google leg.
@@ -33,8 +50,8 @@
 |---|---|---|
 | Prerequisite zpr-compiler#144 must land first | **Done.** PR #145 merged; compiler is 0.16.0 and emits `has user.zpr.authority` / `has device.zpr.authority` (`src/zpl.rs:56-57`, `src/allow.rs:57-84`). | Removed from plan. |
 | Prerequisite zpr-visaservice#310 must land first | **Done.** PR #320 (+ #322 fix) merged. Lookups use `Policy::lookup_identity_keys()` + `lookup_identities()` (`connection_control.rs:451-473`); revision cache is keyed by ZPR address and purged in `disconnect`; the CN-is-None early return in `actor_attributes.rs` is gone and has a regression test using a `user.sub`-shaped actor. | Removed. Spec's "revision cache" and "attribute refresh no-op" rows in *Visa service changes* are already satisfied. |
-| zpr-compiler#146 (reserved `zpr.` namespace) | **Open, PR #147 in review**, CI green. | Tracked as OIDC-B0; not on the critical path but should merge before B1. |
-| The marker attribute name was undecided (`user.authority` vs `user.zpr.authority`) | Compiler emits `user.zpr.authority`. Visa service still installs `zpr.authority` (`libeval/src/attribute.rs:31`) and pins `POLICY_MIN_COMPILER_MINOR = 15`. | **A compiler-0.16 policy with `allow users …` currently matches nothing on the visa service.** OIDC-C0 (namespaced authority + min compiler bump) is the first, urgent visa-service issue. |
+| zpr-compiler#146 (reserved `zpr.` namespace) | **Done** (verified 2026-09-03). Merged on `zl-zpr-compiler` `zipline` as e2eecd6; the check is at `src/config/trusted_service.rs:127` ("reserved for ZPR"). | OIDC-B0 removed from the plan. B1 must still route `returns_attributes` through `parse_return_mappings` so the check covers OIDC declarations. |
+| The marker attribute name was undecided (`user.authority` vs `user.zpr.authority`) | **Settled and done** (verified 2026-09-03). Merged on `zl-zpr-visaservice` `zipline` as 72230cf (#324 via #331): `key::DEVICE_AUTHORITY` / `key::USER_AUTHORITY` exist (`libeval/src/attribute.rs:32,35`), `key::AUTHORITY` is gone, `POLICY_MIN_COMPILER_MINOR = 16`, and `get_authentication_expiration` takes the min over both authorities plus the identity keys (`libeval/src/actor.rs:176`). | OIDC-C0 removed from the plan; C1 is no longer blocked by it. |
 | "CN is unconditionally pushed into `authd_claims` at `connection_control.rs:424`" | No longer. `authorize_connection` deliberately does not promote the CN (`:434-437`); only the RSA path (`:370`) and the VS-self path (`:293`) push it. | Spec item collapses to "keep it that way, add the user-only regression test". |
 | Spec proposes a new `oidc` arm on `AuthBlob` | Correct; today's arms are `ss @0` and `ac @1` (`vs.capnp:384-389`). `ReauthRequest.blobs` (`vs.capnp:379-382`) must also accept it. | Included in OIDC-A2. |
 | Spec says "reason codes on authentication failure — VSAPI" needs adding | `Result(T)` already carries `Error { code :ErrorCode, message, retryIn }` with `authError`, `invalidSignature`, `temporarilyUnavailable`, `paramError` (`vs.capnp:592-610`). Only "authenticated but policy denied" is missing. | A2 adds one enum value, `policyDenied @10`. The real gap is on the **node**, which drops the error and hardcodes `ResponseCode::Success` (`link_state.rs:1343`). |
@@ -44,6 +61,7 @@
 | `ACTOR_AUTHENTICATION_TIMEOUT` unmentioned | The **node** arms a 120 s timer (`config.rs:68`, `link_state.rs:1241`) for the whole out-of-band auth; a human at a consent screen will exceed it. | D1 raises it; D2 adds the adapter-side interaction timeout under it. |
 | `HARD_CODED_BAS_TLS_CERT_PEM` should be removed | It **expired 2026-04-16**; the BAS path only works because of `danger_accept_invalid_certs(true)`. Also `visa_mgmt.rs:105-108` parses a `SocketAddr` string as `IpAddr`, so every AC blob carries `asa_addr = 0.0.0.0`. | The BAS/AC path is already dead. D4 deletes it. |
 | `[bootstrap] expiration_seconds` in ZPLC | Not in any schema; needs a new `Policy`-level capnp field and compiler support. | **Deferred** (OIDC-X1). Device lifetime stays `DEFAULT_AUTH_EXPIRATION` for now. |
+| The plan assumed cross-repository dependencies resolve within the working set | **They do not.** Nothing inside the forks was repointed: `zl-zpr-common/.gitmodules` still fetches `org-zpr/zpr-vsapi` and `org-zpr/zpr-policy`; `zl-zpr-compiler`, `zl-zpr-visaservice` and `zl-zpr-core` pull `zpr` from `org-zpr/zpr-common`; `zl-zpr-core/.github/workflows/adapter.yml` downloads the visa service tarball from `org-zpr/zpr-visaservice`. The compiler is also two minors behind on `zpr` (v0.24.0 vs v0.25.1). | **New OIDC-A0** ([zipline#17](https://github.com/mkolehmainen/zipline/issues/17)), a hard blocker on A3 and therefore on B2/C1/C3/C4/C5/D1. All needed tags already exist on the forks, so it is URL rewrites plus the compiler's v0.25.1 catch-up. |
 
 ---
 
@@ -213,40 +231,42 @@ The `-rc.1` step exists because `zpr-core` CI can only consume a **published rel
 ## Dependency graph and order
 
 ```
-            ┌────────── B0 (#146 / PR #147, in review) ──────────┐
-            │                                                    ▼
-   A1 ─┐    │   B1 zplc: api="oidc" parse+validate ──────────► B2 zplc: codegen, weave, zpdump, 0.17.0
-   A2 ─┼─► A3 zpr-common v0.26.0 ─┬──────────────────────────────┘
-            │                     ├─► C1 multi-blob connect ─┐
-   C0 VS namespaced authority ────┤                          ├─► C5 OIDC connect arm + zpt tests ─► VS v0.19.0-rc.1
-   C2 VS JWT validation (pure) ───┼─► C3 JWKS source ────────┤
-                                  └─► C4 oidc TS + descriptor┘
-                                  └─► D1 node: schema bump, TLV, blob array, error reason, timeout
-                                       D2 adapter FSM + AuthAgent RPC ─┐
-   D3 ph-cli RP flow (standalone first) ───────────────────────────────┴─► D5 fake-IdP integration test, CI pin ─► VS v0.19.0 final
-                                                                      D4 delete BAS/AC legacy (any time after D2)
+   (B0 reserved zpr. namespace ── DONE)      B1 zplc: api="oidc" parse+validate ──► B2 zplc: codegen, weave, zpdump, 0.17.0
+   (C0 VS namespaced authority ── DONE)                                                 │
+                                                                                        │
+   A0 repoint fork deps ─┐                                                              │
+   A1 policy OidcConfig ─┼─► A3 zpr-common v0.26.0 ─┬──────────────────────────────────┘
+   A2 vsapi OidcBlob ────┘                          ├─► C1 multi-blob connect ─┐
+                                                    │                          ├─► C5 OIDC connect arm + zpt tests ─► VS v0.19.0-rc.1
+   C2 VS JWT validation (pure) ─────────────────────┼─► C3 JWKS source ────────┤
+                                                    └─► C4 oidc TS + descriptor┘
+                                                    └─► D1 node: schema bump, TLV, blob array, error reason, timeout
+                                                         D2 adapter FSM + AuthAgent RPC ─┐
+   D3 ph-cli RP flow (standalone first) ─────────────────────────────────────────────────┴─► D5 fake-IdP integration test, CI pin ─► VS v0.19.0 final
+                                                                                        D4 delete BAS/AC legacy (any time after D2)
 ```
 
-**Start immediately, in parallel:** A1, A2, B1, C0, C2, D3 (against a local fake IdP, as a standalone `ph-cli oidc-login` debugging subcommand that D2 later wires to `AuthAgent`).
+**Start immediately, in parallel:** A0, A1, A2, B1, C2, D3 (against a local fake IdP, as a standalone `ph-cli oidc-login` debugging subcommand that D2 later wires to `AuthAgent`). B0 and C0 are already merged; A0 is the one that must not sit, because A3 waits on it.
 
-**Critical path:** A1/A2 → A3 → C1/C3/C4 → C5 → rc tarball → D1/D2 → D5.
+**Critical path:** A0/A1/A2 → A3 → C1/C3/C4 → C5 → rc tarball → D1/D2 → D5.
 
 ---
 
 ## Issue map
 
-Umbrella: **zpr-visaservice#317** (exists, body is a placeholder). Sub-issues below, one per row; GitHub sub-issues may live in any repo of the org. Suggested titles are final; bodies are the sections that follow.
+Umbrella: **[mkolehmainen/zipline#1](https://github.com/mkolehmainen/zipline/issues/1)**. All sub-issues are filed in `mkolehmainen/zipline` (issue tracking is centralised there; the code lives in the `zl-zpr-*` forks, named per row) and attached as GitHub sub-issues of #1, in this order. Filed 2026-09-02; A0 added 2026-09-03.
 
 | ID | Repo | Title | Blocked by |
 |---|---|---|---|
-| A1 | zpr-policy | Add `OidcConfig` to `TrustedService` | — |
+| A0 | all four | [#17](https://github.com/mkolehmainen/zipline/issues/17) Repoint fork dependencies to `mkolehmainen/zl-zpr-*` | — |
+| A1 | zpr-policy | [#2](https://github.com/mkolehmainen/zipline/issues/2) Add `OidcConfig` to `TrustedService` | — |
 | A2 | zpr-vsapi | Add `OidcBlob`, `OidcClientConfig`, `ServiceT.oidcAuthentication`, `ErrorCode.policyDenied` | — |
-| A3 | zpr-common | OIDC schema bump: Rust mirrors for OidcConfig/OidcBlob/ServiceDescriptor, tag v0.26.0 | A1, A2 |
-| B0 | zpr-compiler | (#146, PR #147) Reserve the `zpr.` sub-namespace from declared trusted services | — |
-| B1 | zpr-compiler | `api = "oidc"` trusted-service configuration: parsing and validation | B0 (soft) |
+| A3 | zpr-common | [#4](https://github.com/mkolehmainen/zipline/issues/4) OIDC schema bump: Rust mirrors for OidcConfig/OidcBlob/ServiceDescriptor, tag v0.26.0 | **A0**, A1, A2 |
+| ~~B0~~ | zpr-compiler | ~~Reserve the `zpr.` sub-namespace from declared trusted services~~ — **DONE**, upstream #146 / PR #147, merged on the fork as e2eecd6 | — |
+| B1 | zpr-compiler | `api = "oidc"` trusted-service configuration: parsing and validation | — (B0 done) |
 | B2 | zpr-compiler | `api = "oidc"`: emit `OidcConfig`, weave the JWKS-proxy rule, `zpdump`, bump to 0.17.0 | A3, B1 |
-| C0 | zpr-visaservice | Namespaced authority attributes and compiler 0.16 floor (follow-up to zpr-compiler#145) | — |
-| C1 | zpr-visaservice | Accept multiple auth blobs; presented-and-invalid fails, absent is not a failure | A3, C0 |
+| ~~C0~~ | zpr-visaservice | ~~Namespaced authority attributes and compiler 0.16 floor~~ — **DONE**, upstream #324, merged on the fork as 72230cf | — |
+| C1 | zpr-visaservice | Accept multiple auth blobs; presented-and-invalid fails, absent is not a failure | A3 (C0 done) |
 | C2 | zpr-visaservice | Offline `id_token` validation module with table-driven vectors | — |
 | C3 | zpr-visaservice | JWKS key source: policy seed, `CONNECT`-proxied refresh, stale tolerance | A3, C2 |
 | C4 | zpr-visaservice | `oidc` trusted-service implementation and off-net IdP `ServiceDescriptor` | A3 |
@@ -338,9 +358,9 @@ Also add `write_to` for `ServiceDescriptor` if one does not exist (the visa serv
 
 ## Phase B — Compiler (`zpr-compiler`)
 
-### Task B0: zpr-compiler#146 / PR #147 (in review)
+### Task B0: reserve the `zpr.` sub-namespace — **DONE**
 
-Already written. Definition of done per the ZPR skill (approved, threads resolved, CI green, mergeable). Nothing in this plan depends on it except that B1's `returns_attributes` for `oidc` must go through the same `parse_return_mappings` choke point so the reserved-namespace check covers OIDC declarations for free.
+Merged upstream as zpr-compiler#146 / PR #147 and present on `zl-zpr-compiler` `zipline` as e2eecd6 (`src/config/trusted_service.rs:127`, tests `test_reserved_zpr_namespace_rejected_for_declared_service` and `test_reserved_zpr_namespace_scope`). Nothing to do. The one carry-over into B1: `returns_attributes` for `oidc` must go through the same `parse_return_mappings` choke point so the reserved-namespace check covers OIDC declarations for free.
 
 ### Task B1: `api = "oidc"` configuration parsing and validation
 
@@ -427,9 +447,9 @@ Behaviour:
 
 ## Phase C — Visa service (`zpr-visaservice`)
 
-### Task C0: Namespaced authority attributes and compiler 0.16 floor — **urgent**
+### Task C0: Namespaced authority attributes and compiler 0.16 floor — **DONE**
 
-The compiler already emits `has user.zpr.authority`; until this lands, every bare `allow users …` rule from a 0.16 policy matches nothing. This is the follow-up promised in zpr-compiler PR #145.
+Merged upstream as zpr-visaservice#324 and present on `zl-zpr-visaservice` `zipline` as 72230cf (via #331): `key::DEVICE_AUTHORITY` / `key::USER_AUTHORITY` / `key::AUTHORITY_METHOD_BOOTSTRAP` exist, `key::AUTHORITY` is deleted, `POLICY_MIN_COMPILER_MINOR = 16`, and `get_authentication_expiration` (`libeval/src/actor.rs:176`) takes the min over both authorities and the identity keys. C1 and C5 consume this; the section below is kept as the record of what it did.
 
 **Files:** Modify `libeval/src/attribute.rs:30-31`, `libeval/src/actor.rs:167-192`, `vs/src/connection_control.rs:189-193, 241-242, 273-277, 290, 306-312, 489-494`, `vs/src/config.rs:30` (`15` → `16`), `libeval/src/policy.rs:280-304` (`lookup_identity_keys` doc mentions `zpr.authority`); audit `integration-test/*.zpt` sources and `pregen/` for `zpr.authority`; `zpt-test-connect.sh`. Tests: `connection_control.rs mod tests` (`:745+`), `libeval/src/actor.rs` tests.
 
@@ -746,14 +766,16 @@ Browser launch is `std::process::Command::new("xdg-open")` (Linux) / `"open"` (m
 
 ---
 
-## Filing procedure (proposed; nothing filed yet)
+## Filing procedure — **done 2026-09-03**
+
+Steps 1–3 are complete: the spec and this plan are committed to `zl-zpr-dev-context` `zipline`, umbrella [zipline#1](https://github.com/mkolehmainen/zipline/issues/1) carries the issue map, and #2–#17 are filed and attached as sub-issues in execution order (A0 first). Step 4 (project board) is outstanding and needs the `read:project` token scope. Step 5 stands as the standing rule for pickup. Retained below as the record.
 
 1. **Commit the spec** to `zpr-dev-context/docs/OIDC.md` (with an `## Implementation status` section per the `docs/` convention) so every issue can link a stable URL, and drop this plan beside it as `docs/plans/2026-09-02-oidc.md`. Alternative: paste the spec into #317's body; weaker because it will not track implementation status.
 2. **Rewrite zpr-visaservice#317** as the umbrella: title `OIDC authentication (umbrella)`, body = the *Goal*, *What changed since the spec*, *Dependency graph*, *Release choreography*, and the *Issue map* table with live links.
 3. **Create the sub-issues** with `gh issue create --repo mkolehmainen/zipline --title … --body-file <section>.md --label enhancement` (C0 gets `bug` too), then attach each as a GitHub sub-issue of #1 (cross-repo is allowed within an org):
    ```sh
    CHILD_ID=$(gh api repos/mkolehmainen/zipline/issues/<n> -q .id)
-   gh api -X POST repos/mkolehmainen/zipline/issues/317/sub_issues -F sub_issue_id="$CHILD_ID"
+   gh api -X POST repos/mkolehmainen/zipline/issues/1/sub_issues -F sub_issue_id="$CHILD_ID"
    ```
    Order of creation = the Issue map order, so the sub-issue list reads top-to-bottom as the execution order. Record "blocked by" as the first line of each body (GitHub has no native blocked-by field).
 4. **Project board:** add every sub-issue to `ref impl` (project 1) with Status `Todo`; put A1, A2, B1, C0, C2, D3 into the current iteration (they have no blockers).
