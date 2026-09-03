@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """Print the next issue to work on in mkolehmainen/zipline, and the rest of the ready set.
 
-An issue is READY when it is open and every issue in its GitHub native
-`blockedBy` dependency list is closed. The NEXT issue is the ready issue that
-comes first in the umbrella's sub-issue list, which is maintained in execution
-order (see "Picking the next issue" in ../SKILL.md) -- so position in that list
-already encodes critical-path-first and no separate tiebreak is needed.
+An issue is READY when it is open, every issue in its GitHub native `blockedBy`
+dependency list is closed, and it is UNASSIGNED. The NEXT issue is the ready
+issue that comes first in the umbrella's sub-issue list, which is maintained in
+execution order (see "Picking the next issue" in ../SKILL.md) -- so position in
+that list already encodes critical-path-first and no separate tiebreak is
+needed.
+
+An assigned issue is treated as UNDERWAY, not ready: pickup step 3 assigns the
+issue before branching, so assignment is the marker that someone already holds
+it. Without this an unattended agent re-picks the issue it is already working
+-- an open issue with an open PR still has all its blockers closed. Underway
+issues are reported separately so they can be polled instead of picked up.
 
 This reads state and changes nothing.
 
 Usage:
   python3 next-issue.py           # human-readable
-  python3 next-issue.py --json    # machine-readable: {"next": {...}, "ready": [...]}
+  python3 next-issue.py --json    # {"next": {...}, "ready": [...], "underway": [...]}
 
 Requires: gh authenticated with the `repo` scope. Dependencies and sub-issues are
 repository data, so no project scope is needed here.
@@ -35,6 +42,7 @@ query($owner:String!, $repo:String!, $cursor:String) {
       nodes {
         number title url
         labels(first:10) { nodes { name } }
+        assignees(first:5) { nodes { login } }
         blockedBy(first:50) { nodes { number state } }
       }
     }
@@ -79,41 +87,66 @@ def execution_order():
     return {int(n): i for i, n in enumerate(raw.split())}
 
 
+def summarize(issue, order):
+    """Flatten one GraphQL issue node into the shape this script reports."""
+    return {
+        "number": issue["number"],
+        "title": issue["title"],
+        "url": issue["url"],
+        "repo_label": ",".join(l["name"] for l in issue["labels"]["nodes"]),
+        "assignees": [a["login"] for a in issue["assignees"]["nodes"]],
+        "position": order.get(issue["number"], 10_000 + issue["number"]),
+    }
+
+
+def select(issues, order):
+    """Split open issues into (ready, underway), both in execution order.
+
+    Ready = unblocked and unassigned, so it is safe to pick up. Underway =
+    unblocked but assigned, i.e. already held by someone; poll those instead.
+    Blocked issues and the umbrella itself appear in neither list.
+    """
+    ready, underway = [], []
+    for issue in issues:
+        if issue["number"] == UMBRELLA:
+            continue
+        if any(b["state"] == "OPEN" for b in issue["blockedBy"]["nodes"]):
+            continue
+        row = summarize(issue, order)
+        (underway if row["assignees"] else ready).append(row)
+    ready.sort(key=lambda r: r["position"])
+    underway.sort(key=lambda r: r["position"])
+    return ready, underway
+
+
 def main():
     as_json = "--json" in sys.argv
     order = execution_order()
-
-    ready = []
-    for i in open_issues():
-        if i["number"] == UMBRELLA:
-            continue
-        blockers = [b["number"] for b in i["blockedBy"]["nodes"] if b["state"] == "OPEN"]
-        if blockers:
-            continue
-        ready.append({
-            "number": i["number"],
-            "title": i["title"],
-            "url": i["url"],
-            "repo_label": ",".join(l["name"] for l in i["labels"]["nodes"]),
-            "position": order.get(i["number"], 10_000 + i["number"]),
-        })
-
-    ready.sort(key=lambda r: r["position"])
+    ready, underway = select(open_issues(), order)
 
     if as_json:
-        print(json.dumps({"next": ready[0] if ready else None, "ready": ready}, indent=2))
+        print(json.dumps({"next": ready[0] if ready else None,
+                          "ready": ready, "underway": underway}, indent=2))
         return
 
-    if not ready:
-        print("Nothing ready: every open issue is blocked, or the tracker is empty.")
-        return
-    nxt = ready[0]
-    print(f"NEXT  #{nxt['number']}  [{nxt['repo_label']}]  {nxt['title']}")
-    print(f"      {nxt['url']}")
-    if len(ready) > 1:
-        print(f"\nalso ready ({len(ready) - 1}):")
-        for r in ready[1:]:
-            print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}")
+    if ready:
+        nxt = ready[0]
+        print(f"NEXT  #{nxt['number']}  [{nxt['repo_label']}]  {nxt['title']}")
+        print(f"      {nxt['url']}")
+        if len(ready) > 1:
+            print(f"\nalso ready ({len(ready) - 1}):")
+            for r in ready[1:]:
+                print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}")
+    else:
+        print("Nothing ready: every open issue is blocked, assigned, or the tracker is empty.")
+
+    # Assigned-but-unblocked issues are the work in flight. Printed because an
+    # issue silently vanishing from the ready set is otherwise baffling.
+    if underway:
+        print(f"\nunderway, not pickable ({len(underway)}) -- poll these instead:")
+        for r in underway:
+            print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}"
+                  f"  ({', '.join(r['assignees'])})")
 
 
 if __name__ == "__main__":
