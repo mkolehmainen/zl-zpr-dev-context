@@ -133,6 +133,23 @@ python3 scripts/test_next_issue.py     # the selection logic's tests, no network
 
 It reads state and changes nothing, so it is always safe to run.
 
+**The board is derived, so it can be rebuilt.** `scripts/board-sync.py` recomputes the
+two mechanical fields from the same dependency graph: `Status` between `Backlog` and
+`Ready`, and `Iteration` for any open item that has none. It prints a plan and writes
+only with `--apply`. It deliberately never touches `In progress`, `In review` or `Done`
+— those are owned by whoever is doing the work — and it reports rather than guesses when
+an assigned issue is still sitting in a derived status. Reach for it whenever the board
+disagrees with the dependency graph; do not hand-edit eighteen items.
+
+**Removing an item from the board and re-adding it resets every field value and mints a
+new item id.** Field values live on the item, not the issue, so a rebuilt board comes
+back with `Status: Backlog` and no iteration, and any item id you cached stops resolving
+(`Could not resolve to a node with the global id`). Re-read item ids from the board each
+time rather than caching them, and run `board-sync.py --apply` after any bulk board
+edit. A board whose default view filters `iteration:@current` looks *completely empty*
+in that state, because no item has an iteration — the items are still there, the view
+just matches none of them.
+
 **Assignment is the in-flight marker, and it is why step 3 below assigns before
 branching.** An issue you are already working on is still open with all its blockers
 closed, so on dependencies alone it stays `NEXT` forever — an unattended agent would
