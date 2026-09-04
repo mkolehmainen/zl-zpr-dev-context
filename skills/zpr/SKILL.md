@@ -158,11 +158,27 @@ pick it up again on every tick. `next-issue.py` therefore reports unblocked-but-
 issues under `underway` instead of `ready`, and those are to be **polled, not picked
 up**.
 
-**One issue in flight at a time.** The sub-issue order is a topological sort and
-consecutive issues frequently touch the same repositories, so a second pickup branches
-off a `zipline` that is about to move. If `underway` is non-empty, the work is to
-advance that issue — poll its PRs, answer review comments — not to start another.
-Ignore this only when the operator names a specific second issue.
+**Several issues may be in flight, if they cannot collide.** Parallel work is fine and
+preferred where it is safe; the constraint is not a count, it is overlap. Before picking
+up an issue while others are `underway`, check it against every underway issue:
+
+- **Disjoint repositories.** The issue names the repositories it touches, and you never
+  touch one it does not name. If that set intersects an underway issue's set, do not
+  pick it up — the sub-issue order is a topological sort, so consecutive issues
+  frequently share repositories, and a second branch off a `zipline` that is about to
+  move is a merge conflict you scheduled for yourself.
+- **No cross-repository interface contract in common.** Two issues on different
+  repositories still collide if one defines the type, wire format or trait the other
+  consumes; the plan document's interface contracts name these. Wait for the definer to
+  merge.
+- **Not blocked, even transitively.** `next-issue.py` already enforces this — it is
+  listed here because "ready" is what makes the other two checks the only remaining
+  ones.
+
+Where an underway issue fails those checks, the work is to advance it — poll its PRs,
+answer review comments — not to start another. When in doubt about overlap, do not pick
+it up; ask the operator. Every in-flight issue still gets its own assignment, branch,
+plan comment and `/go`, and each is polled independently.
 
 **Advancing an underway issue starts by finding out where it stopped**, because it may
 never have reached a PR. A session that posts a plan and then ends leaves the issue
@@ -195,7 +211,9 @@ read the issue's comments first:
    launcher is what catches the first.
 
 1. Run `scripts/next-issue.py`. Name the issue and why it is next before touching
-   anything. If the operator wanted a different one, they will say so.
+   anything. If the operator wanted a different one, they will say so. To run issues in
+   parallel, take the next ready issue that clears the no-overlap checks above against
+   everything already underway, and run steps 2-5 for it independently.
 2. Read the issue in full, plus the required reading its subject implies (see "Where
    the knowledge lives") and the master plan section it came from.
 3. **Claim the issue: assign it to yourself** — the login `gh` is authenticated as,
@@ -243,8 +261,8 @@ against a misread issue:
 - **A `/go` that predates the plan is not approval** — it approves a plan that did not
   exist when it was written. Pre-marking a queue of issues with `/go` therefore clears
   nothing, and it does not make them pickable either: they are still selected by
-  dependencies and assignment (see "Picking the next issue"), and only one issue is in
-  flight at a time. Post the plan and wait for a `/go` that comes after it. If the
+  dependencies, assignment and the no-overlap checks (see "Picking the next issue").
+  Post the plan and wait for a `/go` that comes after it. If the
   operator means "skip the checkpoint on this issue", take that only as the explicit
   instruction described above, not as an inference from comment order.
 - Approval covers the plan as posted. If implementation forces a material departure
