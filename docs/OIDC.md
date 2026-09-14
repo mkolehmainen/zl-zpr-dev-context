@@ -845,6 +845,15 @@ and the code disagree.
 - **The `zpr.` sub-namespace is reserved from declared trusted services** —
   zpr-compiler#146, merged as PR #147 (`zl-zpr-compiler` e2eecd6). The authority
   marker is now enforced, not advisory.
+- **An `api = "oidc"` service is retained regardless of whether policy
+  references its attributes** — zipline#23 (`zl-zpr-compiler` PR #4,
+  `Weaver::retain_identity_vendors`). The weaver's reference-based pruning
+  keeps a trusted service only when ZPL names one of its returned attributes;
+  an OIDC provider declares `identity_attributes`, and those are the lookup
+  keys of every attribute store in the policy, so it is now woven
+  unconditionally. Before this, a configuration whose only policy statement
+  referenced a `file` store's attribute compiled with the OIDC provider pruned
+  and every login failed with no OIDC service in the fabric.
 - **Namespaced authority attributes in the visa service** — zpr-visaservice#324,
   merged as PR #331 (`zl-zpr-visaservice` 72230cf). `device.zpr.authority` and
   `user.zpr.authority` replace the single `zpr.authority`,

@@ -316,8 +316,24 @@ returns_attributes = [
 identity_attributes = [ "bas_id" ]   # service-side names, not ZPL names
 ```
 
+**A trusted service that vends identity attributes is always woven into the
+compiled policy**, whether or not any ZPL statement references its returned
+attributes (zipline#23). Every other trusted service is retained by reference:
+the weaver marks a service used only when policy names one of its attributes,
+and prunes the rest. That reference test cannot decide the question for an
+identity vendor, because its attributes are the *lookup keys* of every
+attribute store in the policy — a `file` store's JSON is keyed by identity
+attribute and value, and the compiler cannot see a JSON file's keys. So an
+`api = "oidc"` service whose `user.sub` is referenced by nothing in ZPL must
+still survive compilation: the visa service needs it to authenticate the user
+and to mint the identity attribute the file store is keyed on. The compiler
+emits an `info` diagnostic naming each service retained by this rule, and a
+`file` or `validation/2` service that declares no identity attributes and is
+unreferenced is still pruned as before.
+
 A worked pair to read first: `zl-zpr-compiler/test-data/m3-ping-and-http.zpl` and
-its `.zplc`.
+its `.zplc`. For the identity-vendor retention rule, see
+`test-data/test-oidc-file-interplay.zpl` / `.zplc`.
 
 ### Building and testing the compiler
 

@@ -140,6 +140,21 @@ trusted services is named in policy rather than discovered.
   every time.
 - **Attribute changes propagate.** Because sources are dynamic, changed values
   feed back into policy checking and can invalidate live visas.
+- **The authority marker belongs to the credential verifier.**
+  `user.zpr.authority` (and its device twin) names the trusted service that
+  *verified the credential* establishing the identity — the OIDC provider that
+  validated the token, or `zpr-bootstrap` for a device key. A service that
+  merely *adds* attributes to an already-identified actor (a `file` store
+  decorating on an identity attribute) never displaces it: the visa service's
+  `derive_user_authority` refuses to mint an authority over an existing one
+  held by a different source (zipline#25/#26). The one deliberate exception is
+  re-derivation *by the same source* — the guard is `existing != source`, not
+  `existing.is_some()` — because the authenticator must re-stamp the marker's
+  expiry against its own user record on every refresh; blocking that would
+  freeze the expiry and let the authority lapse mid-session. Without this rule
+  a decorating store could silently take ownership of an identity it never
+  verified, and the authenticator's `vouched_here` gate would then prune the
+  real identity attributes on the next refresh.
 
 Trusted-service API calls are themselves signed with an HMAC over the function
 name, an RFC3339 timestamp, and the canonically serialized arguments; the

@@ -1,5 +1,12 @@
 # Trusted Service Interplay
 
+> **Status: COMPLETE (2026-09-14).** All five issues landed: C1
+> (zipline#23, compiler PR #4), V1 (zipline#24, vs PR #9), V2 (zipline#25,
+> vs PR #10), V3 (zipline#26, vs PR #12), I1 (zipline#27 — the e2e fixture in
+> `zl-zpr-core` and the documentation edits in this repository). The V1
+> outcome, including the join-matching answer, is recorded under Finding 3
+> below.
+
 
 ## Background
 
@@ -72,7 +79,7 @@ service to obtain the 'user.email' key.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development`
 > or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox
-> (`- [ ]`) syntax for tracking.
+> (`- [x]`) syntax for tracking.
 >
 > **ZPR process rule (`skills/zpr/SKILL.md`):** every GitHub issue gets its own plan posted
 > as an issue comment *before* implementation. This document is the **master plan**: it fixes
@@ -186,6 +193,38 @@ This finding was traced by reading, not by execution. **Task V1 is the gate:** i
 passes as written against today's code, the finding is wrong and Tasks V2/V3 drop out of
 this plan.
 
+#### V1 outcome (2026-09-14, zipline#24, vs PR #9): Finding 3 CONFIRMED by execution
+
+All three defect tests failed exactly as predicted against the pre-fix code:
+
+- **Connect path:** the actor's `user.zpr.authority` came out `["happyfile"]`
+  where `["google"]` was expected — the decorating store's derived authority,
+  pushed after the OIDC arm's stamp, won the last-writer race in `Actor::attrs`.
+- **Refresh path, symptom 1:** a TTL refresh touching only the decorating store
+  displaced the authority the same way.
+- **Refresh path, symptom 2:** from the displaced state, google's `vouched_here`
+  gate answered empty → `user.sub` was pruned as no-longer-vended → the file
+  store's lookup missed → `user.zpr.tag.lazy` was lost. The actor lost `lazy`
+  mid-session, as predicted.
+
+**The join-matching answer** (Finding 3's last bullet): a join policy
+conditioned on `user.zpr.authority:google` does **NOT** match when the
+displaced `happyfile` value is also in the claim slice. `match_join_policies`
+does receive both authority values, but `JPolicy::matches`
+(`libeval/src/joinpolicy.rs:124`) evaluates *every* attribute whose key matches
+a condition — its comment "We assume the key appears only once in the incoming
+list" names the assumption this defect violates — so the `happyfile` entry
+fails the `Eq google` check and vetoes the whole policy. The defect therefore
+surfaced at connect time as a `policyDenied` refusal ("no join policy admits
+this connection"), **not** as a silently-connected actor carrying the wrong
+authority. An operator debugging it sees a refused join against a policy that
+looks like it should match.
+
+V2 and V3 fixed it (three-arg `derive_user_authority` with the `!=` guard;
+authority threaded through connect first-wins and refresh); the V1 tests were
+un-ignored and pass, and I1's end-to-end fixture re-asserts the invariant
+across a live refresh cycle.
+
 ---
 
 ## Global constraints
@@ -264,23 +303,23 @@ are.**
 
 **Steps.**
 
-- [ ] Write the failing test in `weaver.rs`, mirroring the existing
+- [x] Write the failing test in `weaver.rs`, mirroring the existing
       `test_trusted_service_transitive_use`: declare an `oidc` service and a `file`
       service, reference only the file service's attribute, assert both are woven.
       Confirm it fails today with only the file service present.
-- [ ] Add `Weaver::retain_identity_vendors(&mut self, config, ctx)`. Enumerate
+- [x] Add `Weaver::retain_identity_vendors(&mut self, config, ctx)`. Enumerate
       `config.must_get_keys("/trusted_services")` **sorted** (deterministic diagnostics),
       read `/trusted_services/{ts}/id_attributes` as `ConfigItem::KeySet` (the accessor
       already used at `weaver.rs:1418`), and call `add_used_trusted_service` for any
       non-empty list. Skip `zpl::DEFAULT_TRUSTED_SERVICE_ID`.
-- [ ] Call it from `add_trusted_services` **immediately before**
+- [x] Call it from `add_trusted_services` **immediately before**
       `resolve_trusted_service_providers`, so a newly retained service's own provider
       attributes still resolve through the existing fixpoint (this matters for a
       `validation/2` identity vendor and for an `oidc` service naming a JWKS proxy).
-- [ ] Emit `ctx.info()` naming each service retained by this rule rather than by an
+- [x] Emit `ctx.info()` naming each service retained by this rule rather than by an
       attribute reference. `info`, not `warn`: for `oidc` this is now the normal case, and
       it must not trip `--Werror`.
-- [ ] Add `test-data/test-oidc-file-interplay.zpl` / `.zplc` from the Background, and
+- [x] Add `test-data/test-oidc-file-interplay.zpl` / `.zplc` from the Background, and
       assert via `zpdump` that both trusted services appear in the binary policy.
 
 **Acceptance criteria.**
@@ -305,18 +344,18 @@ time.
 
 **This task is the gate for V2 and V3.** It changes no production code.
 
-- [ ] Unit test in `vs/src/trusted_services/mod.rs` (alongside the existing tests at
+- [x] Unit test in `vs/src/trusted_services/mod.rs` (alongside the existing tests at
       `:149-208`): `derive_user_authority("happyfile", [user.zpr.tag.lazy])` currently
       returns `Some(happyfile)` with no regard for an authority already held.
-- [ ] Connect-path test in `vs/src/connection_control.rs`, using the fake trusted-service
+- [x] Connect-path test in `vs/src/connection_control.rs`, using the fake trusted-service
       harness at `:1743`: authenticate via an OIDC blob, have a file store vend a `user.*`
       attribute, and assert the resulting actor's `user.zpr.authority == "google"`.
       Expected to fail today with `"happyfile"`. Pin the store order in the harness
       explicitly — do not rely on the ids sorting the way you want.
-- [ ] While in there, check whether a join policy conditioned on
+- [x] While in there, check whether a join policy conditioned on
       `user.zpr.authority:google` matches even when the actor ends up with `happyfile`
       (see Finding 3's last bullet), and record the answer in this document.
-- [ ] Refresh-path test in `vs/src/actor_attributes.rs`: after a refresh in which both
+- [x] Refresh-path test in `vs/src/actor_attributes.rs`: after a refresh in which both
       stores answer, assert the authority is still `google` and that `user.sub` and the
       file store's tag both survive.
 
@@ -325,7 +364,7 @@ V3, and record the correction in this document.
 
 ### Task V2: `derive_user_authority` — the authenticating service keeps the authority
 
-- [ ] Change the signature in `vs/src/trusted_services/mod.rs:81`:
+- [x] Change the signature in `vs/src/trusted_services/mod.rs:81`:
 
 ```rust
 pub(crate) fn derive_user_authority(
@@ -335,7 +374,7 @@ pub(crate) fn derive_user_authority(
 ) -> Option<Attribute>
 ```
 
-- [ ] Return `None` when `existing_authority` is `Some(other)` and `other != source_id`.
+- [x] Return `None` when `existing_authority` is `Some(other)` and `other != source_id`.
 
 **The `!=` is load-bearing.** When the existing authority *is* this source, derivation must
 still proceed: that is how the authenticating service re-stamps its expiry against its own
@@ -343,18 +382,18 @@ user record on every refresh (issue #324's purpose — the authority must not ou
 record it vouches for). Blocking on `Some(_)` unconditionally would freeze the expiry and
 let the authority lapse mid-session. Cover both arms with tests.
 
-- [ ] Extend the doc comment to state the ownership rule and why: a service that decorates
+- [x] Extend the doc comment to state the ownership rule and why: a service that decorates
       an already-identified actor is not the authority for that identity.
 
 ### Task V3: Pass the existing authority at both call sites
 
-- [ ] `vs/src/connection_control.rs:735` — read the current authority out of
+- [x] `vs/src/connection_control.rs:735` — read the current authority out of
       `authd_claims` into an **owned** `Option<String>` before the call; the loop body
       pushes into `authd_claims`, so holding a borrow across the call will not compile.
       Recompute it **inside** the loop, per iteration.
-- [ ] `vs/src/actor_attributes.rs:166` — read from
+- [x] `vs/src/actor_attributes.rs:166` — read from
       `actor.get_attribute(key::USER_AUTHORITY)`.
-- [ ] Confirm the V1 tests now pass.
+- [x] Confirm the V1 tests now pass.
 
 **Behaviour change to note in the PR.** Two file stores both vending `user.*` with no IdP
 present go from last-wins to first-wins in `policy.list_services()` order. Both were
@@ -376,23 +415,23 @@ derivation proceeds exactly as today.
 
 ### Task I1: End-to-end fixture and docs
 
-- [ ] Integration test exercising the Background's configuration against the fake IdP
+- [x] Integration test exercising the Background's configuration against the fake IdP
       (the `D5` harness from the OIDC plan): connect with a Google token, confirm the
       actor carries `user.sub`, `user.email`, `user.zpr.tag.lazy` and
       `user.zpr.authority = google`, and that `allow lazy users to access Web` issues a
       visa. Let at least one refresh cycle elapse and re-assert — that is what catches a
       regression of Finding 3, which is invisible on the connect path alone.
-- [ ] `docs/ZPL.md` — document that a trusted service vending identity attributes is
+- [x] `docs/ZPL.md` — document that a trusted service vending identity attributes is
       always woven, and why reference-based pruning cannot decide the question.
-- [ ] `docs/OIDC.md` — `## Implementation status`: an `api = "oidc"` service is retained
+- [x] `docs/OIDC.md` — `## Implementation status`: an `api = "oidc"` service is retained
       regardless of whether policy references its attributes.
-- [ ] `docs/SECURITY_MODEL.md` — the `user.zpr.authority` ownership rule: the service that
+- [x] `docs/SECURITY_MODEL.md` — the `user.zpr.authority` ownership rule: the service that
       verified the credential holds it; a service that only adds attributes never displaces
       it.
-- [ ] `docs/VISA_SERVICE.md` — record that attribute stores are queried by identity
+- [x] `docs/VISA_SERVICE.md` — record that attribute stores are queried by identity
       attributes only, and the structural reason (the lookup set is fixed before any store
       is queried).
-- [ ] Update this document with the V1 outcome.
+- [x] Update this document with the V1 outcome.
 
 ---
 
