@@ -55,6 +55,7 @@ paths, so they can be opened directly.
 | Changing the topology schema, `Router`/`TopologyMgr`, or how a visa's next hop is chosen | `docs/ROUTING.md` |
 | Working any OIDC issue (`mkolehmainen/zipline#1` and its sub-issues) | `docs/OIDC.md`, then that issue's section of `docs/plans/2026-09-02-oidc-implementation-plan.md` |
 | Changing OIDC token validation, JWKS handling, or the `api = "oidc"` trusted service | `docs/OIDC.md`, `docs/SECURITY_MODEL.md` |
+| Writing or reviewing Rust code | `skills/rust-coding-guidelines/SKILL.md` |
 
 Two rules that apply to every task above:
 
