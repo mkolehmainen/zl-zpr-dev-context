@@ -356,7 +356,7 @@ they demand different actions:
 | Discovery / network | cannot reach the issuer — not an auth problem |
 | Visa service rejected the token | misconfiguration, **not** the user's fault; distinct exit code |
 | Device blob failed | do not blame the Google login |
-| **Authenticated, but policy denied join** | login worked; this endpoint is not permitted |
+| ~~**Authenticated, but policy denied join**~~ | *superseded -- see Implementation status* |
 
 The last is the sharpest: "your login failed" and "your login succeeded but
 policy will not admit this endpoint" require completely different responses and
@@ -851,6 +851,18 @@ and the code disagree.
   `POLICY_MIN_COMPILER_MINOR` is 16, and `get_authentication_expiration` takes the
   minimum over both authorities and the identity keys. A compiler-0.16 policy's
   bare `allow users ...` rule now behaves as designed.
+
+**Superseded:**
+
+- **A validated login that matches no join policy is *not* refused.** The spec's
+  `policyDenied` row above and the plan's Contract 2 had the visa service reject
+  such a connect; that is reverted (`connection_control.rs`, `libeval`
+  `approve_connection`). A join policy grants a role and services, so an endpoint
+  without one can reach nothing regardless -- the same #227 fallthrough the
+  device-only path always had. "Admit only logins vouched by trusted service X" is
+  a real want, but it is a policy feature ZPL cannot express yet, and refusing the
+  join was the wrong lever for it. `ErrorCode::policyDenied` stays in the wire
+  schema, unused by this path.
 
 **Not yet:**
 
