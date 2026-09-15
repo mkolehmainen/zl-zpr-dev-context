@@ -19,7 +19,8 @@ the `policy.capnp` / `vs.capnp` schemas, or the ZPR RFCs.
 ZPR = Zero-trust Packet Routing.
 
 **Fork layout.** The zipline workspace is a set of forks: every `zl-zpr-<name>`
-repository under `mkolehmainen` is a fork of `org-zpr/zpr-<name>`, and all are
+repository under `mkolehmainen` is a fork of `org-zpr/zpr-<name>` — except
+`zl-zpr-coredns`, a new non-fork Go repository — and all are
 public. **Branches and PRs live in the forks. Issues do not** — they are filed
 centrally in `mkolehmainen/zipline`, a tracker-only repository with no code, and
 each one names the fork its code belongs in. So a task is `mkolehmainen/zipline#7`
@@ -33,7 +34,9 @@ org-owned boards under `org-zpr` do not track this work.
 Each fork has two long-lived branches: **`zipline`** is the working branch and the
 repository default, and **`main`** is a read-only mirror of upstream that nothing
 should ever commit to. Work targets `zipline`. See "Git / PR conventions" for the
-`gh pr create` footgun this creates.
+`gh pr create` footgun this creates. The one exception is **`zl-zpr-coredns`**:
+not a fork, so no upstream mirror exists — its working and default branch is
+**`main`**, and branches and PRs there start from and target `main`.
 
 The forks are **partly** repointed (`zipline#17`, PRs open and unmerged at the
 time of writing): the `zpr` crate dependency
@@ -318,10 +321,13 @@ What that does and does not mean for assignment:
 
 - Branch names: `<login>/<topic>` or `<login>/<issue#>-<topic>`,
   e.g. `mk/254-json`, `ort/update-deps`.
-- **Base branch is `zipline`, never `main`.** `main` is a read-only mirror of
+- **Base branch is `zipline`, never `main`** — in every fork. `main` is a
+  read-only mirror of
   upstream in every fork; `zipline` is the working branch and the repository
   default. Branch off `zipline` and target `zipline`. Merge subjects carry `(#NNN)`.
   See `zl-zpr-dev-context/docs/REPOSITORIES.md` ("Branch model").
+  **Exception: `zl-zpr-coredns` is not a fork** and has only `main`, which is
+  its working and default branch — branch off `main` and target `main` there.
 - **`gh pr create` in a fork defaults its base to the *parent* repository.** Left
   alone it will offer to open your PR against `org-zpr`, which is almost never what
   you want. Always be explicit:
