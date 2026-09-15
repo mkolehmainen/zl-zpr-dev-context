@@ -22,7 +22,7 @@ evaluation. Changes to issuance behavior should also be read against
 |---|---|
 | *ZPR Visa Service Specification / Design Document* (2025-09-03) | The design intent. Explicitly work-in-progress, and parts are marked sketchy or TODO by its authors. |
 | `zl-zpr-visaservice/` | What actually runs. Workspace version 0.18.0. |
-| `zl-zpr-visaservice/admin-http-api.txt` | The admin API, current as of 2026-08-10 and changing frequently. |
+| `zl-zpr-visaservice/admin-http-api.txt` | The admin API, current as of 2026-09-15 and changing frequently. |
 | `zl-zpr-visaservice/libeval/README.md` | The evaluator's API and staging model. |
 
 The design document predates the current implementation and has drifted; §
@@ -337,9 +337,15 @@ Generate keys with `vsapikey`.
 Endpoints cover actors (`/admin/actors`, plus their visas), services and their
 caches, visas (including `/admin/visas/denies`), the network view, statistics,
 policies (`GET`/`POST /admin/policies`, `/admin/policies/curr`), and
-authentication revocation. Some — the authrevoke endpoints, `DELETE` visas, and
+authentication revocation. Actor endpoints are keyed by **ZPR address**, not
+CN: `GET /admin/actors` returns `{zpr_addr, cn}` entries where `cn` is a
+display label that may be null (an OIDC-only connect has no CN), and the
+per-actor paths take the address (`/admin/actors/{zpr_addr}`; a malformed
+address is a 400). Some — the authrevoke endpoints, `DELETE` visas, and
 `DELETE` actors — still return placeholder data; `admin-http-api.txt` marks
-each one and is the endpoint reference.
+each one and is the endpoint reference. `DELETE /admin/actors/{zpr_addr}`,
+when implemented, kicks the actor's live session; credential revocation is
+`/admin/authrevoke`.
 
 Note that unless you are on the same host, reaching the admin API requires
 **policy permission** like any other service on the ZPRnet.
