@@ -821,14 +821,16 @@ model wrongly.
 
 ## Implementation status
 
-Re-checked against the forks' `zipline` branches on 2026-09-03 (`zl-zpr-compiler`
-0.16.0, `zl-zpr-visaservice` 0.18.0, `zl-zpr-core`). **Nothing in this document's
-OIDC design is implemented yet**; what is done is the prerequisite work underneath
-it. Work is tracked under
-[zipline#1](https://github.com/mkolehmainen/zipline/issues/1)
-and sequenced by `docs/plans/2026-09-02-oidc-implementation-plan.md`; the
-plan's *What changed since the spec* table is authoritative where this document
-and the code disagree.
+Re-checked against the forks' `zipline` branches on 2026-09-15 (`zl-zpr-compiler`
+0.17.0, `zl-zpr-visaservice` 0.19.0, `zl-zpr-common` 0.26.0, `zl-zpr-core`).
+**The OIDC design in this document is implemented**: the umbrella epic
+[zipline#1](https://github.com/mkolehmainen/zipline/issues/1) is closed, and the
+oidc + file interplay epic
+[zipline#22](https://github.com/mkolehmainen/zipline/issues/22) has merged its
+code half, including the end-to-end fixture. The build was sequenced by
+`docs/plans/2026-09-02-oidc-implementation-plan.md`; the plan's *What changed
+since the spec* table is authoritative where this document and the code
+disagree.
 
 **Implemented (the prerequisites):**
 
@@ -845,12 +847,61 @@ and the code disagree.
 - **The `zpr.` sub-namespace is reserved from declared trusted services** —
   zpr-compiler#146, merged as PR #147 (`zl-zpr-compiler` e2eecd6). The authority
   marker is now enforced, not advisory.
+- **An `api = "oidc"` service is retained regardless of whether policy
+  references its attributes** — zipline#23 (`zl-zpr-compiler` PR #4,
+  `Weaver::retain_identity_vendors`). The weaver's reference-based pruning
+  keeps a trusted service only when ZPL names one of its returned attributes
+  (or another retained service's provider depends on it — see `docs/ZPL.md`);
+  an OIDC provider declares `identity_attributes`, and those are the lookup
+  keys of every attribute store in the policy, so it is now woven
+  unconditionally. Before this, a configuration whose only policy statement
+  referenced a `file` store's attribute compiled with the OIDC provider pruned
+  and every login failed with no OIDC service in the fabric.
 - **Namespaced authority attributes in the visa service** — zpr-visaservice#324,
   merged as PR #331 (`zl-zpr-visaservice` 72230cf). `device.zpr.authority` and
   `user.zpr.authority` replace the single `zpr.authority`,
   `POLICY_MIN_COMPILER_MINOR` is 16, and `get_authentication_expiration` takes the
   minimum over both authorities and the identity keys. A compiler-0.16 policy's
   bare `allow users ...` rule now behaves as designed.
+
+**Implemented (the design itself):**
+
+- **Schema mirrors** — `OidcConfig`, `OidcBlob`, `ServiceT`, `OidcClientConfig`
+  (zipline#4, `zl-zpr-common` 0.26.0). The forks' cross-repository dependencies
+  were repointed at `mkolehmainen` first (zipline#17, plan issue A0, closed), so
+  schema changes reach their consumers.
+- **`api = "oidc"` in the compiler** — the declaration is parsed and validated
+  (zipline#5) and compiled to `OidcConfig`, with the JWKS-proxy access rule
+  woven (zipline#6). `zl-zpr-compiler` 0.17.0.
+- **Multiple auth blobs** — the visa service accepts one blob per identity
+  namespace, and a presented-but-invalid blob fails the whole connect
+  (zipline#7). The old one-blob rejection (plan issue C1) is gone.
+- **JWT validation** — offline `id_token` validation with vector tests
+  (zipline#8).
+- **The JWKS key source** — seeded keys, `CONNECT`-proxied refresh, stale
+  tolerance (zipline#9), plus the ActorDb-backed proxy resolver and periodic
+  refresher (zipline#19).
+- **The `oidc` trusted-service store and IdP service descriptor** (zipline#10),
+  with per-issuer identity scoping via `user.zpr.authority`
+  (`vs/src/oidc/store.rs`).
+- **The connect path** — OIDC blobs validated on connect,
+  `user.zpr.authority` stamped from the vouching service,
+  `POLICY_MIN_COMPILER_MINOR` raised to 17 (zipline#11); `zl-zpr-visaservice`
+  0.19.0.
+- **The adapter and CLI flows** — the `AuthAgent` capability and the `ph-cli`
+  relying-party flow (`adapter/cli/src/oidc.rs`), `--no-browser` for headless
+  runs (zipline#20), and adapter idle mode (zipline#28).
+- **Authority ownership across refresh** — `derive_user_authority` keeps the
+  authenticating service's authority; a decorating attribute store never
+  displaces it (zipline#24–#26).
+- **Address-keyed admin surface** — the admin actor API and dashboard are keyed
+  on ZPR address, so an OIDC-only actor with no CN is visible (zipline#31,
+  zipline#32).
+- **End-to-end fixtures** — the one-node fake-IdP harness (zipline#16) and the
+  oidc + file trusted-service interplay test (zipline#27, `zl-zpr-core`
+  02b730d): a `zpdump` pruning-regression pre-check, connect and visa
+  assertions, and refresh legs covering the Finding 3 regression from
+  `docs/plans/2026-09-14-trusted-service-interplay.md`.
 
 **Superseded:**
 
@@ -866,17 +917,15 @@ and the code disagree.
 
 **Not yet:**
 
-- `api = "oidc"`, `OidcConfig`, the `oidc` auth blob, JWT validation, the JWKS
-  source, the `AuthAgent` RPC, and the `ph-cli` relying-party flow do not exist.
-- The visa service still rejects a `ConnectRequest` carrying more than one blob
-  (`connection_control.rs:221`), so the two-credential cases cannot be reached
-  (plan issue C1).
-- **The forks' cross-repository dependencies still resolve to `org-zpr`** —
-  `zl-zpr-common/.gitmodules`, and the `zpr` git dependency in `zl-zpr-compiler`,
-  `zl-zpr-visaservice` and `zl-zpr-core`. Until they are repointed, no schema
-  change made in `zl-zpr-policy` or `zl-zpr-vsapi` can reach its consumers. This
-  is plan issue A0 ([zipline#17](https://github.com/mkolehmainen/zipline/issues/17))
-  and it blocks the whole schema fan-out.
+- The netns end-to-end legs have not run in CI: Actions is disabled on the
+  forks, and the interplay test's netns run needs root, so it is pending the
+  operator's environment (`zl-zpr-core` 02b730d records what was run locally —
+  fixture compile, `bash -n`, the fake-IdP smoke test, and the C1-revert
+  `zpdump` RED).
+- Real-Google validation is a manual release checklist
+  (`zl-zpr-core/integration-test/OIDC-RELEASE-CHECKLIST.md`), not automated —
+  the fake IdP cannot prove the `hd`-absent rejection against Google's actual
+  behavior.
 - `zpr-bas` and the adapter's `OAuthRsa` client are deprecated and still
   present; the hardcoded BAS certificate expired on 2026-04-16.
 
