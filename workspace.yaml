@@ -45,6 +45,14 @@ repositories:
     url: git@github.com:mkolehmainen/zl-zpr-policy.git
     default_branch: zipline
 
+  # CoreDNS with the ZPR resolver plugin.
+  #
+  # Not a fork of anything upstream, so there is no read-only `main` mirror to
+  # keep pristine and work happens on `main` (mkolehmainen/zipline#37).
+  - name: zl-zpr-coredns
+    url: git@github.com:mkolehmainen/zl-zpr-coredns.git
+    default_branch: main
+
   # Zero-Trust Packet Routing RFCs
   - name: zl-zpr-rfcs
     url: git@github.com:mkolehmainen/zl-zpr-rfcs.git

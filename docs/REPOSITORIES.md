@@ -24,6 +24,7 @@ each into a directory matching its repository name:
 ├── zl-zpr-vsapi/
 ├── zl-zpr-compiler/
 ├── zl-zpr-policy/
+├── zl-zpr-coredns/
 ├── zl-zpr-rfcs/
 ├── zl-zpr-demo/
 ├── zl-zpr-utils/
@@ -31,12 +32,14 @@ each into a directory matching its repository name:
 ```
 
 All are public repositories under the [`mkolehmainen`](https://github.com/mkolehmainen)
-GitHub account at `git@github.com:mkolehmainen/<name>.git`, and all check out
-`zipline` (see "Branch model" below).
+GitHub account at `git@github.com:mkolehmainen/<name>.git`.
 
-Each is a fork of the corresponding upstream repository in the
+All but one are forks of the corresponding upstream repository in the
 [`org-zpr`](https://github.com/org-zpr) organization — `zl-zpr-core` forks
-`org-zpr/zpr-core`, `zl-zpr-common` forks `org-zpr/zpr-common`, and so on.
+`org-zpr/zpr-core`, `zl-zpr-common` forks `org-zpr/zpr-common`, and so on — and
+all of those check out `zipline` (see "Branch model" below). The exception is
+`zl-zpr-coredns`, which has no upstream: it is a new repository and its working
+branch is `main`.
 
 > **The forks are partly rewired** by `mkolehmainen/zipline#17`, whose four PRs
 > are open and unmerged at the time of writing. The `zpr` crate dependency and
@@ -54,7 +57,8 @@ Use `zpr-dev status` to see the state of every checkout at once.
 
 ## Branch model
 
-Every fork carries two long-lived branches:
+Every fork carries two long-lived branches (`zl-zpr-coredns` is not a fork and
+has only `main`):
 
 | Branch | Role |
 |---|---|
@@ -127,6 +131,7 @@ as `zl-v0.26.0`, not `v0.26.0`.
 | [`zl-zpr-vsapi`](#zl-zpr-vsapi) | Cap'n Proto | IDL for the Visa Service API |
 | [`zl-zpr-compiler`](#zl-zpr-compiler) | Rust | `zplc`, the ZPL policy compiler |
 | [`zl-zpr-policy`](#zl-zpr-policy) | Cap'n Proto | IDL for the binary policy descriptor |
+| [`zl-zpr-coredns`](#zl-zpr-coredns) | Go | CoreDNS with the `zpr` resolver plugin |
 | [`zl-zpr-rfcs`](#zl-zpr-rfcs) | LaTeX / Docker | Public ZPR RFCs — the architectural reference |
 | [`zl-zpr-demo`](#zl-zpr-demo) | HCL | Runnable ZPRnet demonstrations |
 | [`zl-zpr-utils`](#zl-zpr-utils) | Rust | Non-ZPR-specific utility crates |
@@ -156,6 +161,9 @@ zl-zpr-vsapi  ─┴─► zl-zpr-common      submodules inside zl-zpr-common)
 - **`zl-zpr-compiler` closes the policy loop.** It compiles ZPL source into a
   signed binary policy that the visa service loads; the signing key must match
   the one the visa service is configured with.
+- **`zl-zpr-coredns` depends on nothing in this workspace at build time.** It
+  talks to the visa service over its admin HTTP API at run time, so the API
+  contract — not a crate — is the coupling.
 - **`zl-zpr-utils` and `zl-zpr-dev-tools` are leaves** — nothing in the protocol path
   depends on them.
 - **`zl-zpr-rfcs` is the specification**, not code. Read it before changing
@@ -256,6 +264,17 @@ format `zl-zpr-compiler` emits and `libeval` consumes.
 
 Like `zl-zpr-vsapi`, it is consumed as a submodule of `zl-zpr-common`, and its
 schemas are pre-release.
+
+### `zl-zpr-coredns`
+
+CoreDNS built with the `zpr` plugin: it answers AAAA queries for ZPL service
+names by asking the visa service's admin API for the service's ZPR address, so
+a ZPR endpoint can reach a service by name.
+
+The only repository here that is not a fork, and the only one written in Go.
+`make build` clones CoreDNS at a pinned tag and compiles the plugin into
+`bin/coredns`; the demo bakes that binary into its own image. See
+`docs/plans/2026-09-15-dns-integration.md`.
 
 ### `zl-zpr-rfcs`
 
