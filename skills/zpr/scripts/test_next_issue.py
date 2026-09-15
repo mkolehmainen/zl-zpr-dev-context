@@ -18,15 +18,21 @@ next_issue = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(next_issue)
 
 
-def issue(number, blockers=(), assignees=(), label="core"):
-    """One GraphQL issue node. `blockers` is a list of (number, state) pairs."""
+def issue(number, blockers=(), assignees=(), label="core", state="OPEN", subs=()):
+    """One GraphQL issue node.
+
+    `blockers` is a list of (number, state) pairs; `subs` is a list of issue
+    numbers, which is what makes this node an umbrella.
+    """
     return {
         "number": number,
         "title": f"issue {number}",
         "url": f"https://github.com/mkolehmainen/zipline/issues/{number}",
+        "state": state,
         "labels": {"nodes": [{"name": label}]},
         "assignees": {"nodes": [{"login": a} for a in assignees]},
         "blockedBy": {"nodes": [{"number": n, "state": s} for n, s in blockers]},
+        "subIssues": {"nodes": [{"number": n} for n in subs]},
     }
 
 
@@ -61,9 +67,53 @@ def test_assigned_is_underway_not_ready():
 
 
 def test_umbrella_is_never_a_work_item():
-    ready, underway = next_issue.select([issue(next_issue.UMBRELLA)], {})
-    assert numbers(ready) == [], ready
+    """An issue with sub-issues is a container for work, not a task.
+
+    The regression this guards: with the umbrella hardcoded as `#1`, filing a
+    second umbrella made it pickable, and an unattended agent was offered a
+    whole feature as its next task.
+    """
+    issues = [issue(34, subs=[35, 36]), issue(35), issue(36)]
+    ready, underway = next_issue.select(issues, {35: 0, 36: 1})
+    assert numbers(ready) == [35, 36], ready
     assert numbers(underway) == [], underway
+
+
+def test_closed_issue_is_neither_ready_nor_underway():
+    """The query fetches every state so closed umbrellas can be read; closed
+    issues must not come back out as work."""
+    issues = [issue(2, state="CLOSED"), issue(5)]
+    ready, underway = next_issue.select(issues, {2: 0, 5: 1})
+    assert numbers(ready) == [5], ready
+    assert numbers(underway) == [], underway
+
+
+def test_execution_order_spans_umbrellas_oldest_first():
+    """Two features in flight: the earlier umbrella's tasks come first, and
+    within an umbrella its sub-issue order wins over issue number."""
+    issues = [issue(34, subs=[36, 35]), issue(1, subs=[9, 4]),
+              issue(4), issue(9), issue(35), issue(36)]
+    order = next_issue.execution_order(issues)
+    assert order == {9: 0, 4: 1, 36: 2, 35: 3}, order
+    ready, _ = next_issue.select(issues, order)
+    assert numbers(ready) == [9, 4, 36, 35], ready
+
+
+def test_closed_umbrella_still_orders_its_open_children():
+    """A finished feature can leave an open task behind -- it keeps its
+    position rather than falling back to issue-number order."""
+    issues = [issue(1, subs=[18, 9], state="CLOSED"), issue(18), issue(9)]
+    order = next_issue.execution_order(issues)
+    assert order == {18: 0, 9: 1}, order
+    ready, _ = next_issue.select(issues, order)
+    assert numbers(ready) == [18, 9], ready
+
+
+def test_issue_on_no_umbrella_sorts_after_every_attached_one():
+    issues = [issue(1, subs=[9]), issue(9), issue(3)]
+    order = next_issue.execution_order(issues)
+    ready, _ = next_issue.select(issues, order)
+    assert numbers(ready) == [9, 3], ready
 
 
 def test_execution_order_wins_over_issue_number():

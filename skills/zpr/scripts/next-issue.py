@@ -3,7 +3,7 @@
 
 An issue is READY when it is open, every issue in its GitHub native `blockedBy`
 dependency list is closed, and it is UNASSIGNED. The NEXT issue is the ready
-issue that comes first in the umbrella's sub-issue list, which is maintained in
+issue that comes first in its umbrella's sub-issue list, which is maintained in
 execution order (see "Picking the next issue" in ../SKILL.md) -- so position in
 that list already encodes critical-path-first and no separate tiebreak is
 needed.
@@ -13,6 +13,11 @@ issue before branching, so assignment is the marker that someone already holds
 it. Without this an unattended agent re-picks the issue it is already working
 -- an open issue with an open PR still has all its blockers closed. Underway
 issues are reported separately so they can be polled instead of picked up.
+
+An UMBRELLA -- an issue that has sub-issues -- is a container for work, not
+work itself, so it is never reported as pickable. Umbrellas are *derived* from
+the sub-issue graph rather than listed here: the tracker holds one umbrella per
+feature and filing the next one must not require editing this script.
 
 This reads state and changes nothing.
 
@@ -32,18 +37,21 @@ from ghretry import run_gh  # noqa: E402
 
 OWNER = "mkolehmainen"
 REPO = "zipline"
-UMBRELLA = 1  # tracking issue; never itself a work item
 
+# Every issue in every state, because a *closed* umbrella can still have open
+# children -- so the sub-issue order has to be read from closed issues too.
+# `select` filters down to the open ones.
 QUERY = """
 query($owner:String!, $repo:String!, $cursor:String) {
   repository(owner:$owner, name:$repo) {
-    issues(first:100, states:OPEN, after:$cursor) {
+    issues(first:100, after:$cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title url
+        number title url state
         labels(first:10) { nodes { name } }
         assignees(first:5) { nodes { login } }
         blockedBy(first:50) { nodes { number state } }
+        subIssues(first:100) { nodes { number } }
       }
     }
   }
@@ -65,8 +73,8 @@ def gh_graphql(query, **variables):
     return d
 
 
-def open_issues():
-    """Every open issue in the tracker, with its blocked-by list."""
+def all_issues():
+    """Every issue in the tracker, with its blocked-by and sub-issue lists."""
     cursor, out = None, []
     while True:
         page = gh_graphql(QUERY, owner=OWNER, repo=REPO, cursor=cursor)
@@ -77,14 +85,33 @@ def open_issues():
         cursor = page["pageInfo"]["endCursor"]
 
 
-def execution_order():
-    """Issue numbers in umbrella sub-issue order == intended execution order.
+def umbrellas(issues):
+    """Numbers of the issues that have sub-issues, i.e. the tracking issues.
 
-    Anything not attached to the umbrella sorts after everything that is.
+    Derived, deliberately: an umbrella is recognised by its shape in the
+    sub-issue graph, so a newly filed one is excluded from the ready set with
+    no change to this script. Hardcoding a number here would silently offer the
+    next feature's umbrella to an agent as a task.
     """
-    raw = run_gh(["api", f"repos/{OWNER}/{REPO}/issues/{UMBRELLA}/sub_issues",
-                  "--paginate", "-q", ".[].number"])
-    return {int(n): i for i, n in enumerate(raw.split())}
+    return {issue["number"] for issue in issues if issue["subIssues"]["nodes"]}
+
+
+def execution_order(issues):
+    """Map issue number -> position, from every umbrella's sub-issue list.
+
+    Each umbrella keeps its sub-issues in intended execution order, which is a
+    topological sort along that feature's critical path, so position in the
+    list is the whole tiebreak. Umbrellas are walked lowest-number first, so an
+    earlier feature's tasks precede a later feature's. Anything attached to no
+    umbrella sorts after everything that is (see `summarize`).
+    """
+    order = {}
+    for umbrella in sorted(issues, key=lambda i: i["number"]):
+        for sub in umbrella["subIssues"]["nodes"]:
+            # setdefault, not assignment: an issue reachable from two umbrellas
+            # keeps its first (earliest feature's) position rather than moving.
+            order.setdefault(sub["number"], len(order))
+    return order
 
 
 def summarize(issue, order):
@@ -100,15 +127,19 @@ def summarize(issue, order):
 
 
 def select(issues, order):
-    """Split open issues into (ready, underway), both in execution order.
+    """Split issues into (ready, underway), both in execution order.
 
-    Ready = unblocked and unassigned, so it is safe to pick up. Underway =
-    unblocked but assigned, i.e. already held by someone; poll those instead.
-    Blocked issues and the umbrella itself appear in neither list.
+    Ready = open, unblocked and unassigned, so it is safe to pick up. Underway
+    = open and unblocked but assigned, i.e. already held by someone; poll those
+    instead. Closed issues, blocked issues and umbrellas appear in neither
+    list.
     """
+    tracking = umbrellas(issues)
     ready, underway = [], []
     for issue in issues:
-        if issue["number"] == UMBRELLA:
+        if issue["state"] != "OPEN":
+            continue
+        if issue["number"] in tracking:
             continue
         if any(b["state"] == "OPEN" for b in issue["blockedBy"]["nodes"]):
             continue
@@ -121,8 +152,9 @@ def select(issues, order):
 
 def main():
     as_json = "--json" in sys.argv
-    order = execution_order()
-    ready, underway = select(open_issues(), order)
+    issues = all_issues()
+    order = execution_order(issues)
+    ready, underway = select(issues, order)
 
     if as_json:
         print(json.dumps({"next": ready[0] if ready else None,

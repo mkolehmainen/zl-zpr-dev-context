@@ -116,9 +116,16 @@ and nowhere else:
   its blockers in the `blockedBy` dependency list. An issue is **ready** when it is
   open, every blocker is closed, and **nobody is assigned**. This is self-maintaining:
   merging a PR and closing its issue unblocks its dependents with no bookkeeping.
-- **The umbrella's sub-issue list**, which is kept in intended execution order. Since
+- **Each umbrella's sub-issue list**, which is kept in intended execution order. Since
   that order is a topological sort along the critical path, position in the list is
   the whole tiebreak — the first ready issue in sub-issue order is the next issue.
+  There is one umbrella per feature and several may be open at once, so umbrellas are
+  walked oldest-number-first: an earlier feature's tasks precede a later one's.
+
+  **An umbrella is recognised by having sub-issues, not by its number**, and is never
+  itself pickable — it is a container for work, not work. Nothing needs configuring
+  when you file the next one. Because a closed umbrella can still have open children,
+  the sub-issue order is read from issues in every state.
 
 Everything else that states an order — the `**Blocked by:**` line in each issue body,
 the plan document's *Issue map* and dependency graph, the board's `Ready`/`Backlog`

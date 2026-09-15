@@ -2,7 +2,7 @@
 """Reconcile the `mk zl-zpr project` board with the dependency graph.
 
 The board is documentation derived from two sources of truth -- GitHub native
-`blockedBy` edges and the umbrella's sub-issue order -- so it can always be
+`blockedBy` edges and each umbrella's sub-issue order -- so it can always be
 rebuilt from them. This script does that rebuild for the two fields that are
 mechanically derivable:
 
@@ -213,8 +213,11 @@ def main():
 
     board = gh_graphql(BOARD_QUERY, owner=OWNER, number=PROJECT_NUMBER)
     board = board["data"]["user"]["projectV2"]
-    order = next_issue.execution_order()
-    ready, underway = next_issue.select(next_issue.open_issues(), order)
+    # One fetch feeds both derivations: umbrellas and execution order come out
+    # of the same sub-issue graph that `select` reads blockers from.
+    issues = next_issue.all_issues()
+    order = next_issue.execution_order(issues)
+    ready, underway = next_issue.select(issues, order)
     plan, skipped = build_plan(
         board,
         {r["number"] for r in ready},
