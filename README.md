@@ -4,7 +4,8 @@ Agent context for ZPR development: the coding standards, architecture
 documentation, and skills that every coding agent working in a `zl-zpr-*`
 repository should see.
 
-This is the **zipline** fork of the ZPR workspace. Every repository it names is
+This is the **zipline** fork of the ZPR workspace. Every repository it names —
+with one exception — is
 a fork under [`mkolehmainen`](https://github.com/mkolehmainen) of the
 corresponding upstream repository in the
 [`org-zpr`](https://github.com/org-zpr) organization: `zl-zpr-core` forks
@@ -17,7 +18,10 @@ Each fork has two long-lived branches: **`zipline`** is the working branch and
 the repository default, and **`main`** is a read-only mirror of upstream `main`.
 Feature branches start from `zipline` and pull requests target it. See
 [`docs/REPOSITORIES.md`](docs/REPOSITORIES.md) ("Branch model") for how to sync
-and merge without breaking that.
+and merge without breaking that. The exception is
+[`zl-zpr-coredns`](https://github.com/mkolehmainen/zl-zpr-coredns) (Go): it is
+**not a fork**, so it has no upstream mirror to keep pristine — its working and
+default branch is **`main`**, and PRs there target `main`.
 
 `docs/` is the documentation agents read; the specs behind the tooling live in
 `zpr-dev/docs/specs/` (`spec-001-zpr-dev.md` for the tool as built,
@@ -26,8 +30,9 @@ and merge without breaking that.
 ## For humans: what still needs doing by hand
 
 The fork rename and the branch model are done. All eleven repositories exist as
-`mkolehmainen/zl-zpr-*`, each has a `zipline` branch created from `main`, and
-`zipline` is the default branch in every one. The list below is what tooling
+`mkolehmainen/zl-zpr-*`; every fork has a `zipline` branch created from `main`
+and `zipline` as its default branch (`zl-zpr-coredns` is not a fork and works
+on `main`). The list below is what tooling
 could not or should not do on its own.
 
 **Once per clone** — `gh` points a fork's commands at its parent by default, so
