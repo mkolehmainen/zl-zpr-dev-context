@@ -124,7 +124,8 @@ connected actor.
 
 A policy is required at startup; later updates arrive over the admin API. The
 policy carries a compiler version and the visa service rejects versions it does
-not support — this build requires **compiler 0.15.0 or later**.
+not support — this build requires **compiler 0.17.0 or later**
+(`vs/src/config.rs`, `POLICY_MIN_COMPILER_MINOR`).
 
 A policy can be **tested without loading it**: the service reports which
 existing visas the proposed policy would deny. That is only possible because it
@@ -144,17 +145,24 @@ attributes policy asks for, some of which policy designates as **identity
 attributes**. The visa service then queries other trusted services with those
 identity attributes to complete the actor's profile.
 
-**Attribute stores are queried by identity attributes only, and that is
-structural, not a policy choice.** The lookup set is computed from the
-authenticated claims *before* any store is queried
+**Attribute stores are queried by identity attributes only — plus one reserved
+exception — and that is structural, not a policy choice.** The lookup set is
+computed from the authenticated claims *before* any store is queried
 (`vs/src/trusted_services/mod.rs`, `lookup_identities`), so an attribute that
 exists only inside another store's cache can never be a lookup key. Keying a
 `file` store on `user.email` therefore cannot work by construction — `email`
 is not an identity attribute — and the store's JSON must be keyed on a
 declared identity attribute such as `user.sub` (see
-`docs/plans/2026-09-14-trusted-service-interplay.md`, Finding 2). This is a
-property worth preserving: it makes the set of query keys a function of what
-was actually authenticated, never of what some store happens to vend.
+`docs/plans/2026-09-14-trusted-service-interplay.md`, Finding 2). The one
+exception is the reserved authority marker: `lookup_identities` feeds
+`user.zpr.authority` into every lookup unconditionally, whether or not any
+service declares it, because identities such as an OIDC `sub` are unique only
+within the issuing service and stores need the authority to scope them
+per-issuer. A `file` store *can* therefore key on the authenticated authority
+marker even though `zpr.`-namespaced attributes can never appear in
+`identity_attributes`. This is a property worth preserving: it makes the set
+of query keys a function of what was actually authenticated, never of what
+some store happens to vend.
 
 With attributes in hand it evaluates the actor against policy: may it
 communicate on the ZPRnet at all, may it host services, does it get special
