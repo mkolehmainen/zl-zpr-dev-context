@@ -43,23 +43,87 @@ pub struct PinDrift {
 /// Parses build-set text and applies the structural checks that need no
 /// workspace manifest. Separate from file loading so it is testable without
 /// touching the filesystem, like `config::parse`.
-pub fn parse(_text: &str) -> Result<BuildSet> {
-    bail!("unimplemented")
+pub fn parse(text: &str) -> Result<BuildSet> {
+    let set: BuildSet = serde_yaml_ng::from_str(text)?;
+
+    if set.version != SUPPORTED_VERSION {
+        bail!(
+            "unsupported build-set version {} (expected {SUPPORTED_VERSION})",
+            set.version
+        );
+    }
+    if set.name.trim().is_empty() {
+        bail!("build set has an empty name; the name labels the build and its dist directory");
+    }
+    if set.repositories.is_empty() {
+        bail!("build set lists no repositories");
+    }
+    for (name, reference) in &set.repositories {
+        if reference.trim().is_empty() {
+            bail!("repository {name} has an empty ref");
+        }
+    }
+    for drift in &set.allow_pin_drift {
+        // The reason is the reviewed record of a known divergence; an entry
+        // without one is a suppression with no audit trail (spec-003 §2.1).
+        if drift.reason.trim().is_empty() {
+            bail!(
+                "allow_pin_drift entry for crate `{}` has no reason; every entry must say why",
+                drift.crate_name
+            );
+        }
+    }
+    Ok(set)
 }
 
 /// Validates the build set against `workspace.yaml`: every repository key must
 /// name a repository the workspace manifest declares (spec-003 §2.1), because
 /// `url` and `default_branch` come from there and nothing is duplicated.
-pub fn validate_against(_set: &BuildSet, _manifest: &Manifest) -> Result<()> {
-    bail!("unimplemented")
+pub fn validate_against(set: &BuildSet, manifest: &Manifest) -> Result<()> {
+    for name in set.repositories.keys() {
+        if manifest.repo(name).is_none() {
+            bail!("build set names `{name}`, which is not a repository in workspace.yaml");
+        }
+    }
+    Ok(())
 }
 
 /// Picks the default build set: the newest file in `<context>/build-sets/` by
 /// file name, descending — set names are dates, so the newest name is the
 /// newest set and a rename cannot silently change which set builds
 /// (spec-003 §2.2).
-pub fn default_manifest_path(_context: &Path) -> Result<PathBuf> {
-    bail!("unimplemented")
+pub fn default_manifest_path(context: &Path) -> Result<PathBuf> {
+    let dir = context.join("build-sets");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => bail!(
+            "no build-sets/ directory in {}; pass --manifest <path> or --tip",
+            context.display()
+        ),
+    };
+
+    // Only regular files that look like manifests count, so a stray README or
+    // subdirectory can never be selected as a build set.
+    let mut manifests: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("yaml") | Some("yml")
+                )
+        })
+        .collect();
+
+    manifests.sort();
+    match manifests.pop() {
+        Some(path) => Ok(path),
+        None => bail!(
+            "build-sets/ in {} is empty; pass --manifest <path> or --tip",
+            context.display()
+        ),
+    }
 }
 
 /// Everything `zpr-dev build` takes from the command line, threaded as one
@@ -78,8 +142,41 @@ pub struct BuildArgs {
 
 /// The `build` command (spec-003 §7). In B1 only `--dry-run` does anything:
 /// it resolves and reports without touching the workspace.
-pub fn run(_ctx: &crate::Ctx, _args: &BuildArgs) -> Result<std::process::ExitCode> {
-    bail!("unimplemented")
+pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
+    // Flags whose stages have not landed parse but are inert (spec-003 §7.1);
+    // saying so beats silently ignoring them.
+    for (flag, set) in [
+        ("--test", args.test.is_some()),
+        ("--repo", args.repo.is_some()),
+        ("--keep", args.keep),
+        ("--allow-pin-drift", args.allow_pin_drift),
+        ("--no-tarball", args.no_tarball),
+    ] {
+        if set && !ctx.quiet {
+            println!("note: {flag} parses but is inert until its stage (B2-B5) lands");
+        }
+    }
+
+    let manifest = crate::config::load(&ctx.context.join(crate::config::MANIFEST_FILE))?;
+
+    // `--tip` needs no build set at all: the repository list and the default
+    // branches both come from workspace.yaml (spec-003 §2.3).
+    let set = if args.tip {
+        None
+    } else {
+        let path = match &args.manifest {
+            Some(path) => path.clone(),
+            None => default_manifest_path(&ctx.context)?,
+        };
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("cannot read build set {}: {e}", path.display()))?;
+        let set = parse(&text)?;
+        validate_against(&set, &manifest)?;
+        Some(set)
+    };
+
+    let _ = (&set, &args.build_dir);
+    bail!("ref resolution and --dry-run reporting land with the next step of B1")
 }
 
 #[cfg(test)]

@@ -1154,10 +1154,7 @@ fn agent_configure_rejects_an_unknown_agent() {
 #[test]
 fn build_manifest_and_tip_together_is_a_usage_error() {
     let fixture = Fixture::new();
-    let err = error_with_code(
-        &fixture.run(&["build", "--manifest", "x.yaml", "--tip"]),
-        2,
-    );
+    let err = error_with_code(&fixture.run(&["build", "--manifest", "x.yaml", "--tip"]), 2);
     assert!(err.contains("--tip"), "{err}");
     assert!(err.contains("--manifest"), "{err}");
 }

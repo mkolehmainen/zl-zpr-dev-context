@@ -155,6 +155,15 @@ pub fn parse(text: &str) -> Result<Manifest> {
     Ok(manifest)
 }
 
+impl Manifest {
+    /// Looks up a repository by name, so callers — the build sets of spec-003
+    /// in particular — never restate a URL or a default branch that this
+    /// manifest already declares.
+    pub fn repo(&self, name: &str) -> Option<&Repo> {
+        self.repositories.iter().find(|repo| repo.name == name)
+    }
+}
+
 /// Picks the workspace directory: explicit flag, then `$ZPR_WORKSPACE`, then
 /// `<home>/src/zl_zpr`. Pure so it is testable without touching the environment.
 pub fn resolve_workspace(flag: Option<&Path>, env: Option<&str>, home: &Path) -> PathBuf {
