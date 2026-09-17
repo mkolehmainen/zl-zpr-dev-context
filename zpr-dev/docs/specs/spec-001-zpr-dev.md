@@ -578,18 +578,19 @@ See §7.
 | `serde` (derive) | Manifest deserialization |
 | `serde_yaml_ng` | YAML parsing. A maintained drop-in for the unmaintained `serde_yaml` |
 | `anyhow` | Error propagation and context |
+| `toml` | Reading `git`-dependency pins out of `Cargo.toml` for the pin-agreement gate (spec-003 §4.1) |
 
 Dev-dependency: `tempfile`, for integration-test workspaces.
 
 Git is invoked through `std::process::Command`. There is no async runtime, no
 HTTP client, no terminal-color or progress-bar crate, and no `regex`.
 
-`spec-003-build.md` (§9) will add exactly two crates as its later stages land:
-`toml` with the pin-agreement gate (to read `git`-dependency pins out of
-`Cargo.toml`) and `sha2` with `dist/` staging (binary digests for the emitted
-manifest). Each is deferred to the stage that first uses it, so this table and
-`Cargo.toml` never disagree. No `cargo-metadata` and no `git2` — the same
-minimality rule as above.
+`spec-003-build.md` (§9) adds exactly two crates as its stages land: `toml`
+arrived with the compatibility gates (the row above), and `sha2` (binary
+digests for the emitted manifest) arrives with `dist/` staging. Each is
+deferred to the stage that first uses it, so this table and `Cargo.toml` never
+disagree. No `cargo-metadata` and no `git2` — the same minimality rule as
+above.
 
 ### 6.2 Modules
 
