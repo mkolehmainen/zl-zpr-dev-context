@@ -148,12 +148,27 @@ pub fn gate_freshness(
 ) -> Vec<Finding> {
     let mut findings: Vec<Finding> = Vec::new();
 
+    // Freshness is defined over *agreed* pins (spec-003 §4.2): a crate whose
+    // pins disagree is gate 1's error, and warning about staleness on top of
+    // it would be noise about a set that is already incoherent.
+    let mut variants: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    for pin in pins {
+        let entry = variants.entry(pin.crate_name.as_str()).or_default();
+        let variant = (pin.url.as_str(), pin.reference.as_str());
+        if !entry.contains(&variant) {
+            entry.push(variant);
+        }
+    }
+
     // One check per distinct (crate, url, reference): several files pinning
     // the same tag get one line, not one line each.
     let mut seen: Vec<(&str, &str, &str)> = Vec::new();
     for pin in pins {
         // A rev has no version ordering to compare against tags.
         if pin.kind == RefKind::Rev {
+            continue;
+        }
+        if variants[pin.crate_name.as_str()].len() > 1 {
             continue;
         }
         let key = (
@@ -1310,10 +1325,53 @@ harness = false
     }
 
     /// Only tags sharing the pin's name prefix compete: `zl-zpr-utils` tags
-    /// several crates in one repository, and `rcu-v0.1.2` must never be
-    /// measured against `zpr-utils-v0.2.2` or `cslab-v0.1.2`.
+    /// several crates in one repository, and a `cslab-v*` pin must never be
+    /// measured against `zpr-utils-v*` or `rcu-v*`.
     #[test]
     fn gate2_compares_only_tags_with_the_same_prefix() {
+        let pins = vec![pin(
+            "cslab",
+            UTILS_URL,
+            "cslab-v0.1.0",
+            "zl-zpr-core/adapter/ph/Cargo.toml",
+            21,
+            false,
+        )];
+        let listing = [(
+            UTILS_URL,
+            [
+                "cslab-v0.1.0",
+                "cslab-v0.1.2",
+                "rcu-v0.1.2",
+                "zpr-utils-v9.9.9",
+            ]
+            .as_slice(),
+        )];
+        let findings = gate_freshness(&pins, tags_for(&listing));
+        // cslab-v0.1.0 is behind cslab-v0.1.2 — and only cslab-v* competes,
+        // so the far-newer zpr-utils tag is not the one named.
+        let warnings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Warn)
+            .collect();
+        assert_eq!(warnings.len(), 1, "{findings:#?}");
+        assert!(
+            warnings[0].message.contains("cslab-v0.1.2"),
+            "{}",
+            warnings[0].message
+        );
+        assert!(
+            !warnings[0].message.contains("zpr-utils-v9.9.9"),
+            "{}",
+            warnings[0].message
+        );
+    }
+
+    /// Freshness applies to **agreed** pins only (spec-003 §4.2: "for each
+    /// agreed pin"): a crate whose pins disagree is gate 1's finding, and a
+    /// freshness warning on top of that error would be noise.
+    #[test]
+    fn gate2_skips_disagreeing_pins() {
         let pins = vec![
             pin(
                 "rcu",
@@ -1334,33 +1392,10 @@ harness = false
         ];
         let listing = [(
             UTILS_URL,
-            [
-                "cslab-v0.1.2",
-                "rcu-v0.1.0",
-                "rcu-v0.1.2",
-                "zpr-utils-v0.1.0",
-                "zpr-utils-v0.2.2",
-            ]
-            .as_slice(),
+            ["rcu-v0.1.2", "zpr-utils-v0.1.0", "zpr-utils-v0.2.2"].as_slice(),
         )];
         let findings = gate_freshness(&pins, tags_for(&listing));
-        // rcu-v0.1.2 is the newest rcu-v tag: silent. zpr-utils-v0.1.0 is
-        // behind zpr-utils-v0.2.2: one warning naming that tag, not cslab's.
-        let warnings: Vec<_> = findings
-            .iter()
-            .filter(|f| f.severity == Severity::Warn)
-            .collect();
-        assert_eq!(warnings.len(), 1, "{findings:#?}");
-        assert!(
-            warnings[0].message.contains("zpr-utils-v0.2.2"),
-            "{}",
-            warnings[0].message
-        );
-        assert!(
-            !warnings[0].message.contains("cslab"),
-            "{}",
-            warnings[0].message
-        );
+        assert!(findings.is_empty(), "{findings:#?}");
     }
 
     /// A rev pin has no version ordering; the freshness gate skips it rather
