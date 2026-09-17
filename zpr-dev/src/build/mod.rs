@@ -209,13 +209,15 @@ pub struct BuildArgs {
     pub repo: Option<String>,
     pub build_dir: Option<PathBuf>,
     pub keep: bool,
+    pub gates_only: bool,
     pub allow_pin_drift: bool,
     pub no_tarball: bool,
 }
 
-/// The `build` command (spec-003 §7). In B1 only `--dry-run` does anything:
-/// it resolves and reports without touching the workspace — no worktree, no
-/// directory, no log file, and no `git fetch` (spec-003 §7.2).
+/// The `build` command (spec-003 §7). At this stage `--dry-run` resolves and
+/// reports (B1), and `--gates-only` runs the three compatibility gates of §4
+/// against the live checkouts (B2); worktrees, builds and tiers land with
+/// B3-B5.
 pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
     // Flags whose stages have not landed parse but are inert (spec-003 §7.1);
     // saying so beats silently ignoring them.
@@ -223,18 +225,21 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         ("--test", args.test.is_some()),
         ("--repo", args.repo.is_some()),
         ("--keep", args.keep),
-        ("--allow-pin-drift", args.allow_pin_drift),
         ("--no-tarball", args.no_tarball),
     ] {
         if set && !ctx.quiet {
-            println!("note: {flag} parses but is inert until its stage (B2-B5) lands");
+            println!("note: {flag} parses but is inert until its stage (B3-B5) lands");
         }
+    }
+
+    if args.gates_only {
+        return run_gates(ctx, args);
     }
 
     if !ctx.dry_run {
         bail!(
-            "only `build --dry-run` is implemented at this stage (B1); \
-             gates, worktrees and builds land with B2-B3 (spec-003 §1.2)"
+            "only `build --dry-run` and `build --gates-only` are implemented at \
+             this stage (B2); worktrees and builds land with B3 (spec-003 §1.2)"
         );
     }
 
@@ -309,6 +314,219 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         print!("{}", emitted_yaml(&emitted)?);
     }
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// The `build --gates-only` path (spec-003 §4, stage B2): runs the three
+/// compatibility gates against the live checkouts — worktrees arrive with B3 —
+/// and prints one `zpr-dev validate`-style report. Read-only by construction:
+/// it parses manifests and lists tags, and never fetches or builds.
+fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
+    let manifest = crate::config::load(&ctx.context.join(crate::config::MANIFEST_FILE))?;
+
+    // The repositories whose manifests the gates scan, and the tolerated
+    // drift entries, come from the build set — synthesized under `--tip`
+    // exactly as the dry-run path does (spec-003 §2.3).
+    let (mut scan, drift, set_name) = if args.tip {
+        let names: Vec<String> = BUILD_ORDER
+            .iter()
+            .filter(|wanted| manifest.repo(wanted).is_some())
+            .map(|name| name.to_string())
+            .collect();
+        if names.is_empty() {
+            bail!("--tip found none of the build-set repositories in workspace.yaml");
+        }
+        (names, Vec::new(), "tip".to_string())
+    } else {
+        let path = match &args.manifest {
+            Some(path) => path.clone(),
+            None => default_manifest_path(&ctx.context)?,
+        };
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("cannot read build set {}: {e}", path.display()))?;
+        let set = parse(&text)?;
+        validate_against(&set, &manifest)?;
+        (
+            set.repositories.keys().cloned().collect(),
+            set.allow_pin_drift.clone(),
+            set.name.clone(),
+        )
+    };
+
+    // `zl-zpr-common` never appears in a build set (spec-003 §2.1: its
+    // version is *derived* from what the consumers agree on), but its own
+    // manifest participates in coherence — the real `rcu` divergence is
+    // between `zl-zpr-common` and `adapter/ph`, and a crate reached both
+    // directly and through `zpr` ends up in one binary twice. Scan it
+    // whenever the workspace declares it. Nothing else is added: the
+    // `zl-zpr-utils` checkout is deliberately not scanned, because no build
+    // in this workspace consumes it (workspace.yaml's own note).
+    const DERIVED: &str = "zl-zpr-common";
+    if manifest.repo(DERIVED).is_some() && !scan.iter().any(|name| name == DERIVED) {
+        scan.push(DERIVED.to_string());
+    }
+
+    let mut findings: Vec<gates::Finding> = Vec::new();
+
+    // -- pin extraction over every scanned checkout (gate 1 input) ----------
+    let mut pins: Vec<gates::PinOccurrence> = Vec::new();
+    for name in &scan {
+        let dir = ctx.workspace.join(name);
+        let root_path = dir.join("Cargo.toml");
+        let Ok(root_text) = std::fs::read_to_string(&root_path) else {
+            // A Go or docs repository has no Cargo.toml; that is a fact to
+            // state, not a failure.
+            findings.push(gates::Finding::new(
+                gates::Severity::Info,
+                format!("{name}: no Cargo.toml, no pins to check"),
+            ));
+            continue;
+        };
+        let root = gates::ManifestSource {
+            path: format!("{name}/Cargo.toml"),
+            text: root_text,
+        };
+
+        // Workspace members, read from the root manifest's literal member
+        // list. The ZPR repositories use literal paths, not globs.
+        let mut members: Vec<gates::ManifestSource> = Vec::new();
+        if let Ok(table) = root.text.parse::<toml::Table>() {
+            let listed = table
+                .get("workspace")
+                .and_then(toml::Value::as_table)
+                .and_then(|ws| ws.get("members"))
+                .and_then(toml::Value::as_array);
+            for member in listed.into_iter().flatten() {
+                let Some(member) = member.as_str() else {
+                    continue;
+                };
+                let path = dir.join(member).join("Cargo.toml");
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    members.push(gates::ManifestSource {
+                        path: format!("{name}/{member}/Cargo.toml"),
+                        text,
+                    });
+                }
+            }
+        }
+        pins.extend(gates::extract_pins(&root, &members)?);
+    }
+
+    // -- gate 1: agreement ---------------------------------------------------
+    findings.extend(gates::gate_pin_agreement(
+        &pins,
+        &drift,
+        args.allow_pin_drift,
+    ));
+
+    // -- gate 2: freshness, against the workspace checkouts' tags -----------
+    findings.extend(gates::gate_freshness(&pins, |url| {
+        // The pinned repository's checkout, located by the URL's repository
+        // name. Pins use https URLs while workspace.yaml uses ssh, so the
+        // name is the join point.
+        let name = url
+            .rsplit('/')
+            .next()
+            .map(|last| last.strip_suffix(".git").unwrap_or(last))?;
+        let dir = ctx.workspace.join(name);
+        if !crate::git::is_repo(&dir) {
+            return None;
+        }
+        crate::git::tag_list(&dir).ok()
+    }));
+
+    // -- gate 3: zplc vs the visa service's POLICY_MIN_COMPILER --------------
+    // Runs when both repositories are checked out; a missing checkout is
+    // reported rather than silently narrowing coverage (spec-003 §4.3). An
+    // unreadable value in a present file is an error inside the parsers.
+    let vs_config = ctx
+        .workspace
+        .join("zl-zpr-visaservice")
+        .join("vs")
+        .join("src")
+        .join("config.rs");
+    let zplc_manifest = ctx.workspace.join("zl-zpr-compiler").join("Cargo.toml");
+    match (
+        std::fs::read_to_string(&vs_config),
+        std::fs::read_to_string(&zplc_manifest),
+    ) {
+        (Ok(config_text), Ok(manifest_text)) => {
+            let minimum =
+                gates::policy_min_compiler(&config_text, "zl-zpr-visaservice/vs/src/config.rs")?;
+            let zplc = gates::package_version(&manifest_text, "zl-zpr-compiler/Cargo.toml")?;
+            findings.extend(gates::gate_compiler_version(
+                zplc,
+                "zl-zpr-compiler/Cargo.toml",
+                minimum,
+                "zl-zpr-visaservice/vs/src/config.rs",
+            ));
+        }
+        (vs, zplc) => {
+            let mut missing: Vec<&str> = Vec::new();
+            if vs.is_err() {
+                missing.push("zl-zpr-visaservice/vs/src/config.rs");
+            }
+            if zplc.is_err() {
+                missing.push("zl-zpr-compiler/Cargo.toml");
+            }
+            findings.push(gates::Finding::new(
+                gates::Severity::Info,
+                format!(
+                    "gate 3 (zplc vs POLICY_MIN_COMPILER) skipped: {} not in this workspace",
+                    missing.join(", ")
+                ),
+            ));
+        }
+    }
+
+    // -- the report, in `zpr-dev validate` style (spec-003 §4) ---------------
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+    if !ctx.quiet {
+        println!("compatibility gates: build set {set_name}");
+        println!();
+    }
+    for finding in &findings {
+        let tag = match finding.severity {
+            gates::Severity::Ok => "[OK]",
+            gates::Severity::Info => "[INFO]",
+            gates::Severity::Warn => {
+                warnings += 1;
+                "[WARN]"
+            }
+            gates::Severity::Error => {
+                errors += 1;
+                "[ERROR]"
+            }
+        };
+        if ctx.quiet {
+            continue;
+        }
+        let mut lines = finding.message.lines();
+        if let Some(first) = lines.next() {
+            println!("{tag:<7} {first}");
+        }
+        for line in lines {
+            println!("        {line}");
+        }
+    }
+    if !ctx.quiet {
+        println!();
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        if errors > 0 {
+            println!(
+                "Gates failed with {errors} error{} and {warnings} warning{}.",
+                plural(errors),
+                plural(warnings)
+            );
+        } else {
+            println!("Gates passed with {warnings} warning{}.", plural(warnings));
+        }
+    }
+    Ok(if errors > 0 {
+        std::process::ExitCode::from(1)
+    } else {
+        std::process::ExitCode::SUCCESS
+    })
 }
 
 /// Prints the §7.2 dry-run report: resolved shas, planned build order, planned

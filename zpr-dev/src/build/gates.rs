@@ -14,11 +14,6 @@
 //! gates run against the live checkouts behind `build --gates-only`
 //! (spec-003 §4); the functions themselves do not care which they are given.
 
-// Removed by the wiring step of this stage (spec-003 §4, master plan B2 step
-// 5): until `build --gates-only` calls into this module, everything here is
-// exercised only by its tests.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
@@ -44,7 +39,9 @@ pub struct Finding {
 }
 
 impl Finding {
-    fn new(severity: Severity, message: impl Into<String>) -> Finding {
+    /// Builds one finding; callers include the gate orchestration in
+    /// `build/mod.rs`, so this is crate-visible.
+    pub(crate) fn new(severity: Severity, message: impl Into<String>) -> Finding {
         Finding {
             severity,
             message: message.into(),
