@@ -1,8 +1,27 @@
 # Silent OIDC Re-authentication
 
-> **Status: PLANNED (2026-09-16).** Not yet filed as issues. Seven tasks
-> (R1–R7) across `zl-zpr-compiler`, `zl-zpr-visaservice` and `zl-zpr-core`;
-> see *Issue map* below.
+> **Status: FILED AND BUILT (2026-09-17).** Umbrella
+> [zipline#40](https://github.com/mkolehmainen/zipline/issues/40), seven tasks
+> across `zl-zpr-compiler`, `zl-zpr-visaservice` and `zl-zpr-core`:
+> R1 [#41](https://github.com/mkolehmainen/zipline/issues/41),
+> R2 [#42](https://github.com/mkolehmainen/zipline/issues/42),
+> R3 [#43](https://github.com/mkolehmainen/zipline/issues/43),
+> R4 [#44](https://github.com/mkolehmainen/zipline/issues/44),
+> R5 [#45](https://github.com/mkolehmainen/zipline/issues/45),
+> R6 [#46](https://github.com/mkolehmainen/zipline/issues/46),
+> R7 [#47](https://github.com/mkolehmainen/zipline/issues/47). R1–R6 are merged
+> and closed; see *Issue map* below.
+>
+> **The loop does not close yet.** R7's end-to-end test found that the renewal
+> tick, the tracked `auth_expires` and the visa-service connection all live on
+> the **node's** `NodeToAdapter` link, while the `AuthAgent` `ph-cli` registers
+> lives on the **adapter's** `AdapterToNode` link — so the node reaches its
+> renewal deadline with no agent to ask. R5's design (below) assumed the two
+> met on one link and its unit tests set both by hand, which is a state the
+> production paths never produce together. Closing it needs a node-to-adapter
+> credential request, for which no ZDP message exists; the plan's "no schema
+> change is needed anywhere" claim covered the VSAPI and missed this hop.
+> Tracked on [#47](https://github.com/mkolehmainen/zipline/issues/47).
 
 **Supersedes:** OIDC-X3 in `docs/plans/2026-09-02-oidc-implementation-plan.md`
 (*"Refresh tokens / `offline_access` / OS keyring in `ph-cli auth-agent`"*), and
@@ -406,6 +425,13 @@ printed URL carries the S256 challenge but no verifier.
   change, but without it users will reach for `connect` and never renew.
 - `docs/plans/2026-09-02-oidc-implementation-plan.md`: mark X3 superseded by this
   plan; leave X2 deferred with a note that decision 4 chose disconnect.
+
+**Landed as:** `integration-test/one-node-oidc-renewal-test.sh` plus refresh-grant
+and `--revoke-refresh` support in `integration-test/lib/fake-idp.py`, the
+`oidc-renewal.zplc` fixture (which reuses `oidc-test.zpl` unchanged), an
+`oidc-renewal-integration-test` job in `.github/workflows/adapter.yml`, and the
+documentation above. The netns run needs root and is the operator's step; the
+fake-IdP smoke test covers the refresh grant with no privileges.
 
 ---
 

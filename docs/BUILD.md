@@ -369,9 +369,23 @@ ZPR_TEST_VERBOSE=1 VALKEY_SERVER_BIN=/usr/bin/valkey-server \
     integration-test/one-node-v6-test.sh
 ```
 
-Other entry points are `one-node-test.sh` and `capture-test.sh`. Useful
-overrides: `DEBUG_TARGETS` (default `all=INFO`), `PH_BIN`, `VS_BIN`,
+Other entry points, each a standalone script:
+
+| Script | Covers |
+|---|---|
+| `one-node-test.sh`, `one-node-v6-test.sh` | device-only authentication, IPv4 / IPv6 |
+| `capture-test.sh` | packet capture |
+| `one-node-oidc-test.sh` | OIDC login through the fake IdP, plus JWKS key rotation |
+| `oidc-file-interplay-test.sh` | an `oidc` and a `file` trusted service in one policy |
+| `one-node-oidc-renewal-test.sh` | silent OIDC renewal and disconnect-on-revocation. Takes several minutes: the renewal cadence is a real wall clock |
+| `fake-idp-smoke-test.sh` | the fake IdP's own endpoints. **Needs no root and no netns** — run it first when an OIDC test misbehaves |
+
+Useful overrides: `DEBUG_TARGETS` (default `all=INFO`), `PH_BIN`, `VS_BIN`,
 `NETEM_PARAMS` for link impairment.
+
+The OIDC tests need a `vs` built from a `zl-zpr-visaservice` that carries the
+feature under test; a stale binary left in `integration-test/` from an earlier
+checkout is the usual cause of a confusing failure.
 
 These tests create network namespaces and veth pairs with `sudo ip`, so they
 are Linux-only and need passwordless `sudo` to run unattended.
