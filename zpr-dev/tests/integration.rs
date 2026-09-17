@@ -1144,3 +1144,20 @@ fn agent_configure_rejects_an_unknown_agent() {
     // clap lists the valid values, so no hand-written match is needed (spec-002 §6).
     assert!(err.contains("hermes"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// `build` (spec-003, stage B1)
+// ---------------------------------------------------------------------------
+
+/// `--manifest` and `--tip` contradict each other, so clap rejects the pair as
+/// a usage error before the command runs (spec-003 §7.1).
+#[test]
+fn build_manifest_and_tip_together_is_a_usage_error() {
+    let fixture = Fixture::new();
+    let err = error_with_code(
+        &fixture.run(&["build", "--manifest", "x.yaml", "--tip"]),
+        2,
+    );
+    assert!(err.contains("--tip"), "{err}");
+    assert!(err.contains("--manifest"), "{err}");
+}
