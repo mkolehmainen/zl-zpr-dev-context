@@ -397,6 +397,93 @@ fn docker_probe() -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Emitted manifest (spec-003 §3)
+// ---------------------------------------------------------------------------
+
+/// The emitted manifest: the same schema as the input with every ref replaced
+/// by its resolved sha, plus the diagnostic `resolved:` block a later read
+/// ignores (spec-003 §3). B1 fixes the shape; B3–B5 populate the diagnostics.
+#[derive(Debug, Serialize)]
+pub struct EmittedManifest {
+    pub version: u32,
+    pub name: String,
+    /// Repository name → 40-character sha, always.
+    pub repositories: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow_pin_drift: Vec<PinDrift>,
+    /// Diagnostic only: ignored when the file is re-read as a build set,
+    /// because `BuildSet` tolerates unknown keys by design (spec-003 §2.1).
+    pub resolved: ResolvedBlock,
+}
+
+/// The `resolved:` diagnostic block. Every field a later stage populates is
+/// optional or defaulted, so B1 can emit the shape with honest emptiness.
+#[derive(Debug, Default, Serialize)]
+pub struct ResolvedBlock {
+    pub built_at: String,
+    pub built_from: BuiltFrom,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<Pin>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub binaries: Vec<Binary>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tiers: BTreeMap<String, Tier>,
+}
+
+/// What produced this manifest: the input manifest path, the context sha, and
+/// whether `--tip` overrode the refs.
+#[derive(Debug, Default, Serialize)]
+pub struct BuiltFrom {
+    pub manifest: String,
+    pub context: String,
+    pub tip: bool,
+}
+
+/// One agreed pin, recomputed by gate 1 (B2).
+#[derive(Debug, Serialize)]
+pub struct Pin {
+    #[serde(rename = "crate")]
+    pub crate_name: String,
+    pub url: String,
+    pub tag: String,
+    pub pinned_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_available: Option<String>,
+}
+
+/// One staged binary's identity (B3).
+#[derive(Debug, Serialize)]
+pub struct Binary {
+    pub name: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub from: String,
+}
+
+/// One tier's outcome (B4–B5). A skipped tier always carries its reason.
+#[derive(Debug, Serialize)]
+pub struct Tier {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Builds the emitted manifest for a resolution (spec-003 §3): the input set's
+/// name and drift entries with every ref replaced by its sha, plus the
+/// `resolved:` block shape that B3–B5 fill in.
+pub fn emit(_set: &BuildSet, _resolved: &[Resolved], _tip: bool) -> Result<EmittedManifest> {
+    bail!("unimplemented")
+}
+
+/// Serializes the emitted manifest as the YAML that lands in
+/// `dist/zpr-set-<name>.yaml`.
+pub fn emitted_yaml(_manifest: &EmittedManifest) -> Result<String> {
+    bail!("unimplemented")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,5 +743,63 @@ allow_pin_drift:
         assert_ne!(resolved[0].sha, seed_sha);
         // The checkout itself was not moved: resolution reads, never merges.
         assert_eq!(setup_git(&repo_dir, &["rev-parse", "HEAD"]), seed_sha);
+    }
+
+    // -- emitted manifest (spec-003 §3) ---------------------------------------
+
+    /// The round-trip property, normative in spec-003 §3: emit a resolved set,
+    /// re-read the YAML as an input build set, and resolution is the identity —
+    /// same repositories, same shas — with the `resolved:` block ignored.
+    #[test]
+    fn emitted_manifest_round_trips_as_a_build_set() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let set = one_repo_set("v0.3.1");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+
+        let emitted = emit(&set, &resolved, false).unwrap();
+        let yaml = emitted_yaml(&emitted).unwrap();
+        assert!(yaml.contains("resolved:"), "{yaml}");
+
+        // Re-read as an input build set: parses cleanly, refs are the shas.
+        let reread = parse(&yaml).unwrap();
+        assert_eq!(reread.name, set.name);
+        assert_eq!(reread.repositories["zl-zpr-core"], sha);
+        assert_eq!(reread.allow_pin_drift.len(), set.allow_pin_drift.len());
+
+        // Resolving the re-read set yields the same shas: a sha resolves to
+        // itself, so the emitted manifest reproduces its own resolution.
+        let again = resolve_set(&workspace, &reread).unwrap();
+        assert_eq!(again.len(), resolved.len());
+        for (first, second) in resolved.iter().zip(&again) {
+            assert_eq!(first.repo, second.repo);
+            assert_eq!(first.sha, second.sha);
+        }
+    }
+
+    /// The emitted repositories map holds full 40-character shas, never the
+    /// input refs, and records the input's name and drift entries unchanged.
+    #[test]
+    fn emit_replaces_refs_with_shas_and_keeps_name_and_drift() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let set = parse(
+            "version: 1\nname: 2026-09-17\nrepositories:\n  zl-zpr-core: main\n\
+             allow_pin_drift:\n  - crate: rcu\n    reason: \"zipline#18\"\n",
+        )
+        .unwrap();
+        let resolved = resolve_set(&workspace, &set).unwrap();
+
+        let emitted = emit(&set, &resolved, true).unwrap();
+        assert_eq!(emitted.version, 1);
+        assert_eq!(emitted.name, "2026-09-17");
+        assert_eq!(emitted.repositories["zl-zpr-core"], sha);
+        assert_eq!(emitted.repositories["zl-zpr-core"].len(), 40);
+        assert_eq!(emitted.allow_pin_drift[0].crate_name, "rcu");
+        assert!(emitted.resolved.built_from.tip);
+        // Honest emptiness: nothing pretends B3-B5 ran (spec-003 §1.2).
+        assert!(emitted.resolved.pins.is_empty());
+        assert!(emitted.resolved.binaries.is_empty());
+        assert!(emitted.resolved.tiers.is_empty());
+        // But the emission time is real.
+        assert!(!emitted.resolved.built_at.is_empty());
     }
 }
