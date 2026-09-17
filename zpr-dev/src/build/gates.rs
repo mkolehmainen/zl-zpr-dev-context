@@ -138,6 +138,117 @@ pub fn gate_pin_agreement(
     findings
 }
 
+/// Gate 2 — freshness (spec-003 §4.2; warning, never an error). For each
+/// agreed pin, `local_tags` supplies the tags of the pinned repository's
+/// workspace checkout (`None` when it is not checked out — an `INFO`, not a
+/// failure, because cargo fetches the tag from GitHub either way). Tags are
+/// compared in semantic-version order, not creation order, and only against
+/// tags sharing the pinned tag's name prefix, so `rcu-v0.1.2` is never
+/// measured against `cslab-v0.1.2`.
+pub fn gate_freshness(
+    pins: &[PinOccurrence],
+    local_tags: impl Fn(&str) -> Option<Vec<String>>,
+) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = Vec::new();
+
+    // One check per distinct (crate, url, reference): several files pinning
+    // the same tag get one line, not one line each.
+    let mut seen: Vec<(&str, &str, &str)> = Vec::new();
+    for pin in pins {
+        // A rev has no version ordering to compare against tags.
+        if pin.kind == RefKind::Rev {
+            continue;
+        }
+        let key = (
+            pin.crate_name.as_str(),
+            pin.url.as_str(),
+            pin.reference.as_str(),
+        );
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+
+        let Some((prefix, pinned_version)) = split_tag(&pin.reference) else {
+            // A tag with no trailing version (e.g. a date stamp) has no
+            // ordering either; stay silent rather than guess.
+            continue;
+        };
+        let Some(tags) = local_tags(&pin.url) else {
+            findings.push(Finding::new(
+                Severity::Info,
+                format!(
+                    "crate `{}`: no local checkout for {}; freshness not checked \
+                     (cargo fetches the tag either way)",
+                    pin.crate_name, pin.url
+                ),
+            ));
+            continue;
+        };
+
+        // The newest tag sharing this pin's prefix, in semantic-version
+        // order — `zl-zpr-utils` tags several crates in one repository, so
+        // `rcu-v*` never competes with `zpr-utils-v*` or `cslab-v*`.
+        let newest = tags
+            .iter()
+            .filter_map(|tag| match split_tag(tag) {
+                Some((p, version)) if p == prefix => Some(version),
+                _ => None,
+            })
+            .max();
+        if let Some(newest) = newest
+            && newest > pinned_version
+        {
+            findings.push(Finding::new(
+                Severity::Warn,
+                format!(
+                    "crate `{}` is pinned at {}; {} has {prefix}{}",
+                    pin.crate_name,
+                    pin.reference,
+                    repo_display(&pin.url),
+                    join_version(&newest),
+                ),
+            ));
+        }
+    }
+    findings
+}
+
+/// Splits a tag into its name prefix and trailing dotted-number version:
+/// `v0.26.0` → (`v`, [0, 26, 0]), `rcu-v0.1.2` → (`rcu-v`, [0, 1, 2]).
+/// `None` when the tag does not end in a dotted number sequence.
+fn split_tag(tag: &str) -> Option<(&str, Vec<u64>)> {
+    // The version part is the longest trailing run of digits and dots.
+    let start = tag
+        .rfind(|c: char| !c.is_ascii_digit() && c != '.')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let (prefix, version) = tag.split_at(start);
+    if version.is_empty() {
+        return None;
+    }
+    let numbers: Option<Vec<u64>> = version.split('.').map(|part| part.parse().ok()).collect();
+    numbers.map(|numbers| (prefix, numbers))
+}
+
+/// Re-joins a parsed version for display: [0, 27, 0] → `0.27.0`.
+fn join_version(version: &[u64]) -> String {
+    version
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The repository name a URL points at, for messages: the last path segment
+/// without `.git`. Falls back to the whole URL rather than failing.
+fn repo_display(url: &str) -> &str {
+    url.rsplit('/')
+        .next()
+        .map(|last| last.strip_suffix(".git").unwrap_or(last))
+        .unwrap_or(url)
+}
+
 /// How a captured git dependency names its source revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
@@ -997,5 +1108,190 @@ harness = false
             "{}",
             warnings[0].message
         );
+    }
+
+    // -- gate 2: freshness (spec-003 §4.2) ------------------------------------
+
+    /// A tag listing keyed by URL, standing in for the workspace checkouts.
+    fn tags_for<'a>(
+        url_tags: &'a [(&'a str, &'a [&'a str])],
+    ) -> impl Fn(&str) -> Option<Vec<String>> + 'a {
+        move |url: &str| {
+            url_tags
+                .iter()
+                .find(|(u, _)| *u == url)
+                .map(|(_, tags)| tags.iter().map(|t| t.to_string()).collect())
+        }
+    }
+
+    /// Pinned behind the newest local tag warns, naming pin and newest
+    /// (spec-003 §4.2) — and never errors.
+    #[test]
+    fn gate2_pin_behind_newest_tag_warns() {
+        let pins = vec![pin(
+            "zpr",
+            COMMON_URL,
+            "v0.26.0",
+            "zl-zpr-compiler/Cargo.toml",
+            22,
+            false,
+        )];
+        let listing = [(COMMON_URL, ["v0.25.1", "v0.26.0", "v0.27.0"].as_slice())];
+        let findings = gate_freshness(&pins, tags_for(&listing));
+        assert!(
+            at_least(&findings, Severity::Error).is_empty(),
+            "{findings:#?}"
+        );
+        let warnings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Warn)
+            .collect();
+        assert_eq!(warnings.len(), 1, "{findings:#?}");
+        for needle in ["`zpr`", "v0.26.0", "v0.27.0"] {
+            assert!(
+                warnings[0].message.contains(needle),
+                "missing {needle:?}: {}",
+                warnings[0].message
+            );
+        }
+    }
+
+    /// Pinned at the newest tag is silent — a set at the tip needs no note.
+    #[test]
+    fn gate2_pin_at_newest_tag_is_silent() {
+        let pins = vec![pin(
+            "zpr",
+            COMMON_URL,
+            "v0.27.0",
+            "zl-zpr-core/Cargo.toml",
+            29,
+            false,
+        )];
+        let listing = [(COMMON_URL, ["v0.26.0", "v0.27.0"].as_slice())];
+        let findings = gate_freshness(&pins, tags_for(&listing));
+        assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    /// A missing local checkout is an INFO, not a failure: cargo fetches the
+    /// tag from GitHub either way (spec-003 §4.2).
+    #[test]
+    fn gate2_missing_checkout_is_info_not_failure() {
+        let pins = vec![pin(
+            "zpr",
+            COMMON_URL,
+            "v0.26.0",
+            "zl-zpr-compiler/Cargo.toml",
+            22,
+            false,
+        )];
+        let findings = gate_freshness(&pins, |_| None);
+        assert!(
+            at_least(&findings, Severity::Warn).is_empty(),
+            "{findings:#?}"
+        );
+        let infos: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Info)
+            .collect();
+        assert_eq!(infos.len(), 1, "{findings:#?}");
+        assert!(infos[0].message.contains("`zpr`"), "{}", infos[0].message);
+    }
+
+    /// Tag ordering is semantic-version order, not creation or lexicographic
+    /// order: `v0.9.1` is older than `v0.15.0` (spec-003 §4.2).
+    #[test]
+    fn gate2_orders_tags_by_semantic_version_not_lexicographically() {
+        let pins = vec![pin(
+            "zpr",
+            COMMON_URL,
+            "v0.9.1",
+            "zl-zpr-core/Cargo.toml",
+            29,
+            false,
+        )];
+        // Lexicographically v0.9.1 > v0.15.0; semantically it is behind.
+        let listing = [(COMMON_URL, ["v0.9.1", "v0.15.0"].as_slice())];
+        let findings = gate_freshness(&pins, tags_for(&listing));
+        let warnings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Warn)
+            .collect();
+        assert_eq!(warnings.len(), 1, "{findings:#?}");
+        assert!(
+            warnings[0].message.contains("v0.15.0"),
+            "{}",
+            warnings[0].message
+        );
+    }
+
+    /// Only tags sharing the pin's name prefix compete: `zl-zpr-utils` tags
+    /// several crates in one repository, and `rcu-v0.1.2` must never be
+    /// measured against `zpr-utils-v0.2.2` or `cslab-v0.1.2`.
+    #[test]
+    fn gate2_compares_only_tags_with_the_same_prefix() {
+        let pins = vec![
+            pin(
+                "rcu",
+                UTILS_URL,
+                "rcu-v0.1.2",
+                "zl-zpr-core/adapter/ph/Cargo.toml",
+                36,
+                false,
+            ),
+            pin(
+                "rcu",
+                UTILS_URL,
+                "zpr-utils-v0.1.0",
+                "zl-zpr-common/Cargo.toml",
+                21,
+                false,
+            ),
+        ];
+        let listing = [(
+            UTILS_URL,
+            [
+                "cslab-v0.1.2",
+                "rcu-v0.1.0",
+                "rcu-v0.1.2",
+                "zpr-utils-v0.1.0",
+                "zpr-utils-v0.2.2",
+            ]
+            .as_slice(),
+        )];
+        let findings = gate_freshness(&pins, tags_for(&listing));
+        // rcu-v0.1.2 is the newest rcu-v tag: silent. zpr-utils-v0.1.0 is
+        // behind zpr-utils-v0.2.2: one warning naming that tag, not cslab's.
+        let warnings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Warn)
+            .collect();
+        assert_eq!(warnings.len(), 1, "{findings:#?}");
+        assert!(
+            warnings[0].message.contains("zpr-utils-v0.2.2"),
+            "{}",
+            warnings[0].message
+        );
+        assert!(
+            !warnings[0].message.contains("cslab"),
+            "{}",
+            warnings[0].message
+        );
+    }
+
+    /// A rev pin has no version ordering; the freshness gate skips it rather
+    /// than comparing a commit hash against tags.
+    #[test]
+    fn gate2_skips_rev_pins() {
+        let mut fork = pin(
+            "capnp",
+            "https://github.com/emilazy/capnproto-rust.git",
+            "cfbcb9b",
+            "zl-zpr-core/Cargo.toml",
+            37,
+            false,
+        );
+        fork.kind = RefKind::Rev;
+        let findings = gate_freshness(&[fork], |_| Some(vec!["v1.0.0".to_string()]));
+        assert!(findings.is_empty(), "{findings:#?}");
     }
 }
