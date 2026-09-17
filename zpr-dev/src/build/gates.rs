@@ -249,6 +249,94 @@ fn repo_display(url: &str) -> &str {
         .unwrap_or(url)
 }
 
+/// The three components the visa service names in `POLICY_MIN_COMPILER_*`.
+pub type Version3 = (u64, u64, u64);
+
+/// Reads `POLICY_MIN_COMPILER_{MAJOR,MINOR,PATCH}` out of the visa service's
+/// `vs/src/config.rs` text. An unreadable constant is an error naming the
+/// file: nothing else checks this compatibility, so silently skipping it
+/// would be worse than failing (spec-003 §4.3).
+pub fn policy_min_compiler(config_rs: &str, file: &str) -> Result<Version3> {
+    let read = |suffix: &str| -> Result<u64> {
+        let name = format!("POLICY_MIN_COMPILER_{suffix}");
+        // The declaration is `pub const <name>: u32 = <n>;` — matched
+        // structurally (name, then `=`, then integer, then `;`) rather than
+        // by exact spacing, so a reformat does not break the gate.
+        for line in config_rs.lines() {
+            let Some(after_name) = line.split_once(&name).map(|(_, rest)| rest) else {
+                continue;
+            };
+            let Some(value) = after_name.split_once('=').map(|(_, rest)| rest) else {
+                continue;
+            };
+            let value = value.trim().trim_end_matches(';').trim();
+            return value.parse().with_context(|| {
+                format!("cannot parse `{name}` in {file}: not an integer: {value:?}")
+            });
+        }
+        anyhow::bail!("cannot find `{name}` in {file}")
+    };
+    Ok((read("MAJOR")?, read("MINOR")?, read("PATCH")?))
+}
+
+/// Reads `[package].version` out of the compiler's `Cargo.toml` text. A
+/// missing or unparseable version is an error naming the file (spec-003 §4.3).
+pub fn package_version(cargo_toml: &str, file: &str) -> Result<Version3> {
+    let table: toml::Table = cargo_toml
+        .parse()
+        .with_context(|| format!("cannot parse {file}"))?;
+    let version = table
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("version"))
+        .and_then(toml::Value::as_str)
+        .with_context(|| format!("no [package].version in {file}"))?;
+    let mut parts = version.split('.').map(str::parse::<u64>);
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch))) => Ok((major, minor, patch)),
+        _ => anyhow::bail!("cannot parse [package].version {version:?} in {file}"),
+    }
+}
+
+/// Gate 3 — compiler / visa service version (spec-003 §4.3; error). Applies
+/// `libeval::pio::check_version`'s rule exactly: **major ==, minor ==,
+/// patch >=** (`libeval/src/pio.rs`; pre-1.0, major and minor must match and
+/// the compiler's patch must be at least the minimum). The file names appear
+/// in the failure message so the fix is obvious.
+pub fn gate_compiler_version(
+    zplc: Version3,
+    zplc_file: &str,
+    minimum: Version3,
+    vs_file: &str,
+) -> Vec<Finding> {
+    let (major, minor, patch) = zplc;
+    let (min_major, min_minor, min_patch) = minimum;
+    let zplc_display = format!("{major}.{minor}.{patch}");
+    let min_display = format!("{min_major}.{min_minor}.{min_patch}");
+
+    // The check_version rule, verbatim: majors equal, minors equal, patch at
+    // least the minimum.
+    let compatible = major == min_major && minor == min_minor && patch >= min_patch;
+    if compatible {
+        return vec![Finding::new(
+            Severity::Ok,
+            format!(
+                "zplc {zplc_display} satisfies the visa service's \
+                 POLICY_MIN_COMPILER {min_display}"
+            ),
+        )];
+    }
+    vec![Finding::new(
+        Severity::Error,
+        format!(
+            "zplc {zplc_display} cannot produce policy for this vs\n  \
+             {zplc_file}  version = \"{zplc_display}\"\n  \
+             {vs_file}  POLICY_MIN_COMPILER = {min_display}\n  \
+             rule: major ==, minor ==, patch >=  (libeval/src/pio.rs check_version)"
+        ),
+    )]
+}
+
 /// How a captured git dependency names its source revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
@@ -1293,5 +1381,116 @@ harness = false
         fork.kind = RefKind::Rev;
         let findings = gate_freshness(&[fork], |_| Some(vec!["v1.0.0".to_string()]));
         assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    // -- gate 3: compiler / visa service version (spec-003 §4.3) --------------
+    //
+    // The oracle is libeval/src/pio.rs check_version: pre-1.0, the found
+    // (compiler) version must have major and minor exactly equal to the
+    // minimum's, and patch >= the minimum's. Compare these cases by eye
+    // against that function when reviewing.
+
+    /// The real `vs/src/config.rs` lines 28-31, verbatim.
+    const VS_CONFIG: &str = "\
+// We only load policy files built by this version or later.
+pub const POLICY_MIN_COMPILER_MAJOR: u32 = 0;
+pub const POLICY_MIN_COMPILER_MINOR: u32 = 18;
+pub const POLICY_MIN_COMPILER_PATCH: u32 = 0;
+";
+
+    #[test]
+    fn gate3_parses_the_real_config_constants() {
+        assert_eq!(
+            policy_min_compiler(VS_CONFIG, "vs/src/config.rs").unwrap(),
+            (0, 18, 0)
+        );
+    }
+
+    /// An unreadable constant errors naming the file — silently skipping the
+    /// check would be worse than failing (spec-003 §4.3).
+    #[test]
+    fn gate3_unparseable_config_errors_naming_the_file() {
+        let error = policy_min_compiler("pub const OTHER: u32 = 1;\n", "vs/src/config.rs")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("vs/src/config.rs"), "{error}");
+        assert!(error.contains("POLICY_MIN_COMPILER"), "{error}");
+    }
+
+    #[test]
+    fn gate3_parses_package_version_from_cargo_toml() {
+        assert_eq!(
+            package_version(COMPILER, "zl-zpr-compiler/Cargo.toml").unwrap(),
+            (0, 18, 0)
+        );
+    }
+
+    /// A manifest without `[package].version` errors naming the file.
+    #[test]
+    fn gate3_missing_package_version_errors_naming_the_file() {
+        let error = package_version("[workspace]\nmembers = []\n", "zl-zpr-compiler/Cargo.toml")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zl-zpr-compiler/Cargo.toml"), "{error}");
+        assert!(error.contains("version"), "{error}");
+    }
+
+    /// The check_version rule, exactly: equal passes, higher patch passes,
+    /// lower patch fails, higher minor fails, higher major fails.
+    #[test]
+    fn gate3_applies_check_version_rule_exactly() {
+        let ok = |zplc: Version3, min: Version3| {
+            let findings = gate_compiler_version(zplc, "c.toml", min, "config.rs");
+            at_least(&findings, Severity::Error).is_empty()
+        };
+        assert!(ok((0, 18, 0), (0, 18, 0)), "equal versions must pass");
+        assert!(ok((0, 18, 4), (0, 18, 0)), "higher patch must pass");
+        assert!(!ok((0, 18, 0), (0, 18, 4)), "lower patch must fail");
+        assert!(!ok((0, 19, 0), (0, 18, 0)), "higher minor must fail");
+        assert!(!ok((0, 17, 9), (0, 18, 0)), "lower minor must fail");
+        assert!(!ok((1, 18, 0), (0, 18, 0)), "higher major must fail");
+    }
+
+    /// The failure message carries both file references and the rule, per the
+    /// spec-003 §4.3 report format.
+    #[test]
+    fn gate3_failure_names_both_files_and_the_rule() {
+        let findings = gate_compiler_version(
+            (0, 19, 0),
+            "zl-zpr-compiler/Cargo.toml",
+            (0, 18, 0),
+            "zl-zpr-visaservice/vs/src/config.rs",
+        );
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        let message = &errors[0].message;
+        for needle in [
+            "zplc 0.19.0",
+            "cannot produce policy",
+            "zl-zpr-compiler/Cargo.toml",
+            "zl-zpr-visaservice/vs/src/config.rs",
+            "0.18.0",
+            "major ==, minor ==, patch >=",
+        ] {
+            assert!(message.contains(needle), "missing {needle:?}: {message}");
+        }
+    }
+
+    /// A compatible pair is reported [OK], naming both versions.
+    #[test]
+    fn gate3_pass_is_reported_ok() {
+        let findings = gate_compiler_version((0, 18, 4), "c.toml", (0, 18, 0), "config.rs");
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Ok);
+        assert!(
+            findings[0].message.contains("0.18.4"),
+            "{}",
+            findings[0].message
+        );
+        assert!(
+            findings[0].message.contains("0.18.0"),
+            "{}",
+            findings[0].message
+        );
     }
 }
