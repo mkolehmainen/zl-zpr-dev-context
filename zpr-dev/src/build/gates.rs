@@ -19,7 +19,124 @@
 // exercised only by its tests.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context as _, Result};
+
+use super::PinDrift;
+
+/// Severity of one gate finding, in `zpr-dev validate` report style
+/// (spec-003 §4): only errors decide the exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Ok,
+    Info,
+    Warn,
+    Error,
+}
+
+/// One finding a gate produced. `message` may span lines; the first line is
+/// the summary and continuation lines are already indented for the report.
+#[derive(Debug)]
+pub struct Finding {
+    pub severity: Severity,
+    pub message: String,
+}
+
+impl Finding {
+    fn new(severity: Severity, message: impl Into<String>) -> Finding {
+        Finding {
+            severity,
+            message: message.into(),
+        }
+    }
+}
+
+/// Gate 1 — shared-dep agreement (spec-003 §4.1). Groups the extracted pins
+/// by crate and requires a single `(url, tag-or-rev)` pair across the whole
+/// set: a crate at two tags is a disagreement, and so is one tag reached from
+/// two URLs (the double-`cslab` trap of `docs/BUILD.md`). An `allow_pin_drift`
+/// entry suppresses exactly its crate's finding, echoing the reviewed reason;
+/// `downgrade` (the `--allow-pin-drift` flag) turns every disagreement into a
+/// warning for a one-off.
+pub fn gate_pin_agreement(
+    pins: &[PinOccurrence],
+    drift: &[PinDrift],
+    downgrade: bool,
+) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = Vec::new();
+
+    // Group occurrences by crate. A BTreeMap keeps report order deterministic.
+    let mut by_crate: BTreeMap<&str, Vec<&PinOccurrence>> = BTreeMap::new();
+    for pin in pins {
+        by_crate.entry(&pin.crate_name).or_default().push(pin);
+    }
+
+    let mut agreeing = 0usize;
+    for (crate_name, occurrences) in &by_crate {
+        // The distinct (url, reference) pairs this crate is pinned at. Both
+        // components must be single: two tags is a disagreement, and so is
+        // one tag reached from two URLs (the double-`cslab` trap).
+        let mut variants: Vec<(&str, &str)> = occurrences
+            .iter()
+            .map(|p| (p.url.as_str(), p.reference.as_str()))
+            .collect();
+        variants.sort_unstable();
+        variants.dedup();
+
+        if variants.len() <= 1 {
+            agreeing += 1;
+            continue;
+        }
+
+        // A reviewed allow_pin_drift entry suppresses this crate's finding,
+        // echoing its reason so the tolerance is visible in every report.
+        if let Some(entry) = drift.iter().find(|d| d.crate_name == *crate_name) {
+            findings.push(Finding::new(
+                Severity::Info,
+                format!(
+                    "pin drift allowed for crate `{crate_name}`: {}",
+                    entry.reason
+                ),
+            ));
+            continue;
+        }
+
+        // The spec-003 §4.1 message: every variant with every file and line
+        // that pins it, inheritance marked, and the remedy on the last line.
+        let mut message = format!("pin disagreement: crate `{crate_name}`");
+        for (url, reference) in &variants {
+            let pinned_by: Vec<String> = occurrences
+                .iter()
+                .filter(|p| p.url == *url && p.reference == *reference)
+                .map(|p| {
+                    let suffix = if p.inherited { " (inherited)" } else { "" };
+                    format!("{}:{}{suffix}", p.file, p.line)
+                })
+                .collect();
+            message.push_str(&format!("\n  {reference}  {url}  {}", pinned_by.join(", ")));
+        }
+        message.push_str(
+            "\n  => cut one tag and bump every consumer, or record it in allow_pin_drift",
+        );
+
+        let severity = if downgrade {
+            Severity::Warn
+        } else {
+            Severity::Error
+        };
+        findings.push(Finding::new(severity, message));
+    }
+
+    if agreeing > 0 {
+        let crates = if agreeing == 1 { "crate" } else { "crates" };
+        findings.push(Finding::new(
+            Severity::Ok,
+            format!("pin agreement: {agreeing} {crates} pinned consistently"),
+        ));
+    }
+    findings
+}
 
 /// How a captured git dependency names its source revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,5 +745,257 @@ harness = false
         assert_eq!(pins.len(), 1, "{pins:#?}");
         assert_eq!(pins[0].reference, "v0.27.0");
         assert_eq!(pins[0].line, 29);
+    }
+
+    // -- gate 1: shared-dep agreement (spec-003 §4.1) -------------------------
+
+    /// Hand-built occurrence for the gate tests, which are about grouping and
+    /// reporting rather than extraction.
+    fn pin(
+        crate_name: &str,
+        url: &str,
+        reference: &str,
+        file: &str,
+        line: usize,
+        inherited: bool,
+    ) -> PinOccurrence {
+        PinOccurrence {
+            crate_name: crate_name.to_string(),
+            url: url.to_string(),
+            reference: reference.to_string(),
+            kind: RefKind::Tag,
+            file: file.to_string(),
+            line,
+            inherited,
+        }
+    }
+
+    const COMMON_URL: &str = "https://github.com/mkolehmainen/zl-zpr-common.git";
+    const UTILS_URL: &str = "https://github.com/mkolehmainen/zl-zpr-utils.git";
+
+    /// Every finding at or above `severity`.
+    fn at_least(findings: &[Finding], severity: Severity) -> Vec<&Finding> {
+        findings.iter().filter(|f| f.severity >= severity).collect()
+    }
+
+    #[test]
+    fn gate1_agreeing_set_passes() {
+        let pins = vec![
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.27.0",
+                "zl-zpr-core/Cargo.toml",
+                29,
+                false,
+            ),
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.27.0",
+                "zl-zpr-visaservice/Cargo.toml",
+                29,
+                false,
+            ),
+            pin(
+                "cslab",
+                UTILS_URL,
+                "cslab-v0.1.2",
+                "zl-zpr-core/adapter/ph/Cargo.toml",
+                21,
+                false,
+            ),
+        ];
+        let findings = gate_pin_agreement(&pins, &[], false);
+        assert!(
+            at_least(&findings, Severity::Warn).is_empty(),
+            "{findings:#?}"
+        );
+        // The pass is stated, not silent: an [OK] line naming the census.
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Ok && f.message.contains("2 crates")),
+            "{findings:#?}"
+        );
+    }
+
+    /// A disagreement lists every tag with every file and line pinning it,
+    /// marks inheritance, and names the remedy (spec-003 §4.1).
+    #[test]
+    fn gate1_disagreement_lists_every_tag_file_and_line() {
+        let pins = vec![
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.26.0",
+                "zl-zpr-compiler/Cargo.toml",
+                22,
+                false,
+            ),
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.27.0",
+                "zl-zpr-core/Cargo.toml",
+                29,
+                false,
+            ),
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.27.0",
+                "zl-zpr-core/adapter/ph/Cargo.toml",
+                55,
+                true,
+            ),
+        ];
+        let findings = gate_pin_agreement(&pins, &[], false);
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        let message = &errors[0].message;
+        for needle in [
+            "pin disagreement",
+            "`zpr`",
+            COMMON_URL,
+            "v0.26.0",
+            "v0.27.0",
+            "zl-zpr-compiler/Cargo.toml:22",
+            "zl-zpr-core/Cargo.toml:29",
+            "zl-zpr-core/adapter/ph/Cargo.toml:55",
+            "inherited",
+            "allow_pin_drift",
+        ] {
+            assert!(message.contains(needle), "missing {needle:?}: {message}");
+        }
+    }
+
+    /// The same crate at the same tag from two URLs is also a disagreement —
+    /// the double-`cslab` trap of `docs/BUILD.md` (spec-003 §4.1).
+    #[test]
+    fn gate1_same_tag_from_two_urls_is_a_disagreement() {
+        let org_url = "https://github.com/org-zpr/zpr-utils.git";
+        let pins = vec![
+            pin(
+                "cslab",
+                UTILS_URL,
+                "cslab-v0.1.2",
+                "zl-zpr-core/adapter/ph/Cargo.toml",
+                21,
+                false,
+            ),
+            pin(
+                "cslab",
+                org_url,
+                "cslab-v0.1.2",
+                "zl-zpr-utils/rcu/Cargo.toml",
+                10,
+                false,
+            ),
+        ];
+        let findings = gate_pin_agreement(&pins, &[], false);
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        assert!(
+            errors[0].message.contains(UTILS_URL),
+            "{}",
+            errors[0].message
+        );
+        assert!(errors[0].message.contains(org_url), "{}", errors[0].message);
+    }
+
+    /// An `allow_pin_drift` entry suppresses exactly its crate, echoing the
+    /// reviewed reason; other disagreements still fail (spec-003 §4.1).
+    #[test]
+    fn gate1_allow_pin_drift_suppresses_one_crate_and_echoes_reason() {
+        let pins = vec![
+            pin(
+                "rcu",
+                UTILS_URL,
+                "zpr-utils-v0.1.0",
+                "zl-zpr-common/Cargo.toml",
+                21,
+                false,
+            ),
+            pin(
+                "rcu",
+                UTILS_URL,
+                "rcu-v0.1.2",
+                "zl-zpr-core/adapter/ph/Cargo.toml",
+                36,
+                false,
+            ),
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.26.0",
+                "zl-zpr-compiler/Cargo.toml",
+                22,
+                false,
+            ),
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.27.0",
+                "zl-zpr-core/Cargo.toml",
+                29,
+                false,
+            ),
+        ];
+        let drift = vec![PinDrift {
+            crate_name: "rcu".to_string(),
+            reason: "zl-zpr-common pins zpr-utils-v0.1.0, ph pins rcu-v0.1.2; zipline#18"
+                .to_string(),
+        }];
+        let findings = gate_pin_agreement(&pins, &drift, false);
+        // rcu is suppressed: no error names it, and its reason is echoed.
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        assert!(errors[0].message.contains("`zpr`"), "{}", errors[0].message);
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Info
+                && f.message.contains("`rcu`")
+                && f.message.contains("zipline#18")),
+            "{findings:#?}"
+        );
+    }
+
+    /// `--allow-pin-drift` downgrades every disagreement to a warning, so the
+    /// command exits 0 (spec-003 §4.1).
+    #[test]
+    fn gate1_downgrade_turns_errors_into_warnings() {
+        let pins = vec![
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.26.0",
+                "zl-zpr-compiler/Cargo.toml",
+                22,
+                false,
+            ),
+            pin(
+                "zpr",
+                COMMON_URL,
+                "v0.27.0",
+                "zl-zpr-core/Cargo.toml",
+                29,
+                false,
+            ),
+        ];
+        let findings = gate_pin_agreement(&pins, &[], true);
+        assert!(
+            at_least(&findings, Severity::Error).is_empty(),
+            "{findings:#?}"
+        );
+        let warnings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Warn)
+            .collect();
+        assert_eq!(warnings.len(), 1, "{findings:#?}");
+        assert!(
+            warnings[0].message.contains("pin disagreement"),
+            "{}",
+            warnings[0].message
+        );
     }
 }
