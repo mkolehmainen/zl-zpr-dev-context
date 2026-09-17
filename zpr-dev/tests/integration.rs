@@ -1158,3 +1158,117 @@ fn build_manifest_and_tip_together_is_a_usage_error() {
     assert!(err.contains("--tip"), "{err}");
     assert!(err.contains("--manifest"), "{err}");
 }
+
+/// Snapshot of a directory tree: every path with its mtime and size. Two equal
+/// snapshots mean nothing was created, removed or rewritten.
+fn tree_snapshot(root: &std::path::Path) -> Vec<(String, std::time::SystemTime, u64)> {
+    fn walk(dir: &std::path::Path, acc: &mut Vec<(String, std::time::SystemTime, u64)>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            let meta = entry.metadata().unwrap();
+            acc.push((
+                path.display().to_string(),
+                meta.modified().unwrap(),
+                meta.len(),
+            ));
+            if meta.is_dir() {
+                walk(&path, acc);
+            }
+        }
+    }
+    let mut acc = Vec::new();
+    walk(root, &mut acc);
+    acc.sort();
+    acc
+}
+
+/// `build --tip --dry-run` prints a resolved 40-character sha per repository,
+/// the planned build order, the tier plan and the dist/ target — and creates
+/// nothing: the workspace tree is identical before and after (spec-003 §7.2).
+#[test]
+fn build_tip_dry_run_resolves_and_creates_nothing() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    let before = tree_snapshot(&fixture.workspace);
+
+    let out = stdout_of(&fixture.run(&["build", "--tip", "--dry-run"]));
+
+    for name in REPOS {
+        let dir = fixture.workspace.join(name);
+        let sha = common::git(&dir, &["rev-parse", "origin/main"]);
+        assert!(
+            out.contains(&sha),
+            "{name}: resolved sha {sha} not reported: {out}"
+        );
+        assert!(out.contains(&format!("origin/main")), "{out}");
+    }
+    assert!(out.contains("build order"), "{out}");
+    assert!(out.contains("dist"), "{out}");
+    assert!(out.contains("dry-run"), "{out}");
+
+    assert_eq!(
+        tree_snapshot(&fixture.workspace),
+        before,
+        "dry-run changed the workspace"
+    );
+}
+
+/// A build set with an unresolvable ref exits 1 naming repository and ref —
+/// a gate-style failure, not a usage error (spec-003 §7.1).
+#[test]
+fn build_dry_run_unknown_ref_exits_one_naming_repo_and_ref() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    fixture.write(
+        &format!("{CONTEXT}/build-sets/2026-09-17.yaml"),
+        "version: 1\nname: 2026-09-17\nrepositories:\n  zl-zpr-core: v9.9.9\n  zl-zpr-common: main\n",
+    );
+
+    let output = fixture.run(&["build", "--dry-run"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(all.contains("zl-zpr-core"), "{all}");
+    assert!(all.contains("v9.9.9"), "{all}");
+}
+
+/// The default manifest is the newest file in build-sets/; with the directory
+/// absent, the error names the remedy (spec-003 §2.2).
+#[test]
+fn build_without_manifest_or_tip_needs_a_build_sets_directory() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+
+    let err = error_with_code(&fixture.run(&["build", "--dry-run"]), 2);
+    assert!(err.contains("build-sets"), "{err}");
+    assert!(err.contains("--tip"), "{err}");
+}
+
+/// A build set resolves through the default-manifest path end to end: the
+/// newest of two files wins, and its refs are the ones resolved.
+#[test]
+fn build_dry_run_picks_newest_build_set_and_resolves_it() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    // The older set names a ref that does not exist, so selecting it would
+    // fail loudly: passing proves the newer file was chosen.
+    fixture.write(
+        &format!("{CONTEXT}/build-sets/2026-01-01.yaml"),
+        "version: 1\nname: 2026-01-01\nrepositories:\n  zl-zpr-core: does-not-exist\n",
+    );
+    fixture.write(
+        &format!("{CONTEXT}/build-sets/2026-09-17.yaml"),
+        "version: 1\nname: 2026-09-17\nrepositories:\n  zl-zpr-core: main\n  zl-zpr-common: main\n",
+    );
+
+    let out = stdout_of(&fixture.run(&["build", "--dry-run"]));
+    assert!(out.contains("2026-09-17"), "{out}");
+    let sha = common::git(
+        &fixture.workspace.join("zl-zpr-core"),
+        &["rev-parse", "main"],
+    );
+    assert!(out.contains(&sha), "{out}");
+}
