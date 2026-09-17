@@ -2,6 +2,7 @@
 //!
 //! See `docs/specs/spec-001-zpr-dev.md` for the specification this implements.
 
+mod build;
 mod commands;
 mod config;
 mod generate;
@@ -101,6 +102,41 @@ enum Command {
     /// Check workspace health
     Validate,
 
+    /// Resolve a build set; later stages gate, build and test it (spec-003)
+    Build {
+        /// Build set to build; default: newest file in build-sets/
+        #[arg(long, value_name = "PATH", conflicts_with = "tip")]
+        manifest: Option<PathBuf>,
+
+        /// Ignore every ref; use origin/<default_branch> everywhere
+        #[arg(long)]
+        tip: bool,
+
+        /// Test tiers: none | default | unit | netns | docker | all
+        #[arg(long, value_name = "LIST")]
+        test: Option<String>,
+
+        /// Build only this repository and its prerequisites
+        #[arg(long, value_name = "NAME")]
+        repo: Option<String>,
+
+        /// Build directory; default <workspace>/.zpr-build/<name>
+        #[arg(long, value_name = "PATH")]
+        build_dir: Option<PathBuf>,
+
+        /// Keep worktrees after a successful run
+        #[arg(long)]
+        keep: bool,
+
+        /// Gate 1 disagreements warn instead of failing
+        #[arg(long)]
+        allow_pin_drift: bool,
+
+        /// Skip the dist tarball
+        #[arg(long)]
+        no_tarball: bool,
+    },
+
     /// Configure or inspect a coding agent's global setup
     Agent {
         #[command(subcommand)]
@@ -184,6 +220,28 @@ fn run() -> Result<ExitCode> {
         Command::Status { porcelain, repo } => commands::status(&ctx, *porcelain, repo.as_deref()),
         Command::Sync => commands::sync(&ctx),
         Command::Validate => commands::validate(&ctx),
+        Command::Build {
+            manifest,
+            tip,
+            test,
+            repo,
+            build_dir,
+            keep,
+            allow_pin_drift,
+            no_tarball,
+        } => build::run(
+            &ctx,
+            &build::BuildArgs {
+                manifest: manifest.clone(),
+                tip: *tip,
+                test: test.clone(),
+                repo: repo.clone(),
+                build_dir: build_dir.clone(),
+                keep: *keep,
+                allow_pin_drift: *allow_pin_drift,
+                no_tarball: *no_tarball,
+            },
+        ),
         Command::Agent { command } => match command {
             AgentCommand::Configure { agent } => match agent {
                 AgentName::Hermes => commands::agent_configure_hermes(&ctx),

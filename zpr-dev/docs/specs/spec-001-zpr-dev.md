@@ -48,6 +48,7 @@ design decision made here; each can be added without restructuring.
 | `status --short` | `--porcelain` covers the scripting case. |
 | Workspace discovery by walking up from the current directory | `--workspace`, `$ZPR_WORKSPACE`, and the default cover the real cases. |
 | `.gitignore` / `.git/info/exclude` management | Decided against. Generated files appear as untracked entries in `git status`; that is accepted. |
+| Building the binary set | Out of scope for v0.1, **in scope for the tool since**: `spec-003-build.md` adds `zpr-dev build`, which resolves a build-set manifest, gates it for compatibility, builds and tests the whole binary set. Read that document, not this row. |
 
 ### 1.3 Decisions carried in from the parent spec
 
@@ -582,6 +583,13 @@ Dev-dependency: `tempfile`, for integration-test workspaces.
 
 Git is invoked through `std::process::Command`. There is no async runtime, no
 HTTP client, no terminal-color or progress-bar crate, and no `regex`.
+
+`spec-003-build.md` (§9) will add exactly two crates as its later stages land:
+`toml` with the pin-agreement gate (to read `git`-dependency pins out of
+`Cargo.toml`) and `sha2` with `dist/` staging (binary digests for the emitted
+manifest). Each is deferred to the stage that first uses it, so this table and
+`Cargo.toml` never disagree. No `cargo-metadata` and no `git2` — the same
+minimality rule as above.
 
 ### 6.2 Modules
 

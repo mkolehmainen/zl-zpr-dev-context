@@ -155,6 +155,15 @@ pub fn parse(text: &str) -> Result<Manifest> {
     Ok(manifest)
 }
 
+impl Manifest {
+    /// Looks up a repository by name, so callers — the build sets of spec-003
+    /// in particular — never restate a URL or a default branch that this
+    /// manifest already declares.
+    pub fn repo(&self, name: &str) -> Option<&Repo> {
+        self.repositories.iter().find(|repo| repo.name == name)
+    }
+}
+
 /// Picks the workspace directory: explicit flag, then `$ZPR_WORKSPACE`, then
 /// `<home>/src/zl_zpr`. Pure so it is testable without touching the environment.
 pub fn resolve_workspace(flag: Option<&Path>, env: Option<&str>, home: &Path) -> PathBuf {
@@ -256,19 +265,26 @@ repositories:
         );
     }
 
-    /// The real manifest at the repository root must parse and match spec §3.2:
-    /// ten repositories, every one pinned explicitly to `zipline`. In the
-    /// zipline forks `main` is a read-only mirror of upstream, so a repository
-    /// that fell back to the `main` serde default would check out the wrong
-    /// branch — this asserts none of them do.
+    /// The real manifest at the repository root must parse and match spec §3.2
+    /// plus the later `zl-zpr-coredns` addition: eleven repositories, every fork
+    /// pinned explicitly to `zipline`. In the zipline forks `main` is a
+    /// read-only mirror of upstream, so a repository that fell back to the
+    /// `main` serde default would check out the wrong branch — this asserts
+    /// none of them do. `zl-zpr-coredns` is the one non-fork: it has no
+    /// upstream mirror, so its working branch really is `main`.
     #[test]
-    fn real_workspace_yaml_parses_with_ten_repositories_on_zipline() {
+    fn real_workspace_yaml_parses_with_eleven_repositories_on_zipline() {
         let manifest = parse(include_str!("../../workspace.yaml")).expect("real manifest parses");
-        assert_eq!(manifest.repositories.len(), 10);
+        assert_eq!(manifest.repositories.len(), 11);
         for repo in &manifest.repositories {
+            let expected = if repo.name == "zl-zpr-coredns" {
+                "main"
+            } else {
+                "zipline"
+            };
             assert_eq!(
-                repo.default_branch, "zipline",
-                "{} is not on zipline",
+                repo.default_branch, expected,
+                "{} is not on {expected}",
                 repo.name
             );
         }
