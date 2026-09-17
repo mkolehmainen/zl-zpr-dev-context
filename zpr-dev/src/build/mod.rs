@@ -45,7 +45,7 @@ pub struct BuildSet {
 
 /// One tolerated pin disagreement. The reason is mandatory: it is the reviewed
 /// record of why the divergence is acceptable.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PinDrift {
     #[serde(rename = "crate")]
     pub crate_name: String,
@@ -240,8 +240,10 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
 
     // `--tip` needs no build set at all: the repository list is the
     // binary-producing set of spec-003 §5 and the default branches come from
-    // workspace.yaml (spec-003 §2.3). A named set supplies both instead.
-    let (name, resolution, skipped) = if args.tip {
+    // workspace.yaml (spec-003 §2.3). A named set supplies both instead. The
+    // tip branch synthesizes a set so the emitted-manifest path (§3) is one
+    // code path — which is also how a --tip run is promoted to a named set.
+    let (set, resolution, skipped) = if args.tip {
         let mut repos: Vec<(&str, &str)> = Vec::new();
         let mut skipped: Vec<&str> = Vec::new();
         for wanted in BUILD_ORDER {
@@ -255,11 +257,17 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         if repos.is_empty() {
             bail!("--tip found none of the build-set repositories in workspace.yaml");
         }
-        (
-            "tip".to_string(),
-            resolve_tip(&ctx.workspace, &repos),
-            skipped,
-        )
+        let set = BuildSet {
+            version: SUPPORTED_VERSION,
+            name: "tip".to_string(),
+            repositories: repos
+                .iter()
+                .map(|(name, branch)| (name.to_string(), format!("origin/{branch}")))
+                .collect(),
+            allow_pin_drift: Vec::new(),
+        };
+        let resolution = resolve_tip(&ctx.workspace, &repos);
+        (set, resolution, skipped)
     } else {
         let path = match &args.manifest {
             Some(path) => path.clone(),
@@ -269,7 +277,8 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
             .map_err(|e| anyhow::anyhow!("cannot read build set {}: {e}", path.display()))?;
         let set = parse(&text)?;
         validate_against(&set, &manifest)?;
-        (set.name.clone(), resolve_set(&ctx.workspace, &set), vec![])
+        let resolution = resolve_set(&ctx.workspace, &set);
+        (set, resolution, vec![])
     };
 
     // A resolution failure is a gate-style finding — the set is incoherent on
@@ -282,7 +291,21 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         }
     };
 
-    report_dry_run(ctx, &name, &resolved, &skipped, args.build_dir.as_deref());
+    // The manifest that a real run would write (B3): built here so the shape
+    // is exercised end to end, printed under --verbose, never written.
+    let emitted = emit(&set, &resolved, args.tip)?;
+    report_dry_run(
+        ctx,
+        &set.name,
+        &resolved,
+        &skipped,
+        args.build_dir.as_deref(),
+    );
+    if ctx.verbose && !ctx.quiet {
+        println!();
+        println!("emitted manifest (would be written by B3):");
+        print!("{}", emitted_yaml(&emitted)?);
+    }
     Ok(std::process::ExitCode::SUCCESS)
 }
 
@@ -442,7 +465,9 @@ pub struct BuiltFrom {
     pub tip: bool,
 }
 
-/// One agreed pin, recomputed by gate 1 (B2).
+/// One agreed pin, recomputed by gate 1. Constructed by B2; the shape is fixed
+/// here so the emitted manifest's contract is complete in one document.
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct Pin {
     #[serde(rename = "crate")]
@@ -454,7 +479,8 @@ pub struct Pin {
     pub newest_available: Option<String>,
 }
 
-/// One staged binary's identity (B3).
+/// One staged binary's identity. Constructed by B3; shape fixed here.
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct Binary {
     pub name: String,
@@ -463,7 +489,9 @@ pub struct Binary {
     pub from: String,
 }
 
-/// One tier's outcome (B4–B5). A skipped tier always carries its reason.
+/// One tier's outcome. A skipped tier always carries its reason. Constructed
+/// by B4–B5; shape fixed here.
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct Tier {
     pub status: String,
@@ -473,15 +501,65 @@ pub struct Tier {
 
 /// Builds the emitted manifest for a resolution (spec-003 §3): the input set's
 /// name and drift entries with every ref replaced by its sha, plus the
-/// `resolved:` block shape that B3–B5 fill in.
-pub fn emit(_set: &BuildSet, _resolved: &[Resolved], _tip: bool) -> Result<EmittedManifest> {
-    bail!("unimplemented")
+/// `resolved:` block shape that B3–B5 fill in — present but honestly empty at
+/// this stage, so nothing pretends a build or a tier ran.
+pub fn emit(set: &BuildSet, resolved: &[Resolved], tip: bool) -> Result<EmittedManifest> {
+    let repositories: BTreeMap<String, String> = resolved
+        .iter()
+        .map(|entry| (entry.repo.clone(), entry.sha.clone()))
+        .collect();
+    Ok(EmittedManifest {
+        version: SUPPORTED_VERSION,
+        name: set.name.clone(),
+        repositories,
+        allow_pin_drift: set.allow_pin_drift.clone(),
+        resolved: ResolvedBlock {
+            built_at: utc_now(),
+            built_from: BuiltFrom {
+                manifest: String::new(),
+                context: String::new(),
+                tip,
+            },
+            ..ResolvedBlock::default()
+        },
+    })
 }
 
 /// Serializes the emitted manifest as the YAML that lands in
 /// `dist/zpr-set-<name>.yaml`.
-pub fn emitted_yaml(_manifest: &EmittedManifest) -> Result<String> {
-    bail!("unimplemented")
+pub fn emitted_yaml(manifest: &EmittedManifest) -> Result<String> {
+    Ok(serde_yaml_ng::to_string(manifest)?)
+}
+
+/// The current time as `YYYY-MM-DDTHH:MM:SSZ`, from the system clock and the
+/// proleptic-Gregorian conversion of Howard Hinnant's `civil_from_days` —
+/// spelled out here because spec-001 §6.1 keeps the dependency set free of a
+/// date crate for the sake of one timestamp.
+fn utc_now() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (seconds / 86_400) as i64;
+    let (hour, minute, second) = (
+        (seconds % 86_400) / 3_600,
+        (seconds % 3_600) / 60,
+        seconds % 60,
+    );
+
+    // civil_from_days: days since 1970-01-01 -> (year, month, day).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 #[cfg(test)]
