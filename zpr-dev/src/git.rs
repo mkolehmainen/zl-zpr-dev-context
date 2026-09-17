@@ -120,15 +120,37 @@ pub fn ff_merge(dir: &Path) -> Result<bool> {
 /// sha of the commit it names, without fetching. `^{commit}` peels annotated
 /// tags to the commit they point at. An unknown rev is an error naming it,
 /// because "unknown ref" with no ref is undiagnosable from a build report.
-pub fn rev_parse(_dir: &Path, _rev: &str) -> Result<String> {
-    bail!("unimplemented")
+pub fn rev_parse(dir: &Path, rev: &str) -> Result<String> {
+    git(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "unknown ref {rev} in {} (refs are resolved locally; zpr-dev never fetches)",
+            dir.display()
+        )
+    })
 }
 
 /// The repository's tags, one per line from `git tag --list`. Empty when there
 /// are none. Gate 2 (spec-003 §4.2) orders these by semantic version itself;
-/// this returns git's plain listing.
-pub fn tag_list(_dir: &Path) -> Result<Vec<String>> {
-    bail!("unimplemented")
+/// this returns git's plain listing. No production caller until the gates land
+/// in B2 — the issue puts the helper here so `git.rs` is complete in one PR —
+/// hence the explicit allowance.
+#[allow(dead_code)]
+pub fn tag_list(dir: &Path) -> Result<Vec<String>> {
+    let output = git(dir, &["tag", "--list"])?;
+    Ok(output
+        .lines()
+        .map(str::to_string)
+        .filter(|line| !line.is_empty())
+        .collect())
 }
 
 #[cfg(test)]

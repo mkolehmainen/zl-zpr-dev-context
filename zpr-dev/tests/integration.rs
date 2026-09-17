@@ -1182,9 +1182,12 @@ fn tree_snapshot(root: &std::path::Path) -> Vec<(String, std::time::SystemTime, 
     acc
 }
 
-/// `build --tip --dry-run` prints a resolved 40-character sha per repository,
-/// the planned build order, the tier plan and the dist/ target — and creates
-/// nothing: the workspace tree is identical before and after (spec-003 §7.2).
+/// `build --tip --dry-run` prints a resolved 40-character sha per resolvable
+/// repository, the planned build order, the tier plan and the dist/ target —
+/// and creates nothing: the workspace tree is identical before and after
+/// (spec-003 §7.2). `--tip` resolves the binary-producing set of spec-003 §5;
+/// the fixture declares only `zl-zpr-core` of those five, so the other four
+/// are reported as absent from workspace.yaml rather than silently dropped.
 #[test]
 fn build_tip_dry_run_resolves_and_creates_nothing() {
     let fixture = Fixture::new();
@@ -1193,15 +1196,13 @@ fn build_tip_dry_run_resolves_and_creates_nothing() {
 
     let out = stdout_of(&fixture.run(&["build", "--tip", "--dry-run"]));
 
-    for name in REPOS {
-        let dir = fixture.workspace.join(name);
-        let sha = common::git(&dir, &["rev-parse", "origin/main"]);
-        assert!(
-            out.contains(&sha),
-            "{name}: resolved sha {sha} not reported: {out}"
-        );
-        assert!(out.contains(&format!("origin/main")), "{out}");
-    }
+    let core = fixture.workspace.join("zl-zpr-core");
+    let sha = common::git(&core, &["rev-parse", "origin/main"]);
+    assert_eq!(sha.len(), 40);
+    assert!(out.contains(&sha), "resolved sha {sha} not reported: {out}");
+    assert!(out.contains("origin/main"), "{out}");
+    // The binary-producing repositories the fixture does not declare are named.
+    assert!(out.contains("zl-zpr-visaservice"), "{out}");
     assert!(out.contains("build order"), "{out}");
     assert!(out.contains("dist"), "{out}");
     assert!(out.contains("dry-run"), "{out}");

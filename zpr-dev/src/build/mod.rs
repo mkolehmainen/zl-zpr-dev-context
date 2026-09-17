@@ -14,6 +14,18 @@ use crate::config::Manifest;
 /// The only build-set version this tool understands (spec-003 §2.1).
 const SUPPORTED_VERSION: u32 = 1;
 
+/// The binary-producing repositories in build order (spec-003 §5). This is
+/// also the repository list `--tip` resolves: a tip build has no build set to
+/// name repositories, and these five are what a set may build. Repositories a
+/// *named* set lists are validated against `workspace.yaml` instead.
+const BUILD_ORDER: [&str; 5] = [
+    "zl-zpr-compiler",
+    "zl-zpr-visaservice",
+    "zl-zpr-core",
+    "zl-zpr-coredns",
+    "zl-zpr-demo",
+];
+
 /// A build set: the input manifest of spec-003 §2. Unknown keys are ignored on
 /// purpose — no `deny_unknown_fields` — matching `workspace.yaml`'s tolerance;
 /// it is also what makes an emitted manifest (§3) valid input, because its
@@ -141,14 +153,48 @@ pub struct Resolved {
 /// workspace checkouts (spec-003 §2.3). No fetch: resolution sees only what
 /// the local repositories already have. A missing or non-Git directory, and an
 /// unknown ref, are errors naming the repository (and the ref).
-pub fn resolve_set(_workspace: &Path, _set: &BuildSet) -> Result<Vec<Resolved>> {
-    bail!("unimplemented")
+pub fn resolve_set(workspace: &Path, set: &BuildSet) -> Result<Vec<Resolved>> {
+    set.repositories
+        .iter()
+        .map(|(name, reference)| resolve_one(workspace, name, reference))
+        .collect()
 }
 
 /// Resolves `origin/<default_branch>` for every named repository — the `--tip`
 /// path, which ignores manifest values entirely (spec-003 §2.3).
-pub fn resolve_tip(_workspace: &Path, _repos: &[(&str, &str)]) -> Result<Vec<Resolved>> {
-    bail!("unimplemented")
+pub fn resolve_tip(workspace: &Path, repos: &[(&str, &str)]) -> Result<Vec<Resolved>> {
+    repos
+        .iter()
+        .map(|(name, default_branch)| {
+            resolve_one(workspace, name, &format!("origin/{default_branch}"))
+        })
+        .collect()
+}
+
+/// Resolves one ref in one workspace checkout, with the directory checks that
+/// make the failure modes diagnosable: a missing directory and a non-Git
+/// directory each name the repository rather than surfacing a raw git error.
+fn resolve_one(workspace: &Path, name: &str, reference: &str) -> Result<Resolved> {
+    let dir = workspace.join(name);
+    if !dir.is_dir() {
+        bail!(
+            "repository {name} is not checked out at {} (run: zpr-dev setup)",
+            dir.display()
+        );
+    }
+    if !crate::git::is_repo(&dir) {
+        bail!(
+            "repository {name} at {} is not a git repository",
+            dir.display()
+        );
+    }
+    let sha = crate::git::rev_parse(&dir, reference)
+        .map_err(|e| anyhow::anyhow!("repository {name}: {e}"))?;
+    Ok(Resolved {
+        repo: name.to_string(),
+        reference: reference.to_string(),
+        sha,
+    })
 }
 
 /// Everything `zpr-dev build` takes from the command line, threaded as one
@@ -166,7 +212,8 @@ pub struct BuildArgs {
 }
 
 /// The `build` command (spec-003 §7). In B1 only `--dry-run` does anything:
-/// it resolves and reports without touching the workspace.
+/// it resolves and reports without touching the workspace — no worktree, no
+/// directory, no log file, and no `git fetch` (spec-003 §7.2).
 pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
     // Flags whose stages have not landed parse but are inert (spec-003 §7.1);
     // saying so beats silently ignoring them.
@@ -182,12 +229,37 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         }
     }
 
+    if !ctx.dry_run {
+        bail!(
+            "only `build --dry-run` is implemented at this stage (B1); \
+             gates, worktrees and builds land with B2-B3 (spec-003 §1.2)"
+        );
+    }
+
     let manifest = crate::config::load(&ctx.context.join(crate::config::MANIFEST_FILE))?;
 
-    // `--tip` needs no build set at all: the repository list and the default
-    // branches both come from workspace.yaml (spec-003 §2.3).
-    let set = if args.tip {
-        None
+    // `--tip` needs no build set at all: the repository list is the
+    // binary-producing set of spec-003 §5 and the default branches come from
+    // workspace.yaml (spec-003 §2.3). A named set supplies both instead.
+    let (name, resolution, skipped) = if args.tip {
+        let mut repos: Vec<(&str, &str)> = Vec::new();
+        let mut skipped: Vec<&str> = Vec::new();
+        for wanted in BUILD_ORDER {
+            match manifest.repo(wanted) {
+                Some(repo) => repos.push((&repo.name, &repo.default_branch)),
+                // Not declared in this workspace: resolvable nowhere, so it is
+                // reported rather than silently absent from the plan.
+                None => skipped.push(wanted),
+            }
+        }
+        if repos.is_empty() {
+            bail!("--tip found none of the build-set repositories in workspace.yaml");
+        }
+        (
+            "tip".to_string(),
+            resolve_tip(&ctx.workspace, &repos),
+            skipped,
+        )
     } else {
         let path = match &args.manifest {
             Some(path) => path.clone(),
@@ -197,11 +269,132 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
             .map_err(|e| anyhow::anyhow!("cannot read build set {}: {e}", path.display()))?;
         let set = parse(&text)?;
         validate_against(&set, &manifest)?;
-        Some(set)
+        (set.name.clone(), resolve_set(&ctx.workspace, &set), vec![])
     };
 
-    let _ = (&set, &args.build_dir);
-    bail!("ref resolution and --dry-run reporting land with the next step of B1")
+    // A resolution failure is a gate-style finding — the set is incoherent on
+    // this machine — so it exits 1, not 2 (spec-003 §7.1).
+    let resolved = match resolution {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            return Ok(std::process::ExitCode::from(1));
+        }
+    };
+
+    report_dry_run(ctx, &name, &resolved, &skipped, args.build_dir.as_deref());
+    Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// Prints the §7.2 dry-run report: resolved shas, planned build order, planned
+/// tiers with probe results, and the dist/ target. Read-only by construction —
+/// the only processes it may spawn are the read-only tier probes.
+fn report_dry_run(
+    ctx: &crate::Ctx,
+    name: &str,
+    resolved: &[Resolved],
+    skipped: &[&str],
+    build_dir: Option<&Path>,
+) {
+    if ctx.quiet {
+        return;
+    }
+    println!("build set {name} (dry-run)");
+    println!();
+    println!("resolved refs:");
+    let width = resolved.iter().map(|r| r.repo.len()).max().unwrap_or(0);
+    for entry in resolved {
+        println!(
+            "  {:width$}  {} -> {}",
+            entry.repo, entry.reference, entry.sha
+        );
+    }
+    for name in skipped {
+        println!("  {name}: not in workspace.yaml, skipped");
+    }
+    println!();
+
+    // Build order: the resolved repositories that have a recipe, in the fixed
+    // §5 order. A resolved repository without a recipe is stated, not hidden.
+    let ordered: Vec<&str> = BUILD_ORDER
+        .iter()
+        .filter(|name| resolved.iter().any(|r| r.repo == **name))
+        .copied()
+        .collect();
+    println!("build order: {}", ordered.join(", "));
+    let recipeless: Vec<&str> = resolved
+        .iter()
+        .map(|r| r.repo.as_str())
+        .filter(|name| !BUILD_ORDER.contains(name))
+        .collect();
+    if !recipeless.is_empty() {
+        println!(
+            "  (resolved but no build recipe: {})",
+            recipeless.join(", ")
+        );
+    }
+    println!();
+
+    println!("tiers (planned):");
+    println!("  unit    would run");
+    println!("  netns   not requested (--test netns); {}", netns_probe());
+    println!(
+        "  docker  not requested (--test docker); {}",
+        docker_probe()
+    );
+    println!();
+
+    let build_dir = build_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| ctx.workspace.join(".zpr-build").join(name));
+    println!("dist: {}", build_dir.join("dist").display());
+    println!("dry-run: nothing was created, and nothing was fetched");
+}
+
+/// True when `program` is on `PATH` — the read-only half of a prerequisite
+/// probe (spec-003 §7.2).
+fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+}
+
+/// The `netns` tier's prerequisite probe results, as one report fragment. Every
+/// check here is read-only: `sudo -n true` never prompts and changes nothing.
+fn netns_probe() -> String {
+    let mut missing: Vec<&str> = Vec::new();
+    if !cfg!(target_os = "linux") {
+        missing.push("linux");
+    }
+    let sudo = std::process::Command::new("sudo")
+        .args(["-n", "true"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if !sudo {
+        missing.push("passwordless sudo");
+    }
+    if !on_path("valkey-server") {
+        missing.push("valkey-server");
+    }
+    if !on_path("python3") {
+        missing.push("python3");
+    }
+    if missing.is_empty() {
+        "prerequisites present".to_string()
+    } else {
+        format!("missing: {}", missing.join(", "))
+    }
+}
+
+/// The `docker` tier's prerequisite probe results.
+fn docker_probe() -> String {
+    if on_path("docker") {
+        "prerequisites present".to_string()
+    } else {
+        "missing: docker".to_string()
+    }
 }
 
 #[cfg(test)]
