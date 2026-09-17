@@ -126,6 +126,31 @@ pub fn default_manifest_path(context: &Path) -> Result<PathBuf> {
     }
 }
 
+/// One repository's resolution: the ref asked for and the sha it names.
+#[derive(Debug, PartialEq)]
+pub struct Resolved {
+    pub repo: String,
+    /// What was asked for: the manifest value, or `origin/<default_branch>`
+    /// under `--tip`.
+    pub reference: String,
+    /// The full 40-character commit sha.
+    pub sha: String,
+}
+
+/// Resolves every entry of the build set to a 40-character sha against the
+/// workspace checkouts (spec-003 §2.3). No fetch: resolution sees only what
+/// the local repositories already have. A missing or non-Git directory, and an
+/// unknown ref, are errors naming the repository (and the ref).
+pub fn resolve_set(_workspace: &Path, _set: &BuildSet) -> Result<Vec<Resolved>> {
+    bail!("unimplemented")
+}
+
+/// Resolves `origin/<default_branch>` for every named repository — the `--tip`
+/// path, which ignores manifest values entirely (spec-003 §2.3).
+pub fn resolve_tip(_workspace: &Path, _repos: &[(&str, &str)]) -> Result<Vec<Resolved>> {
+    bail!("unimplemented")
+}
+
 /// Everything `zpr-dev build` takes from the command line, threaded as one
 /// struct so the dispatch arm in `main.rs` stays a single call.
 #[derive(Debug)]
@@ -303,5 +328,140 @@ allow_pin_drift:
         std::fs::create_dir(tmp.path().join("build-sets")).unwrap();
         let error = default_manifest_path(tmp.path()).unwrap_err().to_string();
         assert!(error.contains("build-sets"), "{error}");
+    }
+
+    // -- ref resolution (spec-003 §2.3) --------------------------------------
+
+    /// Runs git in `dir` for fixture setup, panicking on failure.
+    fn setup_git(dir: &Path, args: &[&str]) -> String {
+        crate::git::git(dir, args).unwrap()
+    }
+
+    /// A workspace holding one repository, `zl-zpr-core`, cloned from a local
+    /// bare origin so `origin/main` exists — what `--tip` resolves.
+    fn workspace_with_repo() -> (tempfile::TempDir, PathBuf, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        setup_git(&origin, &["init", "--bare", "-b", "main"]);
+
+        let scratch = tmp.path().join("scratch");
+        setup_git(
+            tmp.path(),
+            &[
+                "clone",
+                &origin.to_string_lossy(),
+                &scratch.to_string_lossy(),
+            ],
+        );
+        setup_git(&scratch, &["config", "user.name", "zpr-dev tests"]);
+        setup_git(&scratch, &["config", "user.email", "tests@example.invalid"]);
+        setup_git(&scratch, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(scratch.join("README.md"), "fixture\n").unwrap();
+        setup_git(&scratch, &["add", "-A"]);
+        setup_git(&scratch, &["commit", "-m", "seed"]);
+        setup_git(&scratch, &["tag", "v0.3.1"]);
+        setup_git(&scratch, &["push", "origin", "HEAD:main", "--tags"]);
+        let sha = setup_git(&scratch, &["rev-parse", "HEAD"]);
+        std::fs::remove_dir_all(&scratch).unwrap();
+
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        setup_git(
+            &workspace,
+            &["clone", &origin.to_string_lossy(), "zl-zpr-core"],
+        );
+        (tmp, workspace, sha)
+    }
+
+    /// A build set naming only `zl-zpr-core` at `reference`.
+    fn one_repo_set(reference: &str) -> BuildSet {
+        parse(&format!(
+            "version: 1\nname: t\nrepositories:\n  zl-zpr-core: {reference}\n"
+        ))
+        .unwrap()
+    }
+
+    /// A tag, a branch, a short sha and the full sha all resolve to the same
+    /// 40-character sha.
+    #[test]
+    fn resolve_set_handles_tag_branch_short_and_full_sha() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        for reference in ["v0.3.1", "main", &sha[..7], sha.as_str()] {
+            let resolved = resolve_set(&workspace, &one_repo_set(reference)).unwrap();
+            assert_eq!(resolved.len(), 1, "ref {reference}");
+            assert_eq!(resolved[0].repo, "zl-zpr-core");
+            assert_eq!(resolved[0].reference, reference);
+            assert_eq!(resolved[0].sha, sha, "ref {reference}");
+        }
+    }
+
+    /// An unknown ref errors naming **both** the repository and the ref.
+    #[test]
+    fn resolve_set_unknown_ref_names_repository_and_ref() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let error = resolve_set(&workspace, &one_repo_set("v9.9.9"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zl-zpr-core"), "{error}");
+        assert!(error.contains("v9.9.9"), "{error}");
+    }
+
+    #[test]
+    fn resolve_set_missing_repository_directory_errors_naming_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let error = resolve_set(tmp.path(), &one_repo_set("main"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zl-zpr-core"), "{error}");
+    }
+
+    #[test]
+    fn resolve_set_non_git_directory_errors_naming_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("zl-zpr-core")).unwrap();
+        let error = resolve_set(tmp.path(), &one_repo_set("main"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zl-zpr-core"), "{error}");
+        assert!(error.contains("not a git repository"), "{error}");
+    }
+
+    /// `--tip` resolves `origin/<default_branch>` and ignores whatever the
+    /// build set says: after the origin advances (fetched, not merged), tip is
+    /// the origin's sha, not the checkout's.
+    #[test]
+    fn resolve_tip_uses_origin_default_branch_not_local_head() {
+        let (tmp, workspace, seed_sha) = workspace_with_repo();
+        // Advance the origin by one commit through a second clone, then fetch
+        // in the workspace checkout without merging.
+        let scratch = tmp.path().join("scratch2");
+        let origin = tmp.path().join("origin.git");
+        setup_git(
+            tmp.path(),
+            &[
+                "clone",
+                &origin.to_string_lossy(),
+                &scratch.to_string_lossy(),
+            ],
+        );
+        setup_git(&scratch, &["config", "user.name", "zpr-dev tests"]);
+        setup_git(&scratch, &["config", "user.email", "tests@example.invalid"]);
+        setup_git(&scratch, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(scratch.join("later.md"), "later\n").unwrap();
+        setup_git(&scratch, &["add", "-A"]);
+        setup_git(&scratch, &["commit", "-m", "later"]);
+        setup_git(&scratch, &["push", "origin", "HEAD:main"]);
+        let new_sha = setup_git(&scratch, &["rev-parse", "HEAD"]);
+        let repo_dir = workspace.join("zl-zpr-core");
+        setup_git(&repo_dir, &["fetch"]);
+
+        let resolved = resolve_tip(&workspace, &[("zl-zpr-core", "main")]).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].reference, "origin/main");
+        assert_eq!(resolved[0].sha, new_sha);
+        assert_ne!(resolved[0].sha, seed_sha);
+        // The checkout itself was not moved: resolution reads, never merges.
+        assert_eq!(setup_git(&repo_dir, &["rev-parse", "HEAD"]), seed_sha);
     }
 }

@@ -116,6 +116,21 @@ pub fn ff_merge(dir: &Path) -> Result<bool> {
     Ok(git(dir, &["merge", "--ff-only", "@{u}"]).is_ok())
 }
 
+/// Resolves `rev` — a tag, branch, short or full sha — to the full 40-character
+/// sha of the commit it names, without fetching. `^{commit}` peels annotated
+/// tags to the commit they point at. An unknown rev is an error naming it,
+/// because "unknown ref" with no ref is undiagnosable from a build report.
+pub fn rev_parse(_dir: &Path, _rev: &str) -> Result<String> {
+    bail!("unimplemented")
+}
+
+/// The repository's tags, one per line from `git tag --list`. Empty when there
+/// are none. Gate 2 (spec-003 §4.2) orders these by semantic version itself;
+/// this returns git's plain listing.
+pub fn tag_list(_dir: &Path) -> Result<Vec<String>> {
+    bail!("unimplemented")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +291,46 @@ mod tests {
         assert!(!ff_merge(&work).unwrap());
         assert_eq!(head_short(&work).unwrap(), before);
         assert!(!is_dirty(&work).unwrap());
+    }
+
+    /// A tag (annotated, so `^{commit}` peeling matters), a branch, a short sha
+    /// and the full sha all name the same commit and must resolve identically.
+    #[test]
+    fn rev_parse_resolves_tag_branch_short_and_full_sha_identically() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let full = git(tmp.path(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(full.len(), 40);
+        git(tmp.path(), &["tag", "-a", "v1.0.0", "-m", "release"]).unwrap();
+        git(tmp.path(), &["branch", "release-line"]).unwrap();
+
+        for rev in ["v1.0.0", "release-line", &full[..7], full.as_str()] {
+            assert_eq!(rev_parse(tmp.path(), rev).unwrap(), full, "rev {rev}");
+        }
+    }
+
+    /// The error must name the rev: a bare "unknown ref" in a build report is
+    /// undiagnosable.
+    #[test]
+    fn rev_parse_unknown_ref_errors_naming_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let error = rev_parse(tmp.path(), "no-such-tag")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no-such-tag"), "{error}");
+    }
+
+    #[test]
+    fn tag_list_returns_tags_or_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        assert!(tag_list(tmp.path()).unwrap().is_empty());
+
+        git(tmp.path(), &["tag", "v0.1.0"]).unwrap();
+        git(tmp.path(), &["tag", "v0.2.0"]).unwrap();
+        let mut tags = tag_list(tmp.path()).unwrap();
+        tags.sort();
+        assert_eq!(tags, vec!["v0.1.0", "v0.2.0"]);
     }
 }
