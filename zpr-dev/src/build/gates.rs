@@ -71,12 +71,16 @@ pub fn gate_pin_agreement(
 
     let mut agreeing = 0usize;
     for (crate_name, occurrences) in &by_crate {
-        // The distinct (url, reference) pairs this crate is pinned at. Both
-        // components must be single: two tags is a disagreement, and so is
-        // one tag reached from two URLs (the double-`cslab` trap).
-        let mut variants: Vec<(&str, &str)> = occurrences
+        // The distinct (url, kind, reference) triples this crate is pinned
+        // at. All three components must be single: two tags is a
+        // disagreement, one tag reached from two URLs is a disagreement (the
+        // double-`cslab` trap), and the same reference text through two
+        // kinds (`tag = "release"` vs `branch = "release"`) is a
+        // disagreement too, because git can resolve them to different
+        // commits.
+        let mut variants: Vec<(&str, RefKind, &str)> = occurrences
             .iter()
-            .map(|p| (p.url.as_str(), p.reference.as_str()))
+            .map(|p| (p.url.as_str(), p.kind, p.reference.as_str()))
             .collect();
         variants.sort_unstable();
         variants.dedup();
@@ -100,18 +104,24 @@ pub fn gate_pin_agreement(
         }
 
         // The spec-003 §4.1 message: every variant with every file and line
-        // that pins it, inheritance marked, and the remedy on the last line.
+        // that pins it, the kind spelled (`tag v0.26.0`) so same-text
+        // variants stay distinguishable, inheritance marked, and the remedy
+        // on the last line.
         let mut message = format!("pin disagreement: crate `{crate_name}`");
-        for (url, reference) in &variants {
+        for (url, kind, reference) in &variants {
             let pinned_by: Vec<String> = occurrences
                 .iter()
-                .filter(|p| p.url == *url && p.reference == *reference)
+                .filter(|p| p.url == *url && p.kind == *kind && p.reference == *reference)
                 .map(|p| {
                     let suffix = if p.inherited { " (inherited)" } else { "" };
                     format!("{}:{}{suffix}", p.file, p.line)
                 })
                 .collect();
-            message.push_str(&format!("\n  {reference}  {url}  {}", pinned_by.join(", ")));
+            message.push_str(&format!(
+                "\n  {} {reference}  {url}  {}",
+                kind.label(),
+                pinned_by.join(", ")
+            ));
         }
         message.push_str(
             "\n  => cut one tag and bump every consumer, or record it in allow_pin_drift",
@@ -150,11 +160,12 @@ pub fn gate_freshness(
 
     // Freshness is defined over *agreed* pins (spec-003 §4.2): a crate whose
     // pins disagree is gate 1's error, and warning about staleness on top of
-    // it would be noise about a set that is already incoherent.
-    let mut variants: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    // it would be noise about a set that is already incoherent. Agreement
+    // matches gate 1's variant identity exactly, kind included.
+    let mut variants: BTreeMap<&str, Vec<(&str, RefKind, &str)>> = BTreeMap::new();
     for pin in pins {
         let entry = variants.entry(pin.crate_name.as_str()).or_default();
-        let variant = (pin.url.as_str(), pin.reference.as_str());
+        let variant = (pin.url.as_str(), pin.kind, pin.reference.as_str());
         if !entry.contains(&variant) {
             entry.push(variant);
         }
@@ -349,12 +360,27 @@ pub fn gate_compiler_version(
     )]
 }
 
-/// How a captured git dependency names its source revision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a captured git dependency names its source revision. Ordered so it can
+/// participate in the sorted variant identity of gate 1: the *kind* is part of
+/// what a pin means, because git resolves `tag = "release"` and
+/// `branch = "release"` to potentially different commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RefKind {
     Tag,
     Rev,
     Branch,
+}
+
+impl RefKind {
+    /// The manifest key that declares this kind (`tag = ...`), which is how
+    /// reports spell it so the reader can find the declaration.
+    pub fn label(self) -> &'static str {
+        match self {
+            RefKind::Tag => "tag",
+            RefKind::Rev => "rev",
+            RefKind::Branch => "branch",
+        }
+    }
 }
 
 /// One occurrence of a git-pinned dependency in one `Cargo.toml`.
@@ -1113,6 +1139,70 @@ harness = false
             errors[0].message
         );
         assert!(errors[0].message.contains(org_url), "{}", errors[0].message);
+    }
+
+    /// The same crate, URL and reference *text* via different reference kinds
+    /// is a disagreement too: git resolves `tag = "release"` and
+    /// `branch = "release"` to potentially different commits, so the kind is
+    /// part of the variant identity (spec-003 §4.1).
+    #[test]
+    fn gate1_same_reference_text_with_different_kinds_is_a_disagreement() {
+        let mut tagged = pin(
+            "zpr",
+            COMMON_URL,
+            "release",
+            "zl-zpr-core/Cargo.toml",
+            29,
+            false,
+        );
+        tagged.kind = RefKind::Tag;
+        let mut branched = pin(
+            "zpr",
+            COMMON_URL,
+            "release",
+            "zl-zpr-visaservice/Cargo.toml",
+            29,
+            false,
+        );
+        branched.kind = RefKind::Branch;
+        let findings = gate_pin_agreement(&[tagged, branched], &[], false);
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        // The report names both kinds so the reader can tell the variants
+        // apart — the reference text alone is identical.
+        let message = &errors[0].message;
+        assert!(message.contains("tag"), "{message}");
+        assert!(message.contains("branch"), "{message}");
+    }
+
+    /// The disagreement report spells each variant's kind (`tag v0.26.0`),
+    /// so a mixed-kind disagreement is diagnosable from the message alone.
+    #[test]
+    fn gate1_disagreement_report_names_each_variants_kind() {
+        let mut tagged = pin(
+            "zpr",
+            COMMON_URL,
+            "v0.26.0",
+            "zl-zpr-compiler/Cargo.toml",
+            22,
+            false,
+        );
+        tagged.kind = RefKind::Tag;
+        let mut revved = pin(
+            "zpr",
+            COMMON_URL,
+            "abc1234",
+            "zl-zpr-core/Cargo.toml",
+            29,
+            false,
+        );
+        revved.kind = RefKind::Rev;
+        let findings = gate_pin_agreement(&[tagged, revved], &[], false);
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        let message = &errors[0].message;
+        assert!(message.contains("tag v0.26.0"), "{message}");
+        assert!(message.contains("rev abc1234"), "{message}");
     }
 
     /// An `allow_pin_drift` entry suppresses exactly its crate, echoing the
