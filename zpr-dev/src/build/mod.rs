@@ -521,21 +521,83 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
     })
 }
 
-/// Appends `zl-zpr-common`'s live checkout to a gate scan list.
-/// `zl-zpr-common` never appears in a build set (spec-003 §2.1: its version
-/// is *derived* from what the consumers agree on), but its own manifest
-/// participates in coherence — the real `rcu` divergence is between
-/// `zl-zpr-common` and `adapter/ph`, and a crate reached both directly and
-/// through `zpr` ends up in one binary twice. Scanned whenever the workspace
-/// declares it; always from the live checkout, because it is never resolved
-/// and so never has a worktree. Nothing else is added: the `zl-zpr-utils`
-/// checkout is deliberately not scanned, because no build in this workspace
-/// consumes it (workspace.yaml's own note).
+/// Appends `zl-zpr-common`'s **live checkout** to a gate scan list — the
+/// `--gates-only` path only. `zl-zpr-common` never appears in a build set
+/// (spec-003 §2.1: its version is *derived* from what the consumers agree
+/// on), but its own manifest participates in coherence — the real `rcu`
+/// divergence is between `zl-zpr-common` and `adapter/ph`, and a crate
+/// reached both directly and through `zpr` ends up in one binary twice.
+/// Scanned whenever the workspace declares it. Live is correct *here*
+/// because `--gates-only` is read-only by construction and scans the live
+/// checkouts throughout; a real build gates the pinned revision instead —
+/// see [`add_derived_scan_pinned`]. Nothing else is added: the
+/// `zl-zpr-utils` checkout is deliberately not scanned, because no build in
+/// this workspace consumes it (workspace.yaml's own note).
 fn add_derived_scan(manifest: &Manifest, workspace: &Path, scan: &mut Vec<(String, PathBuf)>) {
     const DERIVED: &str = "zl-zpr-common";
     if manifest.repo(DERIVED).is_some() && !scan.iter().any(|(name, _)| name == DERIVED) {
         scan.push((DERIVED.to_string(), workspace.join(DERIVED)));
     }
+}
+
+/// Appends `zl-zpr-common` to a real build's gate scan **at the revision the
+/// consumers pin** — what cargo will actually compile — via a throwaway
+/// detached worktree under `src/`, returned for the caller to remove once
+/// the gates have read it. Scanning the live checkout instead let gate 1
+/// reject a compatible set (or miss a real disagreement) whenever the
+/// checkout sat on a different commit than the pinned tag, and made the
+/// emitted `pins:` block vary with unrelated local state instead of
+/// round-tripping from the emitted manifest (Codex review on PR #8).
+///
+/// The pinned revision is derived from the consumer worktrees already in
+/// `scan`: the single reference every `zl-zpr-common` git dependency agrees
+/// on. When there is no such single reference — no consumer pins it, the
+/// pins disagree (gate 1's error either way), the checkout is absent, or
+/// the ref does not resolve locally — the live checkout is scanned as
+/// before, which never *hides* a finding: it is the pre-fix behavior.
+fn add_derived_scan_pinned(
+    manifest: &Manifest,
+    workspace: &Path,
+    src: &Path,
+    scan: &mut Vec<(String, PathBuf)>,
+) -> Result<Option<PathBuf>> {
+    const DERIVED: &str = "zl-zpr-common";
+    if manifest.repo(DERIVED).is_none() || scan.iter().any(|(name, _)| name == DERIVED) {
+        return Ok(None);
+    }
+    let repo = workspace.join(DERIVED);
+
+    // The consumers' agreed reference for the derived repository, when there
+    // is exactly one. URL matching is by repository name, the same join
+    // point gate 2 uses (pins are https, workspace.yaml may be ssh).
+    let names_derived = |url: &str| {
+        url.rsplit('/')
+            .next()
+            .map(|last| last.strip_suffix(".git").unwrap_or(last) == DERIVED)
+            .unwrap_or(false)
+    };
+    let (pins, _) = extract_scan_pins(scan)?;
+    let mut refs: Vec<&str> = pins
+        .iter()
+        .filter(|pin| names_derived(&pin.url))
+        .map(|pin| pin.reference.as_str())
+        .collect();
+    refs.sort_unstable();
+    refs.dedup();
+
+    if let [reference] = refs[..]
+        && crate::git::is_repo(&repo)
+        && let Ok(sha) = crate::git::rev_parse(&repo, reference)
+    {
+        let dest = src.join(DERIVED);
+        crate::git::worktree_add(&repo, &dest, &sha)?;
+        scan.push((DERIVED.to_string(), dest.clone()));
+        return Ok(Some(dest));
+    }
+
+    // Fallback: the live checkout, exactly as --gates-only scans it.
+    scan.push((DERIVED.to_string(), repo));
+    Ok(None)
 }
 
 /// What one gate run produced: the findings for the report, plus the data the
@@ -550,19 +612,15 @@ struct GateOutcome {
     vs_policy_min_compiler: Option<String>,
 }
 
-/// Runs the three gates over `scan` — pairs of display name and the directory
-/// to read manifests from, which are live checkouts under `--gates-only` and
-/// detached worktrees in a real build. Gate 2's tag listing always reads the
-/// live `workspace` checkouts: tags are repository-wide, not ref-specific.
-fn collect_gate_findings(
+/// Extracts every captured pin from `scan` — pairs of display name and the
+/// directory to read manifests from — reading each root `Cargo.toml` and its
+/// literal workspace members. Non-fatal problems (no `Cargo.toml`, an
+/// unreadable member) come back as findings beside the pins, so gate
+/// orchestration and the derived-revision lookup share one reader.
+fn extract_scan_pins(
     scan: &[(String, PathBuf)],
-    drift: &[PinDrift],
-    downgrade: bool,
-    workspace: &Path,
-) -> Result<GateOutcome> {
+) -> Result<(Vec<gates::PinOccurrence>, Vec<gates::Finding>)> {
     let mut findings: Vec<gates::Finding> = Vec::new();
-
-    // -- pin extraction over every scanned directory (gate 1 input) ----------
     let mut pins: Vec<gates::PinOccurrence> = Vec::new();
     for (name, dir) in scan {
         let root_path = dir.join("Cargo.toml");
@@ -613,6 +671,21 @@ fn collect_gate_findings(
         }
         pins.extend(gates::extract_pins(&root, &members)?);
     }
+    Ok((pins, findings))
+}
+
+/// Runs the three gates over `scan` — pairs of display name and the directory
+/// to read manifests from, which are live checkouts under `--gates-only` and
+/// detached worktrees in a real build. Gate 2's tag listing always reads the
+/// live `workspace` checkouts: tags are repository-wide, not ref-specific.
+fn collect_gate_findings(
+    scan: &[(String, PathBuf)],
+    drift: &[PinDrift],
+    downgrade: bool,
+    workspace: &Path,
+) -> Result<GateOutcome> {
+    // -- pin extraction over every scanned directory (gate 1 input) ----------
+    let (pins, mut findings) = extract_scan_pins(scan)?;
 
     // -- gate 1: agreement ---------------------------------------------------
     findings.extend(gates::gate_pin_agreement(&pins, drift, downgrade));
@@ -1062,17 +1135,27 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
     }
 
     // -- gates, against the worktrees, before any compilation ----------------
+    // The derived zl-zpr-common is gated at the revision the consumers pin —
+    // what cargo will compile — through a throwaway worktree removed as soon
+    // as the gates have read it (Codex review on PR #8).
     let mut scan: Vec<(String, PathBuf)> = worktrees
         .iter()
         .map(|(recipe, dest)| (recipe.repo.to_string(), dest.clone()))
         .collect();
-    add_derived_scan(inputs.manifest, inputs.workspace, &mut scan);
+    let derived_worktree =
+        add_derived_scan_pinned(inputs.manifest, inputs.workspace, &src, &mut scan)?;
     let outcome = collect_gate_findings(
         &scan,
         &inputs.set.allow_pin_drift,
         inputs.downgrade_pin_drift,
         inputs.workspace,
-    )?;
+    );
+    if let Some(dest) = derived_worktree {
+        // Read by the gates above and never built: gone before compilation,
+        // so a failure path cannot leave it behind for --force to trip on.
+        crate::git::worktree_remove(&inputs.workspace.join("zl-zpr-common"), &dest)?;
+    }
+    let outcome = outcome?;
     let gate_errors = print_findings(inputs.quiet, &inputs.set.name, &outcome.findings);
     if gate_errors > 0 {
         // No manifest: it is emitted only when the gates pass (spec-003 §3).
@@ -2011,6 +2094,91 @@ allow_pin_drift:
         ))
         .unwrap();
         assert!(!ok, "a subset of the distribution must not verify");
+    }
+
+    /// Fixture for the derived-common gate: `zl-zpr-core` pins `zpr` from
+    /// `zl-zpr-common` at `v0.26.0` and `zpr-utils` at `zpr-utils-v0.2.2`.
+    /// The common checkout's manifest at the *tagged* revision agrees with
+    /// core's pins, but its live `HEAD` has moved to a conflicting one.
+    fn workspace_with_pinned_common() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        let init = |name: &str| -> PathBuf {
+            let dir = workspace.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            setup_git(&dir, &["init", "-b", "main"]);
+            setup_git(&dir, &["config", "user.name", "zpr-dev tests"]);
+            setup_git(&dir, &["config", "user.email", "tests@example.invalid"]);
+            setup_git(&dir, &["config", "commit.gpgsign", "false"]);
+            dir
+        };
+        let commit = |dir: &Path, message: &str| {
+            setup_git(dir, &["add", "-A"]);
+            setup_git(dir, &["commit", "-m", message]);
+        };
+
+        let common = init("zl-zpr-common");
+        let utils_pin = |tag: &str| {
+            format!(
+                "[package]\nname = \"zpr\"\nversion = \"0.26.0\"\n\n[dependencies]\n\
+                 zpr-utils = {{ git = \"https://github.com/mkolehmainen/zl-zpr-utils.git\", tag = \"{tag}\" }}\n"
+            )
+        };
+        std::fs::write(common.join("Cargo.toml"), utils_pin("zpr-utils-v0.2.2")).unwrap();
+        commit(&common, "manifest agreeing with the consumers");
+        setup_git(&common, &["tag", "v0.26.0"]);
+        std::fs::write(common.join("Cargo.toml"), utils_pin("zpr-utils-v0.9.9")).unwrap();
+        commit(&common, "live checkout moved past the pinned tag");
+
+        let core = init("zl-zpr-core");
+        std::fs::write(
+            core.join("Cargo.toml"),
+            "[package]\nname = \"core-fixture\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+             zpr = { git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"v0.26.0\" }\n\
+             zpr-utils = { git = \"https://github.com/mkolehmainen/zl-zpr-utils.git\", tag = \"zpr-utils-v0.2.2\" }\n",
+        )
+        .unwrap();
+        std::fs::write(core.join("README.md"), "fixture\n").unwrap();
+        commit(&core, "core with pins");
+
+        (tmp, workspace)
+    }
+
+    /// The derived `zl-zpr-common` gate scan must read the revision the
+    /// consumers pin — what cargo will actually compile — never the live
+    /// checkout: a live checkout sitting on a different commit made gate 1
+    /// reject a compatible set (this test's RED) or miss a real
+    /// disagreement, and made the emitted `pins` block vary with unrelated
+    /// local state (Codex review on PR #8).
+    #[test]
+    fn execute_build_gates_common_at_the_pinned_revision_not_the_live_checkout() {
+        let (_tmp, workspace) = workspace_with_pinned_common();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+        ))
+        .unwrap();
+        assert!(ok, "the live checkout's drift must not fail a coherent set");
+
+        // The emitted pins round-trip from the manifest: they record what
+        // cargo compiles (the tagged revision's pin), not the live drift.
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("zpr-utils-v0.2.2"), "{text}");
+        assert!(!text.contains("zpr-utils-v0.9.9"), "{text}");
+
+        // The throwaway common worktree is gone: directory and registration.
+        assert!(!build_dir.join("src").join("zl-zpr-common").exists());
+        let listing =
+            crate::git::git(&workspace.join("zl-zpr-common"), &["worktree", "list"]).unwrap();
+        assert_eq!(listing.lines().count(), 1, "{listing}");
     }
 
     /// `--keep` leaves the worktree in place after a successful run.
