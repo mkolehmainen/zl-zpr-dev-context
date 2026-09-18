@@ -90,9 +90,7 @@ impl Selection {
         self.tiers.is_empty()
     }
 
-    /// True when `tier` was selected. Consumed by the wire-up (B4 step 4);
-    /// the allow goes with that commit.
-    #[allow(dead_code)]
+    /// True when `tier` was selected.
     pub fn contains(&self, tier: &str) -> bool {
         self.tiers.contains(&tier)
     }
@@ -107,7 +105,6 @@ impl Selection {
 /// a failing `pregen` must be named `pregen`, because a `zplc` that cannot
 /// compile the visa service's own fixtures is exactly the incompatibility
 /// this tier exists to catch.
-#[allow(dead_code)] // constructed by the wire-up (B4 step 4)
 #[derive(Debug)]
 pub struct TierStep {
     pub name: &'static str,
@@ -120,7 +117,6 @@ pub struct TierStep {
 /// One repository's part of the unit-tier plan: commands to run, or a skip
 /// with its reason. A repository with nothing to test is reported `skipped`,
 /// never silently omitted (issue constraint; approved Q2 on zipline#61).
-#[allow(dead_code)] // constructed by the wire-up (B4 step 4)
 #[derive(Debug)]
 pub enum RepoPlan {
     /// Run `steps` in order in `worktree`; the first failure fails the
@@ -137,7 +133,6 @@ pub enum RepoPlan {
 /// The unit tier's outcome: overall pass/fail and the per-repository
 /// breakdown that lands in the emitted manifest's `tiers.unit.repos`
 /// (approved Q3 on zipline#61).
-#[allow(dead_code)] // constructed by the wire-up (B4 step 4)
 #[derive(Debug)]
 pub struct TierOutcome {
     /// False when any repository failed. Skips do not fail the tier.
@@ -155,12 +150,15 @@ pub struct TierOutcome {
 /// repository whose recipe builds nothing has no unit suite to run and is
 /// planned as a skip (approved Q2: `zl-zpr-demo`; the docker tier covers it).
 /// Pure planning: nothing here executes a command.
-#[allow(dead_code)] // called by the wire-up (B4 step 4)
-pub fn unit_plan(worktrees: &[(&recipes::Recipe, PathBuf)], dist: &Path) -> Vec<RepoPlan> {
+pub fn unit_plan(
+    recipes: &[recipes::Recipe],
+    worktrees: &[(&recipes::Recipe, PathBuf)],
+    dist: &Path,
+) -> Vec<RepoPlan> {
     let mut plans: Vec<RepoPlan> = Vec::new();
     // Iterating the recipe table, not the input, is what makes the plan
     // build-ordered: the table's order is BUILD_ORDER, asserted by test.
-    for recipe in recipes::RECIPES {
+    for recipe in recipes {
         let Some((_, worktree)) = worktrees.iter().find(|(wt, _)| wt.repo == recipe.repo) else {
             continue; // not in this set: nothing was built, nothing to test
         };
@@ -209,7 +207,6 @@ pub fn unit_plan(worktrees: &[(&recipes::Recipe, PathBuf)], dist: &Path) -> Vec<
 /// repository naming the step, and the sweep **keeps going** so one run
 /// reports every broken repository rather than only the first (issue
 /// step 2). Prints one line per repository unless `quiet`.
-#[allow(dead_code)] // called by the wire-up (B4 step 4)
 pub fn run_unit(plans: &[RepoPlan], logs: &Path, quiet: bool) -> TierOutcome {
     let mut outcome = TierOutcome {
         passed: true,
@@ -385,7 +382,7 @@ mod tests {
     #[test]
     fn unit_plan_runs_make_test_with_pregen_first_in_the_visa_service() {
         let worktrees = fixture_worktrees(&["zl-zpr-compiler", "zl-zpr-visaservice"]);
-        let plans = unit_plan(&worktrees, Path::new("/build/dist"));
+        let plans = unit_plan(recipes::RECIPES, &worktrees, Path::new("/build/dist"));
         assert_eq!(plans.len(), 2);
 
         let RepoPlan::Run { repo, steps, .. } = &plans[0] else {
@@ -421,7 +418,7 @@ mod tests {
     #[test]
     fn unit_plan_skips_a_repository_that_builds_nothing_with_a_reason() {
         let worktrees = fixture_worktrees(&["zl-zpr-demo"]);
-        let plans = unit_plan(&worktrees, Path::new("/build/dist"));
+        let plans = unit_plan(recipes::RECIPES, &worktrees, Path::new("/build/dist"));
         assert_eq!(plans.len(), 1);
         let RepoPlan::Skip { repo, reason } = &plans[0] else {
             panic!("demo must skip, not run: {:?}", plans[0]);
@@ -436,7 +433,7 @@ mod tests {
     #[test]
     fn unit_plan_is_in_build_order_regardless_of_input_order() {
         let worktrees = fixture_worktrees(&["zl-zpr-coredns", "zl-zpr-compiler"]);
-        let plans = unit_plan(&worktrees, Path::new("/d"));
+        let plans = unit_plan(recipes::RECIPES, &worktrees, Path::new("/d"));
         let repos: Vec<&str> = plans
             .iter()
             .map(|plan| match plan {
