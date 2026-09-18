@@ -13,6 +13,7 @@ use crate::config::Manifest;
 
 pub mod gates;
 pub mod recipes;
+pub mod tiers;
 
 /// The only build-set version this tool understands (spec-003 §2.1).
 const SUPPORTED_VERSION: u32 = 1;
@@ -317,16 +318,10 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         println!("note: --repo parses but is inert until its stage lands");
     }
 
-    // Approved decision on zipline#60 (Q2): B3 accepts only `--test none`;
-    // the tiers land in B4/B5. Rejecting other values is a usage error, so it
-    // exits 2 through the Err path.
-    if let Some(test) = &args.test
-        && test != "none"
-    {
-        bail!(
-            "--test {test} is not available yet: tiers land in B4/B5; only --test none is accepted"
-        );
-    }
+    // The tier selection is parsed up front so an unknown or unimplemented
+    // name is a usage error (exit 2 through the Err path) before anything
+    // touches the filesystem. `--test none` behaviour is unchanged from B3.
+    let selection = tiers::Selection::parse(args.test.as_deref())?;
 
     if args.gates_only {
         return run_gates(ctx, args);
@@ -407,13 +402,13 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     }
 
     // -- the real build (task B3) ---------------------------------------------
-    // Approved decision on zipline#60 (Q2): a real build requires `--test
-    // none`, stated explicitly, until the tiers land in B4/B5 — so nobody
-    // runs one believing tests ran.
-    if args.test.is_none() {
+    // Temporary, removed when the tier runner lands (B4 step 2): a selection
+    // that would run tiers cannot be honoured yet, and running the build
+    // while silently skipping them would overstate coverage.
+    if !selection.is_empty() {
         bail!(
-            "a real build requires an explicit --test none until the test \
-             tiers land (B4/B5)"
+            "a real build requires an explicit --test none until the unit \
+             tier runner lands (B4 step 2)"
         );
     }
     for name in &skipped {
