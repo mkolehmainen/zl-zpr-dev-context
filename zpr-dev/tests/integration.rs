@@ -1273,3 +1273,155 @@ fn build_dry_run_picks_newest_build_set_and_resolves_it() {
     );
     assert!(out.contains(&sha), "{out}");
 }
+
+// ---------------------------------------------------------------------------
+// `build --gates-only` (spec-003 §4, stage B2)
+// ---------------------------------------------------------------------------
+
+/// A pin of `zpr` from the fixture's `zl-zpr-core` checkout at `tag`.
+fn core_manifest(tag: &str) -> String {
+    format!(
+        "[package]\nname = \"core-fixture\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+         zpr = {{ git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
+    )
+}
+
+/// A conflicting pin of the same crate and URL from `zl-zpr-common`.
+fn common_manifest(tag: &str) -> String {
+    format!(
+        "[package]\nname = \"common-fixture\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+         zpr = {{ git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
+    )
+}
+
+/// Disagreeing pins across the two checkouts exit 1 with the spec-003 §4.1
+/// report: every tag with its pinning file, and the remedy.
+#[test]
+fn build_gates_only_pin_disagreement_exits_one() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    fixture.write("zl-zpr-core/Cargo.toml", &core_manifest("v0.26.0"));
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+
+    let output = fixture.run(&["build", "--tip", "--gates-only"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    for needle in [
+        "pin disagreement",
+        "v0.26.0",
+        "v0.27.0",
+        "zl-zpr-core/Cargo.toml",
+        "zl-zpr-common/Cargo.toml",
+        "allow_pin_drift",
+    ] {
+        assert!(out.contains(needle), "missing {needle:?}: {out}");
+    }
+}
+
+/// Agreeing pins pass: exit 0 and an [OK] census line. The fixture has no
+/// visa-service or compiler checkout, so gate 3 reports itself skipped
+/// rather than silently narrowing coverage.
+#[test]
+fn build_gates_only_agreeing_set_exits_zero() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    fixture.write("zl-zpr-core/Cargo.toml", &core_manifest("v0.27.0"));
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+
+    let output = fixture.run(&["build", "--tip", "--gates-only"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("[OK]"), "{out}");
+    assert!(out.contains("pinned consistently"), "{out}");
+    assert!(out.contains("gate 3"), "{out}");
+}
+
+/// `--allow-pin-drift` downgrades the disagreement to a warning: exit 0.
+#[test]
+fn build_gates_only_allow_pin_drift_downgrades_to_warning() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    fixture.write("zl-zpr-core/Cargo.toml", &core_manifest("v0.26.0"));
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+
+    let output = fixture.run(&["build", "--tip", "--gates-only", "--allow-pin-drift"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("[WARN]"), "{out}");
+    assert!(out.contains("pin disagreement"), "{out}");
+}
+
+/// An `allow_pin_drift` entry in the build set suppresses its crate's
+/// disagreement and echoes the reviewed reason.
+#[test]
+fn build_gates_only_manifest_drift_entry_suppresses_and_echoes_reason() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    fixture.write("zl-zpr-core/Cargo.toml", &core_manifest("v0.26.0"));
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+    fixture.write(
+        &format!("{CONTEXT}/build-sets/2026-09-17.yaml"),
+        "version: 1\nname: 2026-09-17\nrepositories:\n  zl-zpr-core: main\n\
+         allow_pin_drift:\n  - crate: zpr\n    reason: \"known drift; zipline#18\"\n",
+    );
+
+    let output = fixture.run(&["build", "--gates-only"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("zipline#18"), "{out}");
+    assert!(!out.contains("[ERROR]"), "{out}");
+}
+
+/// A malformed gate-3 input — here `POLICY_MIN_COMPILER_*` constants missing
+/// from a present `vs/src/config.rs` — is an `[ERROR]` finding in the report,
+/// exiting with the gate-failure code 1, and the findings gates 1 and 2
+/// accumulated are still printed. It must not abort `run_gates` into the
+/// command-error exit code 2 that discards the report (spec-003 §4).
+#[test]
+fn build_gates_only_unparseable_gate3_input_is_an_error_finding_not_an_abort() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    fixture.write("zl-zpr-core/Cargo.toml", &core_manifest("v0.27.0"));
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+    // Both gate-3 files are present, so the gate runs — but the constants
+    // are absent, so parsing fails.
+    fixture.write(
+        "zl-zpr-visaservice/vs/src/config.rs",
+        "pub const SOMETHING_ELSE: u32 = 1;\n",
+    );
+    fixture.write(
+        "zl-zpr-compiler/Cargo.toml",
+        "[package]\nname = \"zplc\"\nversion = \"0.18.0\"\n",
+    );
+
+    let output = fixture.run(&["build", "--tip", "--gates-only"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    // The failure is a finding in the report, naming what could not be read.
+    assert!(out.contains("[ERROR]"), "{out}");
+    assert!(out.contains("POLICY_MIN_COMPILER"), "{out}");
+    // Gate 1's findings survived the gate-3 failure.
+    assert!(out.contains("pinned consistently"), "{out}");
+}
+
+/// A listed workspace member whose `Cargo.toml` cannot be read is an
+/// `[ERROR]` finding naming the member, and the gates exit 1: silently
+/// skipping it would hide any conflicting pins that member carries, letting
+/// `--gates-only` pass a set it did not fully check (spec-003 §4.1).
+#[test]
+fn build_gates_only_unreadable_member_manifest_is_an_error_finding() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    // A workspace root listing a member that has no Cargo.toml on disk.
+    fixture.write(
+        "zl-zpr-core/Cargo.toml",
+        "[workspace]\nmembers = [\"member-a\"]\n",
+    );
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+
+    let output = fixture.run(&["build", "--tip", "--gates-only"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("[ERROR]"), "{out}");
+    assert!(out.contains("zl-zpr-core/member-a/Cargo.toml"), "{out}");
+}

@@ -128,6 +128,10 @@ enum Command {
         #[arg(long)]
         keep: bool,
 
+        /// Run only the compatibility gates against the live checkouts
+        #[arg(long)]
+        gates_only: bool,
+
         /// Gate 1 disagreements warn instead of failing
         #[arg(long)]
         allow_pin_drift: bool,
@@ -227,6 +231,7 @@ fn run() -> Result<ExitCode> {
             repo,
             build_dir,
             keep,
+            gates_only,
             allow_pin_drift,
             no_tarball,
         } => build::run(
@@ -238,6 +243,7 @@ fn run() -> Result<ExitCode> {
                 repo: repo.clone(),
                 build_dir: build_dir.clone(),
                 keep: *keep,
+                gates_only: *gates_only,
                 allow_pin_drift: *allow_pin_drift,
                 no_tarball: *no_tarball,
             },

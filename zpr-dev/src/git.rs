@@ -140,10 +140,7 @@ pub fn rev_parse(dir: &Path, rev: &str) -> Result<String> {
 
 /// The repository's tags, one per line from `git tag --list`. Empty when there
 /// are none. Gate 2 (spec-003 §4.2) orders these by semantic version itself;
-/// this returns git's plain listing. No production caller until the gates land
-/// in B2 — the issue puts the helper here so `git.rs` is complete in one PR —
-/// hence the explicit allowance.
-#[allow(dead_code)]
+/// this returns git's plain listing.
 pub fn tag_list(dir: &Path) -> Result<Vec<String>> {
     let output = git(dir, &["tag", "--list"])?;
     Ok(output
