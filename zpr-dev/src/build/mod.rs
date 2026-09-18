@@ -1107,10 +1107,17 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
     }
 
     // -- verify dist/ (task B3 step 4) ---------------------------------------
+    // Against the **whole distribution** the recipe table stages — never the
+    // subset whose worktrees happened to exist. Deriving `expected` from the
+    // worktrees let a set naming one repository "verify" a tarball holding a
+    // fraction of the required binaries (Codex review on PR #8): a recipe
+    // without a worktree stages nothing, so its binaries turn up missing
+    // here and the build fails instead of shipping a subset.
     if failure.is_none() {
-        let expected: Vec<&str> = worktrees
+        let expected: Vec<&str> = inputs
+            .recipes
             .iter()
-            .flat_map(|(recipe, _)| recipe.staged.iter().map(|staged| staged.name))
+            .flat_map(|recipe| recipe.staged.iter().map(|staged| staged.name))
             .collect();
         if let Err(error) = verify_dist(&dist, &expected) {
             eprintln!("error: {error:#}");
@@ -1968,6 +1975,42 @@ allow_pin_drift:
         let listing =
             crate::git::git(&workspace.join("zl-zpr-core"), &["worktree", "list"]).unwrap();
         assert_eq!(listing.lines().count(), 1, "{listing}");
+    }
+
+    /// Verification must cover the **whole distribution** the recipe table
+    /// stages, not just the repositories the set happened to name: a set
+    /// naming one repository used to derive `expected` from its own
+    /// worktrees, so a tarball with a fraction of the binaries "verified"
+    /// (Codex review on PR #8). A recipe with no worktree means its binaries
+    /// cannot exist, and the build must fail rather than emit a subset.
+    #[test]
+    fn execute_build_fails_verification_when_the_set_skips_a_recipe() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        // The table stages bin1 (buildable here) and bin2 from a repository
+        // the set does not name — so bin2 can never be staged.
+        let recipes = vec![
+            ok_recipe(),
+            recipes::Recipe {
+                repo: "zl-zpr-absent",
+                steps: &[],
+                staged: &[recipes::Staged {
+                    name: "bin2",
+                    source: "out/bin2",
+                }],
+            },
+        ];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+        ))
+        .unwrap();
+        assert!(!ok, "a subset of the distribution must not verify");
     }
 
     /// `--keep` leaves the worktree in place after a successful run.
