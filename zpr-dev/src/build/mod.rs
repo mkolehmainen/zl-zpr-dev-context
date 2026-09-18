@@ -70,6 +70,23 @@ pub fn parse(text: &str) -> Result<BuildSet> {
     if set.name.trim().is_empty() {
         bail!("build set has an empty name; the name labels the build and its dist directory");
     }
+    // The name becomes a filesystem path (`.zpr-build/<name>`, the emitted
+    // manifest and tarball names), and `--force` removes that directory
+    // wholesale — so a name like `..`, `a/b` or `/abs` could escape the build
+    // root and put arbitrary directories in `remove_dir_all`'s path. Require
+    // one plain path component: no separators, no `.`/`..`, not absolute.
+    if set.name.contains(['/', '\\'])
+        || set.name == "."
+        || set.name == ".."
+        || Path::new(&set.name).is_absolute()
+    {
+        bail!(
+            "build set name {:?} is not a single safe path component; \
+             it names the build directory, so it must contain no path \
+             separators and must not be `.` or `..`",
+            set.name
+        );
+    }
     if set.repositories.is_empty() {
         bail!("build set lists no repositories");
     }
@@ -1385,6 +1402,20 @@ allow_pin_drift:
     #[test]
     fn empty_repositories_is_rejected() {
         assert!(parse("version: 1\nname: x\nrepositories: {}\n").is_err());
+    }
+
+    /// A name that is not a single plain path component is rejected at parse
+    /// time: the name lands in `.zpr-build/<name>` and the emitted file
+    /// names, and `--force` removes that directory wholesale — so `..`, a
+    /// separator or an absolute path could escape the build root and delete
+    /// an arbitrary directory (Codex review on PR #8).
+    #[test]
+    fn traversal_names_are_rejected_naming_the_rule() {
+        for name in ["'..'", "'.'", "'../evil'", "'/abs'", "'a/b'", "'a\\b'"] {
+            let text = VALID.replace("name: 2026-09-17", &format!("name: {name}"));
+            let error = parse(&text).unwrap_err().to_string();
+            assert!(error.contains("path component"), "{name}: {error}");
+        }
     }
 
     /// A key that is not a repository in `workspace.yaml` is rejected *naming
