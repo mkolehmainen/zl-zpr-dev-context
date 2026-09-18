@@ -152,16 +152,38 @@ pub fn recipe_for(repo: &str) -> Option<&'static Recipe> {
 /// repository, the step and the log path, so the failure is diagnosable from
 /// the report alone.
 pub fn run_step(repo: &str, step: &Step, worktree: &Path, logs: &Path, quiet: bool) -> Result<()> {
-    let log_path = logs.join(format!("{repo}-{}.log", step.name));
+    run_command(
+        repo,
+        step.name,
+        step.program,
+        step.args,
+        worktree,
+        logs,
+        quiet,
+    )
+}
 
-    let output = Command::new(step.program)
-        .args(step.args)
+/// The generic form of [`run_step`], shared with the test tiers (task B4):
+/// same working directory, log file shape, failure echo and error wording,
+/// for a command whose arguments are computed per run rather than static.
+pub fn run_command(
+    repo: &str,
+    name: &str,
+    program: &str,
+    args: &[impl AsRef<std::ffi::OsStr>],
+    worktree: &Path,
+    logs: &Path,
+    quiet: bool,
+) -> Result<()> {
+    let log_path = logs.join(format!("{repo}-{name}.log"));
+
+    let output = Command::new(program)
+        .args(args)
         .current_dir(worktree)
         .output()
         .map_err(|e| {
             anyhow::anyhow!(
-                "cannot run {} for {repo} in {}: {e}",
-                step.program,
+                "cannot run {program} for {repo} in {}: {e}",
                 worktree.display()
             )
         })?;
@@ -191,8 +213,7 @@ pub fn run_step(repo: &str, step: &Step, worktree: &Path, logs: &Path, quiet: bo
         }
     }
     bail!(
-        "{repo}: step `{}` failed ({}); full output in {}",
-        step.name,
+        "{repo}: step `{name}` failed ({}); full output in {}",
         output.status,
         log_path.display()
     );
