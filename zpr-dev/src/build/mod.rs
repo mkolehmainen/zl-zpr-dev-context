@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Manifest;
 
 pub mod gates;
+pub mod recipes;
 
 /// The only build-set version this tool understands (spec-003 §2.1).
 const SUPPORTED_VERSION: u32 = 1;
