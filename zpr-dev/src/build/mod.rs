@@ -239,6 +239,35 @@ fn prepare_build_dir(dir: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Verifies that every expected binary exists in `dist/` and is executable
+/// (task B3 step 4). All missing or non-executable names are collected into
+/// one error, so a run with two broken recipes reports both, not the first.
+fn verify_dist(dist: &Path, expected: &[&str]) -> Result<()> {
+    let mut problems: Vec<String> = Vec::new();
+    for name in expected {
+        let path = dist.join(name);
+        if !path.is_file() {
+            problems.push(format!("{name}: missing from {}", dist.display()));
+            continue;
+        }
+        // The mode check: a staged file none of the executable bits reach is
+        // a build product that cannot run — catching it here beats a cryptic
+        // tier failure later.
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&path)
+                .map_err(|e| anyhow::anyhow!("cannot stat {}: {e}", path.display()))?
+                .permissions(),
+        );
+        if mode & 0o111 == 0 {
+            problems.push(format!("{name}: present but not executable"));
+        }
+    }
+    if !problems.is_empty() {
+        bail!("dist/ verification failed:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
 /// The `build` command (spec-003 §7). At this stage `--dry-run` resolves and
 /// reports (B1), and `--gates-only` runs the three compatibility gates of §4
 /// against the live checkouts (B2); worktrees, builds and tiers land with
@@ -1194,5 +1223,50 @@ allow_pin_drift:
         assert!(!dir.join("dist").join("stale-binary").exists());
         assert!(dir.join("logs").is_dir());
         assert!(dir.join("dist").is_dir());
+    }
+
+    // -- dist/ verification (task B3 step 4) ----------------------------------
+
+    /// Writes a mode-0755 stand-in binary named `name` into `dir`.
+    fn fake_dist_binary(dir: &Path, name: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("{name}\n")).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+    }
+
+    /// A dist/ holding every expected name, each executable, verifies.
+    #[test]
+    fn verify_dist_passes_when_all_names_present_and_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["zplc", "zpdump"] {
+            fake_dist_binary(tmp.path(), name);
+        }
+        verify_dist(tmp.path(), &["zplc", "zpdump"]).unwrap();
+    }
+
+    /// A missing binary fails naming it — a recipe that silently produced
+    /// nothing must not pass (task B3 step 4).
+    #[test]
+    fn verify_dist_names_missing_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        fake_dist_binary(tmp.path(), "zplc");
+        let error = verify_dist(tmp.path(), &["zplc", "zpdump", "vs"])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zpdump"), "{error}");
+        assert!(error.contains("vs"), "{error}");
+        assert!(!error.contains("zplc"), "present binary named: {error}");
+    }
+
+    /// A present but non-executable file fails the mode check naming it.
+    #[test]
+    fn verify_dist_names_non_executable_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("zplc"), "not executable\n").unwrap();
+        let error = verify_dist(tmp.path(), &["zplc"]).unwrap_err().to_string();
+        assert!(error.contains("zplc"), "{error}");
+        assert!(error.contains("executable"), "{error}");
     }
 }

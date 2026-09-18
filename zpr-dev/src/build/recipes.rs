@@ -197,6 +197,34 @@ pub fn run_step(repo: &str, step: &Step, worktree: &Path, logs: &Path, quiet: bo
     );
 }
 
+/// Copies one recipe's staged binaries from the worktree into `dist/` under
+/// their staged names, preserving permissions (`fs::copy` keeps the mode). A
+/// source the build did not produce is an error naming the repository and the
+/// missing worktree-relative path — a recipe that silently produces nothing
+/// must not pass (task B3 step 4).
+pub fn stage_into(recipe: &Recipe, worktree: &Path, dist: &Path) -> Result<()> {
+    for staged in recipe.staged {
+        let source = worktree.join(staged.source);
+        if !source.is_file() {
+            bail!(
+                "{}: build did not produce {} (expected at {})",
+                recipe.repo,
+                staged.source,
+                source.display()
+            );
+        }
+        std::fs::copy(&source, dist.join(staged.name)).map_err(|e| {
+            anyhow::anyhow!(
+                "{}: cannot stage {} into {}: {e}",
+                recipe.repo,
+                staged.source,
+                dist.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +364,61 @@ mod tests {
 
         let log = std::fs::read_to_string(logs.join("fixture-boom.log")).unwrap();
         assert!(log.contains("the reason"), "{log}");
+    }
+
+    // -- staging into dist/ (task B3 step 4) ----------------------------------
+
+    /// A mode-0755 file standing in for a built binary.
+    fn fake_binary(path: &std::path::Path, content: &str) {
+        std::fs::write(path, content).unwrap();
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    /// Staging copies each listed binary from the worktree into `dist/` under
+    /// its staged name, preserving the executable bit.
+    #[test]
+    fn stage_into_copies_listed_binaries_executably() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("wt");
+        std::fs::create_dir_all(worktree.join("target/release")).unwrap();
+        fake_binary(&worktree.join("target/release/zplc"), "zplc binary\n");
+        fake_binary(&worktree.join("target/release/zpdump"), "zpdump binary\n");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let recipe = recipe_for("zl-zpr-compiler").unwrap();
+        stage_into(recipe, &worktree, &dist).unwrap();
+
+        for name in ["zplc", "zpdump"] {
+            let staged = dist.join(name);
+            assert!(staged.is_file(), "{name} not staged");
+            let mode = std::os::unix::fs::PermissionsExt::mode(
+                &std::fs::metadata(&staged).unwrap().permissions(),
+            );
+            assert_ne!(mode & 0o111, 0, "{name} staged without execute bit");
+        }
+    }
+
+    /// A staged source the recipe promised but the build did not produce is
+    /// an error naming the repository and the missing path — a recipe that
+    /// silently produces nothing must not pass.
+    #[test]
+    fn stage_into_missing_source_errors_naming_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("wt");
+        std::fs::create_dir_all(worktree.join("target/release")).unwrap();
+        fake_binary(&worktree.join("target/release/zplc"), "zplc\n");
+        // zpdump deliberately absent.
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let recipe = recipe_for("zl-zpr-compiler").unwrap();
+        let error = stage_into(recipe, &worktree, &dist)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zl-zpr-compiler"), "{error}");
+        assert!(error.contains("zpdump"), "{error}");
     }
 }
