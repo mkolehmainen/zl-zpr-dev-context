@@ -579,6 +579,7 @@ See §7.
 | `serde_yaml_ng` | YAML parsing. A maintained drop-in for the unmaintained `serde_yaml` |
 | `anyhow` | Error propagation and context |
 | `toml` | Reading `git`-dependency pins out of `Cargo.toml` for the pin-agreement gate (spec-003 §4.1) |
+| `sha2` | Digesting staged binaries for the emitted manifest (spec-003 §3) |
 
 Dev-dependency: `tempfile`, for integration-test workspaces.
 

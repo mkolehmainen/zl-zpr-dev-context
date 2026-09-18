@@ -141,6 +141,7 @@ pub const RECIPES: &[Recipe] = &[
 /// The recipe for one repository, when it has one. `None` is not an error:
 /// a build set may resolve repositories outside the recipe table, and the
 /// caller reports them rather than building them.
+#[cfg(test)]
 pub fn recipe_for(repo: &str) -> Option<&'static Recipe> {
     RECIPES.iter().find(|recipe| recipe.repo == repo)
 }
