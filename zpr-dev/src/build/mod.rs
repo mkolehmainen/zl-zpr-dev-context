@@ -214,6 +214,30 @@ pub struct BuildArgs {
     pub no_tarball: bool,
 }
 
+/// Creates the build directory `<build_dir>` with `logs/` and `dist/` inside.
+/// A directory left over from a previous run is refused naming the path and
+/// `--force` (approved decision on zipline#60: reuse of half-built state is
+/// how silent staleness gets shipped); `force` removes it entirely and
+/// recreates it fresh.
+fn prepare_build_dir(dir: &Path, force: bool) -> Result<()> {
+    if dir.exists() {
+        if !force {
+            bail!(
+                "build directory {} already exists from a previous run; \
+                 rerun with --force to remove and rebuild it",
+                dir.display()
+            );
+        }
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| anyhow::anyhow!("cannot remove {}: {e}", dir.display()))?;
+    }
+    for sub in ["logs", "dist"] {
+        std::fs::create_dir_all(dir.join(sub))
+            .map_err(|e| anyhow::anyhow!("cannot create {}/{sub}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
 /// The `build` command (spec-003 §7). At this stage `--dry-run` resolves and
 /// reports (B1), and `--gates-only` runs the three compatibility gates of §4
 /// against the live checkouts (B2); worktrees, builds and tiers land with
@@ -1125,5 +1149,49 @@ allow_pin_drift:
         assert!(emitted.resolved.tiers.is_empty());
         // But the emission time is real.
         assert!(!emitted.resolved.built_at.is_empty());
+    }
+
+    // -- build directory lifecycle (task B3 step 2) ---------------------------
+
+    /// A fresh build directory is created with `logs/` and `dist/` inside.
+    #[test]
+    fn prepare_build_dir_creates_logs_and_dist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tip");
+        prepare_build_dir(&dir, false).unwrap();
+        assert!(dir.join("logs").is_dir());
+        assert!(dir.join("dist").is_dir());
+    }
+
+    /// A pre-existing build directory is refused with a message naming both
+    /// the path and `--force` (approved Q1: refuse, never reuse — reused
+    /// half-built state is how silent staleness gets shipped).
+    #[test]
+    fn prepare_build_dir_refuses_preexisting_naming_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tip");
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
+
+        let error = prepare_build_dir(&dir, false).unwrap_err().to_string();
+        assert!(error.contains("tip"), "path not named: {error}");
+        assert!(error.contains("--force"), "remedy not named: {error}");
+        // Nothing was touched: the stale content is intact.
+        assert!(dir.join("dist").join("stale-binary").exists());
+    }
+
+    /// `--force` removes the previous directory entirely and recreates it
+    /// fresh: no stale file survives into the new run.
+    #[test]
+    fn prepare_build_dir_force_removes_and_recreates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tip");
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
+
+        prepare_build_dir(&dir, true).unwrap();
+        assert!(!dir.join("dist").join("stale-binary").exists());
+        assert!(dir.join("logs").is_dir());
+        assert!(dir.join("dist").is_dir());
     }
 }
