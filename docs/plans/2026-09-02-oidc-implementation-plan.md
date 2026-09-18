@@ -277,7 +277,8 @@ Umbrella: **[mkolehmainen/zipline#1](https://github.com/mkolehmainen/zipline/iss
 | D4 | zpr-core | Remove BAS/`OAuthRsa` legacy: hardcoded cert, `danger_accept_invalid_certs`, AC blob | D2 |
 | D5 | zpr-core | Fake-IdP integration test, `VISA_SERVICE_RELEASE` bump, manual Google checklist | C5 release, D1–D3 |
 | X1 | zpr-compiler + zpr-policy + zpr-visaservice | `[bootstrap] expiration_seconds` (device auth lifetime knob) | deferred |
-| X2 | zpr-visaservice | Per-namespace graceful degradation on user-auth expiry | deferred |
+| X2 | zpr-visaservice | Per-namespace graceful degradation on user-auth expiry | deferred (still) |
+| ~~X3~~ | zpr-core | ~~Refresh tokens / `offline_access` / OS keyring in `ph-cli auth-agent`~~ — **SUPERSEDED** by `docs/plans/2026-09-16-silent-oidc-reauth.md` | — |
 
 ---
 
@@ -750,8 +751,8 @@ Browser launch is `std::process::Command::new("xdg-open")` (Linux) / `"open"` (m
 | ID | Item | Why deferred |
 |---|---|---|
 | X1 | `[bootstrap] expiration_seconds` (device auth lifetime from policy) | New `Policy`-level capnp field + compiler + VS; independent of OIDC; device stays at `DEFAULT_AUTH_EXPIRATION`. |
-| X2 | Per-namespace graceful degradation on user-auth expiry | Needs partial revocation (`revokeAuthentication` is per actor) — spec *Deferred*. |
-| X3 | Refresh tokens / `offline_access` / OS keyring in `ph-cli auth-agent` | `allow_offline_access` plumbing exists end to end after A–D; the agent returns `NonInteractiveUnsupported` until this lands. |
+| X2 | Per-namespace graceful degradation on user-auth expiry | **Still deferred.** Needs partial revocation (`revokeAuthentication` is per actor) — spec *Deferred*. Decision 4 of `docs/plans/2026-09-16-silent-oidc-reauth.md` chose **disconnect** as the behaviour on expiry, and implemented it (the authentication-expiry sweep, zipline#44), so this is now an improvement on a working path rather than a gap in an unfinished one. |
+| ~~X3~~ | ~~Refresh tokens / `offline_access` / OS keyring in `ph-cli auth-agent`~~ | **SUPERSEDED, 2026-09-16.** Planned and built as `docs/plans/2026-09-16-silent-oidc-reauth.md` (umbrella [zipline#40](https://github.com/mkolehmainen/zipline/issues/40)), which found that the blocker was never the token plumbing but the lifetime formula: `auth_time + expiration_seconds` computes the *identical* expiry after a refresh grant, so renewal bought nothing until the anchor moved to `iat`. Read that plan, not this row. Its decision 2 keeps the refresh token in the agent process's memory and leaves the **OS keyring deferred** as X3a. |
 | X4 | Remove `ac @1` from `AuthBlob` and `zpr-oauthrsa` from `ZPR_L7_BUILTINS` | Schema/compiler breaks; do in a later coordinated bump. |
 | X5 | `systemd` user unit for `ph-cli auth-agent` | Packaging; spec open question. |
 | — | `[bootstrap]` entries as user credentials; non-Google providers; A2A gaps | Spec *Deferred*. |

@@ -365,16 +365,18 @@ node → adapter → CLI.
 
 ### Credential lifetimes and re-authentication
 
-`vs/src/config.rs:78` hardcodes a 4-hour authentication lifetime:
+`vs/src/config.rs` hardcodes a 4-hour authentication lifetime:
 
 ```rust
 pub const DEFAULT_AUTH_EXPIRATION: Duration = Duration::from_secs(4 * 60 * 60);
 ```
 
-It is a compile-time constant, not even a `vs.toml` setting, applied to
-`zpr.authority` at `connection_control.rs:482` regardless of which credential
-was presented. Nothing derives it from anything. It is a placeholder, and it is
-not set in stone.
+It is a compile-time constant, not even a `vs.toml` setting, and nothing
+derives it from anything. It is a placeholder, and it is not set in stone. It
+still applies to `device.zpr.authority` — a device lifetime knob is deferred
+as X1 — but it no longer governs a user authentication: an OIDC login's
+`user.zpr.authority` expiry comes from the dual clock below, driven by the
+trusted service's own `expiration_seconds` and `max_auth_age_seconds`.
 
 `docs/SECURITY_MODEL.md` already states the rule the code does not follow:
 expirations are set by the source, policy may **shorten but not extend** them,
@@ -416,18 +418,69 @@ any key in a class domain's `zpr.` space on the right of a `returns_attributes`
 mapping, the CN included. zpr-compiler#146 adds the reserved-namespace check at
 that declaration site. Until it lands, the marker is advisory.
 
-**OIDC has three clocks. Conflating them is the trap.**
+**OIDC has three clocks. Conflating them is the trap.** ZPR tracks a fourth
+fact and turns the three into *two enforced bounds*.
 
-| Claim | Meaning | Use |
-|---|---|---|
-| `exp` (~1h for Google) | how long the *assertion* is fresh | reject a token presented after it — nothing more |
-| `auth_time` | when the human actually logged in | anchor the ZPR lifetime here |
-| policy `expiration_seconds` | how long ZPR honors that login | the shortening knob |
+| Value | Source | Moves on renewal? | Role |
+|---|---|---|---|
+| `exp` (~1h for Google) | token | yes | reject-only at validation. Nothing more. |
+| `auth_time` | token | **no** | when the human actually logged in. Anchors the session ceiling. |
+| `iat` | token | **yes** | when *this credential* was minted. Anchors the renewal window. |
+| policy `expiration_seconds` | policy | — | the renewal cadence |
+| policy `max_auth_age_seconds` | policy | — | the session ceiling |
 
 Setting the ZPR user-authentication lifetime from the token's `exp` would make
-users re-authenticate **hourly**. The rule is
-`auth_time + expiration_seconds`, with `exp` used only to reject a stale
-assertion at validation time.
+users re-authenticate **hourly**, so `exp` is used only to reject a stale
+assertion at validation time. The honored lifetime is the **minimum of two
+clocks**, one fast and advancing, one slow and fixed:
+
+```
+renewal_expires = token.iat       + expiration_seconds    # advances on renewal
+session_expires = token.auth_time + max_auth_age_seconds   # fixed for the session
+user.zpr.authority.expires = min(renewal_expires, session_expires)
+```
+
+`max_auth_age_seconds == 0` leaves `session_expires` unbounded, which
+preserves single-clock behaviour with the anchor moved from `auth_time` to
+`iat`.
+
+**The anchor had to move from `auth_time` to `iat`, and that move needs the
+ceiling to be safe.** `auth_time` records when the human last typed a
+password and does not move when a credential is renewed, so a refresh grant
+returns an `id_token` whose `auth_time` is unchanged and the old
+`auth_time + expiration_seconds` rule computes *the identical expiry* —
+renewal buys nothing. Anchoring on `iat` fixes that, but on its own it means a
+browser session the IdP keeps alive for weeks could be re-presented
+indefinitely; the `auth_time`-anchored ceiling is what bounds it. Hence the
+compiler requires `max_auth_age_seconds > 0` whenever
+`allow_offline_access = true`, and `max_auth_age_seconds >= expiration_seconds`
+(a ceiling shorter than the cadence makes renewal unreachable).
+
+**The `auth_time`-to-`iat` fallback in token validation is closed for
+renewable sessions.** Google omits `auth_time` unless the authorization request
+carries `max_age`. With a fallback in place `session_expires` would silently
+become `iat + max_auth_age_seconds` — a value that advances on every renewal,
+making the ceiling unenforceable while appearing to work. So a missing
+`auth_time` is a hard rejection whenever the provider declares
+`allow_offline_access`, and `ph-cli` sends `max_age` on offline-capable
+authorization requests purely to oblige the IdP to return the claim (OIDC Core
+§3.1.2.1). Without offline access the fallback still applies, unchanged.
+
+**Renewal re-proves the session; it does not re-authenticate the human.** The
+visa service's `reauthorize` entry point cannot check the nonce: OIDC Core
+§12.2 says a refresh-grant `id_token` **SHOULD NOT** carry a `nonce` claim,
+and that if it does the value MUST be the original authorization request's —
+absent or original, never fresh — so no comparison against a fresh challenge
+can succeed. The path therefore performs no nonce check at all, accepting
+both branches, and binds to the live session instead: same `sub`, strictly
+increasing `iat`, unchanged `auth_time`, and a `zprAddr` that is a live actor
+on the calling node. The connect path's nonce check is untouched.
+`docs/SECURITY_MODEL.md` records the delta.
+
+**No new attribute and no new DB column.** The effective `min` is stamped onto
+`user.zpr.authority` exactly as before, so `get_authentication_expiration` and
+the visa-expiry clamp keep working untouched — visas still clamp to the
+authentication, they just clamp to a value that now moves forward.
 
 **RSA bootstrap has no source-imposed expiry.** The source is the visa service
 checking a public key from its own policy. Re-proving possession of a static key
@@ -456,25 +509,58 @@ allow_offline_access = false   # default
 
 The trade: a refresh token lets an attacker who has compromised the endpoint
 keep authenticating as that user without the user present, until revoked.
-Against that, the token lives in the *user's* session rather than the root
-daemon, belongs in the OS keyring, and is scoped to `openid email profile`
-with no Google API access — and a compromised endpoint can already harvest an
-`id_token` whenever the user logs in, so what is added is persistence, not
-initial access. Deployments that will not accept persistence leave it off and
-accept a prompt every `expiration_seconds`.
+Against that, it is scoped to `openid email profile` with no Google API
+access — and a compromised endpoint can already harvest an `id_token`
+whenever the user logs in, so what is added is persistence, not initial
+access. Deployments that will not accept persistence leave it off and accept a
+prompt every `expiration_seconds`.
 
-**When user authentication expires with no agent registered:** log and
-disconnect. Graceful degradation — dropping only the user namespace so
-device-only rules keep working while user rules stop matching — is the correct
-long-term behavior and is enabled by per-namespace expiry. It needs two changes
-beyond this work. First, `get_authentication_expiration`
-(`libeval/src/actor.rs:175`) returns a single actor-level expiration computed as
+**The token is held in memory by `ph-cli auth-agent` and nowhere else.**
+`auth-agent <id>` already runs until interrupted, so the token lives in that
+process, keyed by issuer, and dies with it: silent renewal for a whole working
+session, no at-rest credential, no new dependency, and none of the persistence
+risk weighed above. OS-keyring persistence stays deferred; it is additive (a
+storage trait behind a flag) and needs no redesign. The intended limit is that
+restarting the agent means an interactive login.
+
+**Caveat — the "user's session, not the root daemon" mitigation does not hold
+yet.** While `ph` needs root for the tun interface and the control socket is
+not reachable unprivileged in every deployment
+([zipline#39](https://github.com/mkolehmainen/zipline/issues/39)), `ph-cli`
+runs under `sudo` and the refresh token sits in a root-owned process for
+hours. The marginal risk is small — root already owns the tun device and could
+harvest an `id_token` at any interactive login — but the spec's mitigation is
+void until that lands, and `docs/SECURITY_MODEL.md` records it as such rather
+than inheriting the claim. The renewal itself is unaffected: a refresh grant is
+a back-channel HTTPS POST with no browser, no desktop and no loopback
+listener, so root is fine for it. Only the *interactive* leg is touched, and
+there the documented form is `sudo ph-cli auth-agent <id> --no-browser` with
+the printed URL pasted into the user's own browser — once per session ceiling
+instead of once per `expiration_seconds`.
+
+**When user authentication expires and renewal does not happen:** log and
+disconnect. This is implemented, not aspirational. A periodic
+authentication-expiry sweep in the visa service (`vs/src/auth_sweep.rs`, one
+pass per `MIN_VISA_LIFETIME` — fine-grained enough that a revocation lands
+inside the shortest possible visa lifetime) finds every connected adapter
+whose `get_authentication_expiration()` has passed, batches one real
+`revokeAuthentication` per docking node, and drops the actor from the store —
+but **only on a positive ack**, so a VSS outage defers the removal to the next
+pass rather than half-removing it. The node honors the revocation by
+terminating the actor and dropping its visas through the existing disconnect
+path. A renewal that lands while a revoke is in flight wins: the sweep
+re-reads the stored expiry after the ack and keeps an actor whose expiration
+moved.
+
+Graceful degradation — dropping only the user namespace so device-only rules
+keep working while user rules stop matching — remains **deferred**, and the
+reasons are unchanged. `get_authentication_expiration`
+(`libeval/src/actor.rs`) returns a single actor-level expiration computed as
 the **minimum** over the authority and identity-key attributes, so one expired
-namespace expires the whole actor and triggers disconnect. Second,
-`revokeAuthentication(addrs)` (`vs.capnp:640`) revokes an actor wholesale rather
-than a namespace. Revoking the *visas* that depended on the expired namespace
-needs nothing new — `visa_reconciler` already re-evaluates live visas when
-attributes change. Deferred.
+namespace expires the whole actor; and `revokeAuthentication(addrs)` revokes an
+actor wholesale rather than a namespace. Revoking the *visas* that depended on
+the expired namespace needs nothing new — `visa_reconciler` already
+re-evaluates live visas when attributes change.
 
 ### ZPLC configuration
 
@@ -786,18 +872,35 @@ with no Google and no browser: `--no-browser` plus an HTTP client that follows
 the redirect to the loopback URL. It is also the only practical way to test
 JWKS key rotation and the stale-cache path.
 
+The fake IdP also serves refresh grants, so **the relying-party half of
+renewal** is testable without Google: an authorization request carrying
+`offline_access` gets a `refresh_token`, `grant_type=refresh_token` mints a
+renewed `id_token` with an advancing `iat`, a fixed `auth_time` and no
+`nonce` claim (§12.2's SHOULD NOT, which is also what Google does), and
+`--revoke-refresh` models the user withdrawing the application's access.
+
+That is deliberately **not** the whole loop. Until the node can reach the
+adapter-side `AuthAgent` (see `## Implementation status`), no credential
+crosses the missing hop, so nothing reaches `reauthorize` and the renewal
+cannot complete. `one-node-oidc-renewal-test.sh` is written to exercise the
+whole loop and currently fails at that point by design — it is the acceptance
+criterion for the missing hop, not evidence that renewal works.
+
 **What CI cannot cover.** Real Google. This needs a manual release checklist: a
 real Workspace domain for the happy path, a consumer gmail account to verify
-the domain rejection actually rejects, and the refresh / `offline_access` path.
-The `hd`-absent case in particular is the one a fake IdP is most likely to
-model wrongly.
+the domain rejection actually rejects, and the real refresh /
+`offline_access` grant — the fake IdP proves ZPR's side of the renewal, not
+Google's. The `hd`-absent case in particular is the one a fake IdP is most
+likely to model wrongly.
 
 ### Deferred
 
 | Item | Why deferred |
 |---|---|
 | Class specs emit presence conditions | Breaking change across all class specs; tracked as [zpr-compiler#144](https://github.com/org-zpr/zpr-compiler/issues/144), and should land **before** this work |
-| Graceful degradation on user-auth expiry | Needs partial revocation in the visa service |
+| Graceful degradation on user-auth expiry | Needs partial revocation in the visa service; `revokeAuthentication` is per actor. Decision 4 of the silent-reauth plan chose disconnect instead |
+| OS-keyring persistence for the refresh token | Decision 2 of the silent-reauth plan keeps it in the agent process's memory; persistence is additive |
+| VS-pushed renewal via `requestAuthentication` | Node-driven pull covers renewal and works while the VS is disconnected; push is for "policy changed, re-prove now" |
 | `[bootstrap]` entries declared as user credentials | Admissible by design; no current need |
 | Providers other than Google | The design is provider-generic; only Google is validated |
 | A2A confidentiality, anti-replay, k-of-n concurrence | Pre-existing gaps, unrelated |
@@ -821,8 +924,9 @@ model wrongly.
 
 ## Implementation status
 
-Re-checked against the forks' `zipline` branches on 2026-09-15 (`zl-zpr-compiler`
-0.17.0, `zl-zpr-visaservice` 0.19.0, `zl-zpr-common` 0.26.0, `zl-zpr-core`).
+Re-checked against the forks' `zipline` branches on 2026-09-17 (`zl-zpr-compiler`
+0.18.0, `zl-zpr-visaservice` 0.19.0 with `POLICY_MIN_COMPILER_MINOR = 18`,
+`zl-zpr-common` 0.27.0, `zl-zpr-core` 0.7.0).
 **The OIDC design in this document is implemented**: the umbrella epic
 [zipline#1](https://github.com/mkolehmainen/zipline/issues/1) is closed, and the
 oidc + file interplay epic
@@ -831,6 +935,13 @@ code half, including the end-to-end fixture. The build was sequenced by
 `docs/plans/2026-09-02-oidc-implementation-plan.md`; the plan's *What changed
 since the spec* table is authoritative where this document and the code
 disagree.
+
+**Silent re-authentication is sequenced separately** by
+`docs/plans/2026-09-16-silent-oidc-reauth.md`, umbrella
+[zipline#40](https://github.com/mkolehmainen/zipline/issues/40). It supersedes
+X3 of the older plan and is what the *Credential lifetimes and
+re-authentication* section above now describes. **That plan wins over this
+section where they differ**, per the `docs/plans/` rule in `AGENTS.md`.
 
 **Implemented (the prerequisites):**
 
@@ -903,6 +1014,46 @@ disagree.
   assertions, and refresh legs covering the Finding 3 regression from
   `docs/plans/2026-09-14-trusted-service-interplay.md`.
 
+**Implemented (silent re-authentication, umbrella zipline#40):**
+
+- **`allow_offline_access` validation** — the compiler requires
+  `max_auth_age_seconds > 0` with offline access on, and
+  `max_auth_age_seconds >= expiration_seconds` (zipline#41). `zl-zpr-compiler`
+  0.18.0.
+- **The dual clock** — `ValidatedToken` carries `iat`, the OIDC store records
+  `auth_time` and `iat` beside the attrs, `user.zpr.authority` expires at
+  `min(iat + expiration_seconds, auth_time + max_auth_age_seconds)`, and the
+  `auth_time`-to-`iat` fallback is a hard rejection when the provider allows
+  offline access (zipline#42). `POLICY_MIN_COMPILER_MINOR` raised to 18.
+- **`reauthorize` with session-bound validation** — `vs.capnp`'s
+  `reauthorize` is implemented against a pinned `PolicySnapshot` with
+  `authorize_connection` re-run, so a policy change since connect applies.
+  The nonce is ignored on this path *only*; same `sub`, strictly increasing
+  `iat`, unchanged `auth_time` and a live actor on the calling node bind it
+  instead (zipline#43).
+- **Authentication-expiry sweep and real `revokeAuthentication`** —
+  `vs/src/auth_sweep.rs`, one batched revoke per docking node, removal only on
+  a positive ack, and a concurrent renewal wins (zipline#44). The node's
+  `RevokeAuth` handler is real.
+- **Node-side renewal plumbing** — `LinkData` tracks `auth_expires` and a
+  precomputed renewal deadline at
+  `auth_expires - min(auth_renewal_lead, lifetime/2)`; the check rides the
+  existing 3 s keep-alive tick, one attempt in flight at a time, bounded by
+  the remaining window; a dead `AuthAgent` bridge clears the registration
+  rather than being retried; `showLink` reports `Auth expires:` and the last
+  authentication failure (zipline#45).
+- **`ph-cli auth-agent` refresh grants** — `offline_access` and `max_age` on
+  the authorization request when policy allows it, the `refresh_token` kept in
+  the agent process's memory keyed by issuer, `interactive = false` satisfied
+  by a `grant_type=refresh_token` POST, `invalid_grant` dropping the stored
+  token, and the headless/root browser fallback (zipline#46). The refresh token
+  is never logged, never written to disk, and never returned over the RPC.
+- **Fake-IdP refresh support** — the harness serves `offline_access` and
+  `grant_type=refresh_token` with an advancing `iat`, a fixed `auth_time` and
+  no `nonce` claim (OIDC Core §12.2's SHOULD NOT, which is what Google does),
+  plus `--revoke-refresh` (zipline#47). This covers the relying-party half of
+  renewal only; the loop itself does not close — see *Not yet*.
+
 **Superseded:**
 
 - **A validated login that matches no join policy is *not* refused.** The spec's
@@ -918,10 +1069,20 @@ disagree.
 **Not yet:**
 
 - The netns end-to-end legs have not run in CI: Actions is disabled on the
-  forks, and the interplay test's netns run needs root, so it is pending the
-  operator's environment (`zl-zpr-core` 02b730d records what was run locally —
-  fixture compile, `bash -n`, the fake-IdP smoke test, and the C1-revert
-  `zpdump` RED).
+  forks, and a netns run needs root, so it is pending the operator's
+  environment (`zl-zpr-core` 02b730d records what was run locally for the
+  interplay test — fixture compile, `bash -n`, the fake-IdP smoke test, and
+  the C1-revert `zpdump` RED). `one-node-oidc-renewal-test.sh` (zipline#47) is
+  in the same position.
+- **The silent-renewal loop does not close end to end.** The renewal tick,
+  the tracked `auth_expires` and the visa-service connection all live on the
+  **node's** `NodeToAdapter` link, while the `AuthAgent` that `ph-cli`
+  registers lives on the **adapter's** `AdapterToNode` link — so the node
+  reaches its renewal deadline with no agent to ask and logs "authentication
+  expires soon but no AuthAgent is available to renew it". Closing the loop
+  needs a node-to-adapter credential request that today has no ZDP message.
+  Everything either side of that hop is implemented and unit-tested; see
+  zipline#47 for the analysis and the e2e that pins it.
 - Real-Google validation is a manual release checklist
   (`zl-zpr-core/integration-test/OIDC-RELEASE-CHECKLIST.md`), not automated —
   the fake IdP cannot prove the `hd`-absent rejection against Google's actual
@@ -930,5 +1091,5 @@ disagree.
   present; the hardcoded BAS certificate expired on 2026-04-16.
 
 Line numbers cited in the design sections above are from the 2026-09-01
-checkouts and several have moved; verify against the source before relying on
+checkouts and most have moved; verify against the source before relying on
 one.

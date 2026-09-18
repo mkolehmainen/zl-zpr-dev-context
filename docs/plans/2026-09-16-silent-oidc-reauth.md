@@ -1,8 +1,27 @@
 # Silent OIDC Re-authentication
 
-> **Status: PLANNED (2026-09-16).** Not yet filed as issues. Seven tasks
-> (R1–R7) across `zl-zpr-compiler`, `zl-zpr-visaservice` and `zl-zpr-core`;
-> see *Issue map* below.
+> **Status: FILED AND BUILT (2026-09-17).** Umbrella
+> [zipline#40](https://github.com/mkolehmainen/zipline/issues/40), seven tasks
+> across `zl-zpr-compiler`, `zl-zpr-visaservice` and `zl-zpr-core`:
+> R1 [#41](https://github.com/mkolehmainen/zipline/issues/41),
+> R2 [#42](https://github.com/mkolehmainen/zipline/issues/42),
+> R3 [#43](https://github.com/mkolehmainen/zipline/issues/43),
+> R4 [#44](https://github.com/mkolehmainen/zipline/issues/44),
+> R5 [#45](https://github.com/mkolehmainen/zipline/issues/45),
+> R6 [#46](https://github.com/mkolehmainen/zipline/issues/46),
+> R7 [#47](https://github.com/mkolehmainen/zipline/issues/47). R1–R6 are merged
+> and closed; see *Issue map* below.
+>
+> **The loop does not close yet.** R7's end-to-end test found that the renewal
+> tick, the tracked `auth_expires` and the visa-service connection all live on
+> the **node's** `NodeToAdapter` link, while the `AuthAgent` `ph-cli` registers
+> lives on the **adapter's** `AdapterToNode` link — so the node reaches its
+> renewal deadline with no agent to ask. R5's design (below) assumed the two
+> met on one link and its unit tests set both by hand, which is a state the
+> production paths never produce together. Closing it needs a node-to-adapter
+> credential request, for which no ZDP message exists; the plan's "no schema
+> change is needed anywhere" claim covered the VSAPI and missed this hop.
+> Tracked on [#47](https://github.com/mkolehmainen/zipline/issues/47).
 
 **Supersedes:** OIDC-X3 in `docs/plans/2026-09-02-oidc-implementation-plan.md`
 (*"Refresh tokens / `offline_access` / OS keyring in `ph-cli auth-agent`"*), and
@@ -104,7 +123,7 @@ is what vends their attributes — so restart behaviour is unchanged.
 
 | # | Decision | Consequence |
 |---|---|---|
-| 1 | **Relax the nonce on `reauthorize` only.** | A refresh-grant `id_token` must carry the *original* nonce (OIDC Core §12.2), so it can never match a fresh challenge. On the reauth path the VS ignores `nonce` and binds to the live session instead: same `sub`, strictly increasing `iat`, unchanged `auth_time`, and a `zprAddr` that is a live actor on the calling node. Connect-path nonce checking is untouched. Recorded as a `SECURITY_MODEL.md` delta. |
+| 1 | **Relax the nonce on `reauthorize` only.** | OIDC Core §12.2 says a refresh-grant `id_token` **SHOULD NOT** carry a `nonce`, and that if present it MUST be the original authorization request's — absent or original, never fresh — so it can never match a fresh challenge. On the reauth path the VS therefore performs no nonce check at all (accepting both branches, rather than requiring the claim) and binds to the live session instead: same `sub`, strictly increasing `iat`, unchanged `auth_time`, and a `zprAddr` that is a live actor on the calling node. Connect-path nonce checking is untouched. Recorded as a `SECURITY_MODEL.md` delta. **Correction (2026-09-18):** this row originally said the original nonce *must* be carried, which inverts §12.2's normative direction; the relaxation is unaffected but the fake IdP was modelling the discouraged branch and now omits the claim. |
 | 2 | **Refresh token in-memory in `ph-cli auth-agent` only.** | `auth-agent <id>` already "runs until interrupted" (`main_args.rs:87`). The token lives in that process and dies with it: silent renewal for the whole working session, no at-rest credential, no new dependency, none of the persistence risk `docs/OIDC.md:455` weighs. Keyring persistence stays deferred and needs no redesign to add. **Caveat — see *Running as root* below:** the spec's mitigation that the token "lives in the *user's* session rather than the root daemon" (`docs/OIDC.md:459`) does **not** hold while `ph-cli` requires `sudo`. |
 | 3 | **Reuse `max_auth_age_seconds` as the session ceiling.** | It already means "how old may the human's login be" and is already enforced at `validate.rs:202`. No new `policy.capnp` field, no schema bump. |
 | 4 | **Log and disconnect when renewal fails.** | Matches the position stated at `docs/OIDC.md:468`. Requires making `revokeAuthentication` real: it is a stub on both sides (`vs/src/vss_worker.rs:163`, `adapter/ph/src/vss_worker.rs:36`). Per-namespace graceful degradation stays deferred as X2. |
@@ -406,6 +425,13 @@ printed URL carries the S256 challenge but no verifier.
   change, but without it users will reach for `connect` and never renew.
 - `docs/plans/2026-09-02-oidc-implementation-plan.md`: mark X3 superseded by this
   plan; leave X2 deferred with a note that decision 4 chose disconnect.
+
+**Landed as:** `integration-test/one-node-oidc-renewal-test.sh` plus refresh-grant
+and `--revoke-refresh` support in `integration-test/lib/fake-idp.py`, the
+`oidc-renewal.zplc` fixture (which reuses `oidc-test.zpl` unchanged), an
+`oidc-renewal-integration-test` job in `.github/workflows/adapter.yml`, and the
+documentation above. The netns run needs root and is the operator's step; the
+fake-IdP smoke test covers the refresh grant with no privileges.
 
 ---
 

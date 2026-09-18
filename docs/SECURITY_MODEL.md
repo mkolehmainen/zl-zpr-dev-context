@@ -155,12 +155,86 @@ trusted services is named in policy rather than discovered.
   a decorating store could silently take ownership of an identity it never
   verified, and the authenticator's `vouched_here` gate would then prune the
   real identity attributes on the next refresh.
+- **A renewed authentication is bound to the session, not to a fresh
+  challenge.** An identity's lifetime can be *extended* without the human
+  re-authenticating, which is a deliberate relaxation and is scoped to one
+  entry point. See *Silent re-authentication* below.
 
 Trusted-service API calls are themselves signed with an HMAC over the function
 name, an RFC3339 timestamp, and the canonically serialized arguments; the
 service rejects a bad HMAC or a stale timestamp. The API being reachable only
 over the ZPRnet is not treated as sufficient — the connection's owner is not
 assumed to be the caller.
+
+### Silent re-authentication: what replaces the nonce
+
+An OIDC user authentication is renewed in the background so a human logs in
+once per session ceiling rather than once per renewal cadence
+(`docs/OIDC.md`, *Credential lifetimes and re-authentication*). Renewal needs
+a documented relaxation, because **the connect path's nonce check cannot
+apply to it**. OIDC Core §12.2 says an `id_token` returned from a refresh
+grant
+
+> SHOULD NOT have a `nonce` Claim, even when the ID Token issued at the time
+> of the original authentication contained `nonce`; however, if it is
+> present, its value MUST be the same as in the ID Token issued at the time
+> of the original authentication
+
+— so the claim is *absent or original, never fresh*. Google omits it. Either
+way there is no new authorization request and therefore no new nonce to bind,
+so a comparison against a freshly issued challenge cannot succeed. A check
+that cannot pass is not a control; pretending otherwise would mean either a
+permanently failing renewal or a nonce comparison quietly reduced to a no-op.
+Both branches must be accepted: the visa service's reauth path performs no
+nonce check at all rather than requiring the claim's presence, which is what
+keeps a spec-preferred provider working.
+
+So the visa service's `reauthorize` entry point binds the credential to the
+**live session** instead. All of these must hold, and each is a rejection:
+
+| Bound to | Why it is the right binding |
+|---|---|
+| the same `sub` as the admitted actor | the renewal may not change who the actor is |
+| a strictly **increasing** `iat` | replaying a captured renewal token is refused; `iat` is the only monotonic per-credential claim |
+| an **unchanged** `auth_time` | this is what makes the session ceiling enforceable: a different login is a different session and must reconnect, not renew |
+| a `zprAddr` that is a **live actor on the calling node** | the renewal is for an endpoint already docked here, not an address a caller names |
+| the **same trusted service** that admitted the actor | one provider cannot renew another's session |
+| everything else — signature, `iss`, `aud`, `exp`, `kid`, `alg`, `hd`, `email_verified` | unchanged from the connect path |
+
+**Scope.** The relaxation applies to `reauthorize` and to nothing else. The
+connect path is untouched, and the two paths deliberately do not share a
+validation function taking a "skip the nonce" boolean — the nonce expectation
+is an enum, so the connect arm cannot be constructed with checking off by
+accident.
+
+**What this hands to an attacker, and why it is not a new threat.** The
+binding is enforced by the visa service against its own session record, and
+the only party that can present a renewal is one that can both mint a
+refresh-grant `id_token` for that `sub` and speak as the actor's docking
+node. A **compromised node** can therefore keep one of its own already-docked
+actors authenticated for as long as the ceiling allows. That is Case 2, and it
+adds nothing: a compromised node already forwards that actor's traffic, and
+the node is the party that relays every connect and renewal in the first
+place. It cannot extend past `auth_time + max_auth_age_seconds`, cannot renew
+an actor docked elsewhere, cannot change the actor's `sub` or its attributes,
+and cannot replay a token twice. The cryptographically stronger alternative —
+a user-held keypair bound to `sub` at first login — is recorded as deferred in
+`docs/plans/2026-09-16-silent-oidc-reauth.md` (X3c) and is the thing to
+revisit if this relaxation fails a later review.
+
+**Running as root: a mitigation that does not hold yet.** The refresh token
+that makes renewal possible is held in memory by `ph-cli auth-agent` for the
+life of that process — never on disk, never logged, never returned over the
+RPC. `docs/OIDC.md` argues this is acceptable partly because the token "lives
+in the *user's* session rather than the root daemon". **That argument is void
+while `ph-cli` requires `sudo`.** `ph` needs root for the tun interface, and
+until [zipline#39](https://github.com/mkolehmainen/zipline/issues/39) lands
+the control socket is not reachable unprivileged in every deployment, so the
+refresh token sits in a root-owned process for hours. The marginal risk is
+small — root already owns the tun device and could harvest an `id_token` at
+any interactive login, so what is added is persistence, not access — but it
+is recorded here rather than inherited, and deployments that will not accept
+persistence leave `allow_offline_access = false`.
 
 ---
 
@@ -360,6 +434,16 @@ not read the RFCs as a description of current guarantees.
 - **Revocation** — visa revocation over the VSS-API, plus administrative
   revocation of visas, endpoints, and trusted services without a policy
   install. See [VISA_SERVICE.md](VISA_SERVICE.md).
+- **Authentication expiry is enforced, not just recorded.** A periodic sweep
+  in the visa service revokes the authentication of every connected adapter
+  whose expiration has passed and drops the actor, batched one
+  `revokeAuthentication` per docking node and removed only on a positive ack,
+  so a transport outage defers rather than half-removes. The node honors the
+  revocation through its normal disconnect path. This is what makes the
+  identity-lifetime rule above an enforced bound rather than a stored value.
+- **Session-bound renewal** — the `reauthorize` bindings in *Silent
+  re-authentication* above are implemented and unit-tested per row
+  (zipline#43).
 
 **Not yet, or verify before relying on it:**
 
@@ -383,6 +467,12 @@ not read the RFCs as a description of current guarantees.
 - **Networked attribute sources.** Only file-backed trusted services are
   instantiated today, so the attribute-expiry and push-invalidation machinery
   is exercised against local JSON rather than a live source.
+- **Background renewal does not complete end to end.** Every piece is
+  implemented and unit-tested, but the node reaches its renewal deadline with
+  no way to reach the user's authentication agent — see the *Not yet* note in
+  [OIDC.md](OIDC.md). Until that closes, an OIDC actor is disconnected when
+  its authentication window ends, which is the safe direction to fail but not
+  the intended behaviour.
 
 ---
 
