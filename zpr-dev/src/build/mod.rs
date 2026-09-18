@@ -236,8 +236,9 @@ pub struct BuildArgs {
 /// A directory left over from a previous run is refused naming the path and
 /// `--force` (approved decision on zipline#60: reuse of half-built state is
 /// how silent staleness gets shipped); `force` removes it entirely and
-/// recreates it fresh.
-fn prepare_build_dir(dir: &Path, force: bool) -> Result<()> {
+/// recreates it fresh. `workspace` locates the source repositories, so a
+/// worktree retained by a failed run is unregistered, not just deleted.
+fn prepare_build_dir(dir: &Path, force: bool, workspace: &Path) -> Result<()> {
     if dir.exists() {
         if !force {
             bail!(
@@ -245,6 +246,26 @@ fn prepare_build_dir(dir: &Path, force: bool) -> Result<()> {
                  rerun with --force to remove and rebuild it",
                 dir.display()
             );
+        }
+        // A failed run retains its worktrees under `src/` for debugging
+        // (see execute_build). They must be *unregistered* from their source
+        // repositories, not just deleted: a raw removal leaves each
+        // registration behind, and the next `git worktree add` fails with
+        // git's "missing but already registered worktree" — which made the
+        // documented --force recovery unusable (Codex review on PR #8).
+        if let Ok(entries) = std::fs::read_dir(dir.join("src")) {
+            for entry in entries.flatten() {
+                let repo = workspace.join(entry.file_name());
+                if !crate::git::is_repo(&repo) {
+                    continue;
+                }
+                // Best effort: a worktree that cannot be removed cleanly is
+                // deleted with the directory below; prune then drops whatever
+                // registration is left pointing at the missing path.
+                if crate::git::worktree_remove(&repo, &entry.path()).is_err() {
+                    let _ = crate::git::git(&repo, &["worktree", "prune"]);
+                }
+            }
         }
         std::fs::remove_dir_all(dir)
             .map_err(|e| anyhow::anyhow!("cannot remove {}: {e}", dir.display()))?;
@@ -405,7 +426,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         .build_dir
         .clone()
         .unwrap_or_else(|| ctx.workspace.join(".zpr-build").join(&set.name));
-    prepare_build_dir(&build_dir, ctx.force)?;
+    prepare_build_dir(&build_dir, ctx.force, &ctx.workspace)?;
 
     // What the emitted manifest records as its own provenance (spec-003 §3).
     let manifest_path = if args.tip {
@@ -1683,7 +1704,7 @@ allow_pin_drift:
     fn prepare_build_dir_creates_logs_and_dist() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("tip");
-        prepare_build_dir(&dir, false).unwrap();
+        prepare_build_dir(&dir, false, tmp.path()).unwrap();
         assert!(dir.join("logs").is_dir());
         assert!(dir.join("dist").is_dir());
     }
@@ -1698,7 +1719,9 @@ allow_pin_drift:
         std::fs::create_dir_all(dir.join("dist")).unwrap();
         std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
 
-        let error = prepare_build_dir(&dir, false).unwrap_err().to_string();
+        let error = prepare_build_dir(&dir, false, tmp.path())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("tip"), "path not named: {error}");
         assert!(error.contains("--force"), "remedy not named: {error}");
         // Nothing was touched: the stale content is intact.
@@ -1714,10 +1737,37 @@ allow_pin_drift:
         std::fs::create_dir_all(dir.join("dist")).unwrap();
         std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
 
-        prepare_build_dir(&dir, true).unwrap();
+        prepare_build_dir(&dir, true, tmp.path()).unwrap();
         assert!(!dir.join("dist").join("stale-binary").exists());
         assert!(dir.join("logs").is_dir());
         assert!(dir.join("dist").is_dir());
+    }
+
+    /// `--force` over a build directory holding worktrees retained by a
+    /// previous failed run must *unregister* them, not just delete their
+    /// directories: a raw `remove_dir_all` leaves the source repository's
+    /// worktree registration behind, and the very next `git worktree add`
+    /// fails with "missing but already registered worktree" — making the
+    /// documented `--force` recovery path unusable (Codex review on PR #8).
+    #[test]
+    fn prepare_build_dir_force_unregisters_retained_worktrees() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let build_dir = workspace.join(".zpr-build").join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        // A retained worktree, as a failed run leaves it.
+        let dest = build_dir.join("src").join("zl-zpr-core");
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+
+        // The --force retry must clear the directory AND the registration...
+        prepare_build_dir(&build_dir, true, &workspace).unwrap();
+        assert!(!dest.exists());
+        let listing =
+            crate::git::git(&workspace.join("zl-zpr-core"), &["worktree", "list"]).unwrap();
+        assert_eq!(listing.lines().count(), 1, "stale registration: {listing}");
+
+        // ...so the next run's worktree_add succeeds where it used to fail.
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
     }
 
     // -- dist/ verification (task B3 step 4) ----------------------------------
@@ -1845,7 +1895,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
 
         let recipes = vec![failing_recipe()];
         let ok = execute_build(&inputs(
@@ -1879,7 +1929,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
@@ -1929,7 +1979,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
@@ -1950,7 +2000,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
