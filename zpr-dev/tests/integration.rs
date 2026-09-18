@@ -1371,3 +1371,35 @@ fn build_gates_only_manifest_drift_entry_suppresses_and_echoes_reason() {
     assert!(out.contains("zipline#18"), "{out}");
     assert!(!out.contains("[ERROR]"), "{out}");
 }
+
+/// A malformed gate-3 input — here `POLICY_MIN_COMPILER_*` constants missing
+/// from a present `vs/src/config.rs` — is an `[ERROR]` finding in the report,
+/// exiting with the gate-failure code 1, and the findings gates 1 and 2
+/// accumulated are still printed. It must not abort `run_gates` into the
+/// command-error exit code 2 that discards the report (spec-003 §4).
+#[test]
+fn build_gates_only_unparseable_gate3_input_is_an_error_finding_not_an_abort() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    fixture.write("zl-zpr-core/Cargo.toml", &core_manifest("v0.27.0"));
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+    // Both gate-3 files are present, so the gate runs — but the constants
+    // are absent, so parsing fails.
+    fixture.write(
+        "zl-zpr-visaservice/vs/src/config.rs",
+        "pub const SOMETHING_ELSE: u32 = 1;\n",
+    );
+    fixture.write(
+        "zl-zpr-compiler/Cargo.toml",
+        "[package]\nname = \"zplc\"\nversion = \"0.18.0\"\n",
+    );
+
+    let output = fixture.run(&["build", "--tip", "--gates-only"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    // The failure is a finding in the report, naming what could not be read.
+    assert!(out.contains("[ERROR]"), "{out}");
+    assert!(out.contains("POLICY_MIN_COMPILER"), "{out}");
+    // Gate 1's findings survived the gate-3 failure.
+    assert!(out.contains("pinned consistently"), "{out}");
+}

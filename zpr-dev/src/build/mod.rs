@@ -450,15 +450,32 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
         std::fs::read_to_string(&zplc_manifest),
     ) {
         (Ok(config_text), Ok(manifest_text)) => {
+            // A present but unreadable value is an error *finding*, not an
+            // abort: aborting here would discard gate 1's and gate 2's
+            // findings and exit with the command-error code 2, when the
+            // report contract is an [ERROR] line and the gate-failure
+            // code 1 (spec-003 §4).
             let minimum =
-                gates::policy_min_compiler(&config_text, "zl-zpr-visaservice/vs/src/config.rs")?;
-            let zplc = gates::package_version(&manifest_text, "zl-zpr-compiler/Cargo.toml")?;
-            findings.extend(gates::gate_compiler_version(
-                zplc,
-                "zl-zpr-compiler/Cargo.toml",
-                minimum,
-                "zl-zpr-visaservice/vs/src/config.rs",
-            ));
+                gates::policy_min_compiler(&config_text, "zl-zpr-visaservice/vs/src/config.rs");
+            let zplc = gates::package_version(&manifest_text, "zl-zpr-compiler/Cargo.toml");
+            match (minimum, zplc) {
+                (Ok(minimum), Ok(zplc)) => {
+                    findings.extend(gates::gate_compiler_version(
+                        zplc,
+                        "zl-zpr-compiler/Cargo.toml",
+                        minimum,
+                        "zl-zpr-visaservice/vs/src/config.rs",
+                    ));
+                }
+                (minimum, zplc) => {
+                    for error in [minimum.err(), zplc.err()].into_iter().flatten() {
+                        findings.push(gates::Finding::new(
+                            gates::Severity::Error,
+                            format!("gate 3 (zplc vs POLICY_MIN_COMPILER): {error:#}"),
+                        ));
+                    }
+                }
+            }
         }
         (vs, zplc) => {
             let mut missing: Vec<&str> = Vec::new();
