@@ -1403,3 +1403,25 @@ fn build_gates_only_unparseable_gate3_input_is_an_error_finding_not_an_abort() {
     // Gate 1's findings survived the gate-3 failure.
     assert!(out.contains("pinned consistently"), "{out}");
 }
+
+/// A listed workspace member whose `Cargo.toml` cannot be read is an
+/// `[ERROR]` finding naming the member, and the gates exit 1: silently
+/// skipping it would hide any conflicting pins that member carries, letting
+/// `--gates-only` pass a set it did not fully check (spec-003 §4.1).
+#[test]
+fn build_gates_only_unreadable_member_manifest_is_an_error_finding() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    // A workspace root listing a member that has no Cargo.toml on disk.
+    fixture.write(
+        "zl-zpr-core/Cargo.toml",
+        "[workspace]\nmembers = [\"member-a\"]\n",
+    );
+    fixture.write("zl-zpr-common/Cargo.toml", &common_manifest("v0.27.0"));
+
+    let output = fixture.run(&["build", "--tip", "--gates-only"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("[ERROR]"), "{out}");
+    assert!(out.contains("zl-zpr-core/member-a/Cargo.toml"), "{out}");
+}

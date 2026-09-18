@@ -399,12 +399,21 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
                 let Some(member) = member.as_str() else {
                     continue;
                 };
+                let display = format!("{name}/{member}/Cargo.toml");
                 let path = dir.join(member).join("Cargo.toml");
-                if let Ok(text) = std::fs::read_to_string(&path) {
-                    members.push(gates::ManifestSource {
-                        path: format!("{name}/{member}/Cargo.toml"),
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => members.push(gates::ManifestSource {
+                        path: display,
                         text,
-                    });
+                    }),
+                    // A listed member the gate cannot read is a member the
+                    // gate cannot check: skipping it silently would let the
+                    // set pass with that member's pins unexamined, so it is
+                    // an error finding, not an omission (spec-003 §4.1).
+                    Err(error) => findings.push(gates::Finding::new(
+                        gates::Severity::Error,
+                        format!("cannot read workspace member manifest {display}: {error}"),
+                    )),
                 }
             }
         }
