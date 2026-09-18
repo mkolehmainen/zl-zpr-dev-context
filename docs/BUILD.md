@@ -377,7 +377,7 @@ Other entry points, each a standalone script:
 | `capture-test.sh` | packet capture |
 | `one-node-oidc-test.sh` | OIDC login through the fake IdP, plus JWKS key rotation |
 | `oidc-file-interplay-test.sh` | an `oidc` and a `file` trusted service in one policy |
-| `one-node-oidc-renewal-test.sh` | silent OIDC renewal and disconnect-on-revocation. Takes several minutes: the renewal cadence is a real wall clock |
+| `one-node-oidc-renewal-test.sh` | silent OIDC renewal and disconnect-on-revocation. Takes several minutes: the renewal cadence is a real wall clock. **Known-failing at leg 2** and disabled in CI — it is the acceptance criterion for the missing node-to-adapter credential request (zipline#47), not a regression |
 | `fake-idp-smoke-test.sh` | the fake IdP's own endpoints. **Needs no root and no netns** — run it first when an OIDC test misbehaves |
 
 Useful overrides: `DEBUG_TARGETS` (default `all=INFO`), `PH_BIN`, `VS_BIN`,
