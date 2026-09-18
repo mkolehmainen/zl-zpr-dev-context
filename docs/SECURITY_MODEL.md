@@ -172,11 +172,22 @@ An OIDC user authentication is renewed in the background so a human logs in
 once per session ceiling rather than once per renewal cadence
 (`docs/OIDC.md`, *Credential lifetimes and re-authentication*). Renewal needs
 a documented relaxation, because **the connect path's nonce check cannot
-apply to it**: an `id_token` minted from a refresh grant must carry the
-*original* authorization request's nonce (OIDC Core §12.2), so it can never
-match a freshly issued challenge. A check that cannot pass is not a control;
-pretending otherwise would mean either a permanently failing renewal or a
-nonce comparison quietly reduced to a no-op.
+apply to it**. OIDC Core §12.2 says an `id_token` returned from a refresh
+grant
+
+> SHOULD NOT have a `nonce` Claim, even when the ID Token issued at the time
+> of the original authentication contained `nonce`; however, if it is
+> present, its value MUST be the same as in the ID Token issued at the time
+> of the original authentication
+
+— so the claim is *absent or original, never fresh*. Google omits it. Either
+way there is no new authorization request and therefore no new nonce to bind,
+so a comparison against a freshly issued challenge cannot succeed. A check
+that cannot pass is not a control; pretending otherwise would mean either a
+permanently failing renewal or a nonce comparison quietly reduced to a no-op.
+Both branches must be accepted: the visa service's reauth path performs no
+nonce check at all rather than requiring the claim's presence, which is what
+keeps a spec-preferred provider working.
 
 So the visa service's `reauthorize` entry point binds the credential to the
 **live session** instead. All of these must hold, and each is a rejection:

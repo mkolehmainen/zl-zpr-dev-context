@@ -467,13 +467,15 @@ authorization requests purely to oblige the IdP to return the claim (OIDC Core
 §3.1.2.1). Without offline access the fallback still applies, unchanged.
 
 **Renewal re-proves the session; it does not re-authenticate the human.** The
-visa service's `reauthorize` entry point cannot check the nonce — a
-refresh-grant `id_token` must carry the *original* authorization request's
-nonce (OIDC Core §12.2), so it can never match a fresh challenge. It binds to
-the live session instead: same `sub`, strictly increasing `iat`, unchanged
-`auth_time`, and a `zprAddr` that is a live actor on the calling node. The
-connect path's nonce check is untouched. `docs/SECURITY_MODEL.md` records the
-delta.
+visa service's `reauthorize` entry point cannot check the nonce: OIDC Core
+§12.2 says a refresh-grant `id_token` **SHOULD NOT** carry a `nonce` claim,
+and that if it does the value MUST be the original authorization request's —
+absent or original, never fresh — so no comparison against a fresh challenge
+can succeed. The path therefore performs no nonce check at all, accepting
+both branches, and binds to the live session instead: same `sub`, strictly
+increasing `iat`, unchanged `auth_time`, and a `zprAddr` that is a live actor
+on the calling node. The connect path's nonce check is untouched.
+`docs/SECURITY_MODEL.md` records the delta.
 
 **No new attribute and no new DB column.** The effective `min` is stamped onto
 `user.zpr.authority` exactly as before, so `get_authentication_expiration` and
@@ -870,12 +872,19 @@ with no Google and no browser: `--no-browser` plus an HTTP client that follows
 the redirect to the loopback URL. It is also the only practical way to test
 JWKS key rotation and the stale-cache path.
 
-The fake IdP also serves refresh grants, so the whole renewal loop is
-testable without Google: an authorization request carrying `offline_access`
-gets a `refresh_token`, `grant_type=refresh_token` mints a renewed `id_token`
-with an advancing `iat`, a fixed `auth_time` and the original nonce, and
-`--revoke-refresh` models the user withdrawing the application's access so the
-disconnect path can be exercised too.
+The fake IdP also serves refresh grants, so **the relying-party half of
+renewal** is testable without Google: an authorization request carrying
+`offline_access` gets a `refresh_token`, `grant_type=refresh_token` mints a
+renewed `id_token` with an advancing `iat`, a fixed `auth_time` and no
+`nonce` claim (§12.2's SHOULD NOT, which is also what Google does), and
+`--revoke-refresh` models the user withdrawing the application's access.
+
+That is deliberately **not** the whole loop. Until the node can reach the
+adapter-side `AuthAgent` (see `## Implementation status`), no credential
+crosses the missing hop, so nothing reaches `reauthorize` and the renewal
+cannot complete. `one-node-oidc-renewal-test.sh` is written to exercise the
+whole loop and currently fails at that point by design — it is the acceptance
+criterion for the missing hop, not evidence that renewal works.
 
 **What CI cannot cover.** Real Google. This needs a manual release checklist: a
 real Workspace domain for the happy path, a consumer gmail account to verify
@@ -1041,7 +1050,9 @@ section where they differ**, per the `docs/plans/` rule in `AGENTS.md`.
   is never logged, never written to disk, and never returned over the RPC.
 - **Fake-IdP refresh support** — the harness serves `offline_access` and
   `grant_type=refresh_token` with an advancing `iat`, a fixed `auth_time` and
-  the original nonce, plus `--revoke-refresh` (zipline#47).
+  no `nonce` claim (OIDC Core §12.2's SHOULD NOT, which is what Google does),
+  plus `--revoke-refresh` (zipline#47). This covers the relying-party half of
+  renewal only; the loop itself does not close — see *Not yet*.
 
 **Superseded:**
 
