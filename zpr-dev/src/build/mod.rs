@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Manifest;
 
 pub mod gates;
+pub mod recipes;
 
 /// The only build-set version this tool understands (spec-003 §2.1).
 const SUPPORTED_VERSION: u32 = 1;
@@ -68,6 +69,23 @@ pub fn parse(text: &str) -> Result<BuildSet> {
     }
     if set.name.trim().is_empty() {
         bail!("build set has an empty name; the name labels the build and its dist directory");
+    }
+    // The name becomes a filesystem path (`.zpr-build/<name>`, the emitted
+    // manifest and tarball names), and `--force` removes that directory
+    // wholesale — so a name like `..`, `a/b` or `/abs` could escape the build
+    // root and put arbitrary directories in `remove_dir_all`'s path. Require
+    // one plain path component: no separators, no `.`/`..`, not absolute.
+    if set.name.contains(['/', '\\'])
+        || set.name == "."
+        || set.name == ".."
+        || Path::new(&set.name).is_absolute()
+    {
+        bail!(
+            "build set name {:?} is not a single safe path component; \
+             it names the build directory, so it must contain no path \
+             separators and must not be `.` or `..`",
+            set.name
+        );
     }
     if set.repositories.is_empty() {
         bail!("build set lists no repositories");
@@ -214,33 +232,104 @@ pub struct BuildArgs {
     pub no_tarball: bool,
 }
 
+/// Creates the build directory `<build_dir>` with `logs/` and `dist/` inside.
+/// A directory left over from a previous run is refused naming the path and
+/// `--force` (approved decision on zipline#60: reuse of half-built state is
+/// how silent staleness gets shipped); `force` removes it entirely and
+/// recreates it fresh. `workspace` locates the source repositories, so a
+/// worktree retained by a failed run is unregistered, not just deleted.
+fn prepare_build_dir(dir: &Path, force: bool, workspace: &Path) -> Result<()> {
+    if dir.exists() {
+        if !force {
+            bail!(
+                "build directory {} already exists from a previous run; \
+                 rerun with --force to remove and rebuild it",
+                dir.display()
+            );
+        }
+        // A failed run retains its worktrees under `src/` for debugging
+        // (see execute_build). They must be *unregistered* from their source
+        // repositories, not just deleted: a raw removal leaves each
+        // registration behind, and the next `git worktree add` fails with
+        // git's "missing but already registered worktree" — which made the
+        // documented --force recovery unusable (Codex review on PR #8).
+        if let Ok(entries) = std::fs::read_dir(dir.join("src")) {
+            for entry in entries.flatten() {
+                let repo = workspace.join(entry.file_name());
+                if !crate::git::is_repo(&repo) {
+                    continue;
+                }
+                // Best effort: a worktree that cannot be removed cleanly is
+                // deleted with the directory below; prune then drops whatever
+                // registration is left pointing at the missing path.
+                if crate::git::worktree_remove(&repo, &entry.path()).is_err() {
+                    let _ = crate::git::git(&repo, &["worktree", "prune"]);
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| anyhow::anyhow!("cannot remove {}: {e}", dir.display()))?;
+    }
+    for sub in ["logs", "dist"] {
+        std::fs::create_dir_all(dir.join(sub))
+            .map_err(|e| anyhow::anyhow!("cannot create {}/{sub}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Verifies that every expected binary exists in `dist/` and is executable
+/// (task B3 step 4). All missing or non-executable names are collected into
+/// one error, so a run with two broken recipes reports both, not the first.
+fn verify_dist(dist: &Path, expected: &[&str]) -> Result<()> {
+    let mut problems: Vec<String> = Vec::new();
+    for name in expected {
+        let path = dist.join(name);
+        if !path.is_file() {
+            problems.push(format!("{name}: missing from {}", dist.display()));
+            continue;
+        }
+        // The mode check: a staged file none of the executable bits reach is
+        // a build product that cannot run — catching it here beats a cryptic
+        // tier failure later.
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&path)
+                .map_err(|e| anyhow::anyhow!("cannot stat {}: {e}", path.display()))?
+                .permissions(),
+        );
+        if mode & 0o111 == 0 {
+            problems.push(format!("{name}: present but not executable"));
+        }
+    }
+    if !problems.is_empty() {
+        bail!("dist/ verification failed:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
 /// The `build` command (spec-003 §7). At this stage `--dry-run` resolves and
 /// reports (B1), and `--gates-only` runs the three compatibility gates of §4
 /// against the live checkouts (B2); worktrees, builds and tiers land with
 /// B3-B5.
 pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
-    // Flags whose stages have not landed parse but are inert (spec-003 §7.1);
-    // saying so beats silently ignoring them.
-    for (flag, set) in [
-        ("--test", args.test.is_some()),
-        ("--repo", args.repo.is_some()),
-        ("--keep", args.keep),
-        ("--no-tarball", args.no_tarball),
-    ] {
-        if set && !ctx.quiet {
-            println!("note: {flag} parses but is inert until its stage (B3-B5) lands");
-        }
+    // `--repo` parses but its stage has not landed (spec-003 §7.1); saying so
+    // beats silently ignoring it.
+    if args.repo.is_some() && !ctx.quiet {
+        println!("note: --repo parses but is inert until its stage lands");
+    }
+
+    // Approved decision on zipline#60 (Q2): B3 accepts only `--test none`;
+    // the tiers land in B4/B5. Rejecting other values is a usage error, so it
+    // exits 2 through the Err path.
+    if let Some(test) = &args.test
+        && test != "none"
+    {
+        bail!(
+            "--test {test} is not available yet: tiers land in B4/B5; only --test none is accepted"
+        );
     }
 
     if args.gates_only {
         return run_gates(ctx, args);
-    }
-
-    if !ctx.dry_run {
-        bail!(
-            "only `build --dry-run` and `build --gates-only` are implemented at \
-             this stage (B2); worktrees and builds land with B3 (spec-003 §1.2)"
-        );
     }
 
     let manifest = crate::config::load(&ctx.context.join(crate::config::MANIFEST_FILE))?;
@@ -298,35 +387,98 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         }
     };
 
-    // The manifest that a real run would write (B3): built here so the shape
-    // is exercised end to end, printed under --verbose, never written.
-    let emitted = emit(&set, &resolved, args.tip)?;
-    report_dry_run(
-        ctx,
-        &set.name,
-        &resolved,
-        &skipped,
-        args.build_dir.as_deref(),
-    );
-    if ctx.verbose && !ctx.quiet {
-        println!();
-        println!("emitted manifest (would be written by B3):");
-        print!("{}", emitted_yaml(&emitted)?);
+    if ctx.dry_run {
+        // The manifest a real run would write: built here so the shape is
+        // exercised end to end, printed under --verbose, never written.
+        let emitted = emit(&set, &resolved, args.tip)?;
+        report_dry_run(
+            ctx,
+            &set.name,
+            &resolved,
+            &skipped,
+            args.build_dir.as_deref(),
+        );
+        if ctx.verbose && !ctx.quiet {
+            println!();
+            println!("emitted manifest (would be written on a real run):");
+            print!("{}", emitted_yaml(&emitted)?);
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
     }
-    Ok(std::process::ExitCode::SUCCESS)
+
+    // -- the real build (task B3) ---------------------------------------------
+    // Approved decision on zipline#60 (Q2): a real build requires `--test
+    // none`, stated explicitly, until the tiers land in B4/B5 — so nobody
+    // runs one believing tests ran.
+    if args.test.is_none() {
+        bail!(
+            "a real build requires an explicit --test none until the test \
+             tiers land (B4/B5)"
+        );
+    }
+    for name in &skipped {
+        if !ctx.quiet {
+            println!("{name}: not in workspace.yaml, skipped");
+        }
+    }
+
+    let build_dir = args
+        .build_dir
+        .clone()
+        .unwrap_or_else(|| ctx.workspace.join(".zpr-build").join(&set.name));
+    prepare_build_dir(&build_dir, ctx.force, &ctx.workspace)?;
+
+    // What the emitted manifest records as its own provenance (spec-003 §3).
+    let manifest_path = if args.tip {
+        "--tip".to_string()
+    } else {
+        match &args.manifest {
+            Some(path) => path.display().to_string(),
+            None => default_manifest_path(&ctx.context)?.display().to_string(),
+        }
+    };
+    let context_sha = crate::git::head_short(&ctx.context).unwrap_or_default();
+
+    let ok = execute_build(&BuildInputs {
+        set: &set,
+        resolved: &resolved,
+        workspace: &ctx.workspace,
+        manifest: &manifest,
+        build_dir: &build_dir,
+        recipes: recipes::RECIPES,
+        tip: args.tip,
+        keep: args.keep,
+        quiet: ctx.quiet,
+        no_tarball: args.no_tarball,
+        downgrade_pin_drift: args.allow_pin_drift,
+        manifest_path,
+        context_sha,
+    })?;
+    if !ctx.quiet {
+        println!("dist: {}", build_dir.join("dist").display());
+        // The tiers were not run at this stage, and saying so beats a green
+        // silence that overstates coverage (spec-003 §6).
+        println!("tests: none run (--test none; tiers land in B4/B5)");
+    }
+    Ok(if ok {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::from(1)
+    })
 }
 
 /// The `build --gates-only` path (spec-003 §4, stage B2): runs the three
-/// compatibility gates against the live checkouts — worktrees arrive with B3 —
-/// and prints one `zpr-dev validate`-style report. Read-only by construction:
-/// it parses manifests and lists tags, and never fetches or builds.
+/// compatibility gates against the live checkouts and prints one
+/// `zpr-dev validate`-style report. Read-only by construction: it parses
+/// manifests and lists tags, and never fetches or builds. The real build path
+/// runs the same suite against its worktrees instead (spec-003 §4).
 fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
     let manifest = crate::config::load(&ctx.context.join(crate::config::MANIFEST_FILE))?;
 
     // The repositories whose manifests the gates scan, and the tolerated
     // drift entries, come from the build set — synthesized under `--tip`
     // exactly as the dry-run path does (spec-003 §2.3).
-    let (mut scan, drift, set_name) = if args.tip {
+    let (scan_names, drift, set_name) = if args.tip {
         let names: Vec<String> = BUILD_ORDER
             .iter()
             .filter(|wanted| manifest.repo(wanted).is_some())
@@ -352,25 +504,125 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
         )
     };
 
-    // `zl-zpr-common` never appears in a build set (spec-003 §2.1: its
-    // version is *derived* from what the consumers agree on), but its own
-    // manifest participates in coherence — the real `rcu` divergence is
-    // between `zl-zpr-common` and `adapter/ph`, and a crate reached both
-    // directly and through `zpr` ends up in one binary twice. Scan it
-    // whenever the workspace declares it. Nothing else is added: the
-    // `zl-zpr-utils` checkout is deliberately not scanned, because no build
-    // in this workspace consumes it (workspace.yaml's own note).
+    // Gates-only scans the live checkouts: each scanned name maps to its
+    // workspace directory.
+    let mut scan: Vec<(String, PathBuf)> = scan_names
+        .iter()
+        .map(|name| (name.clone(), ctx.workspace.join(name)))
+        .collect();
+    add_derived_scan(&manifest, &ctx.workspace, &mut scan);
+
+    let outcome = collect_gate_findings(&scan, &drift, args.allow_pin_drift, &ctx.workspace)?;
+    let errors = print_findings(ctx.quiet, &set_name, &outcome.findings);
+    Ok(if errors > 0 {
+        std::process::ExitCode::from(1)
+    } else {
+        std::process::ExitCode::SUCCESS
+    })
+}
+
+/// Appends `zl-zpr-common`'s **live checkout** to a gate scan list — the
+/// `--gates-only` path only. `zl-zpr-common` never appears in a build set
+/// (spec-003 §2.1: its version is *derived* from what the consumers agree
+/// on), but its own manifest participates in coherence — the real `rcu`
+/// divergence is between `zl-zpr-common` and `adapter/ph`, and a crate
+/// reached both directly and through `zpr` ends up in one binary twice.
+/// Scanned whenever the workspace declares it. Live is correct *here*
+/// because `--gates-only` is read-only by construction and scans the live
+/// checkouts throughout; a real build gates the pinned revision instead —
+/// see [`add_derived_scan_pinned`]. Nothing else is added: the
+/// `zl-zpr-utils` checkout is deliberately not scanned, because no build in
+/// this workspace consumes it (workspace.yaml's own note).
+fn add_derived_scan(manifest: &Manifest, workspace: &Path, scan: &mut Vec<(String, PathBuf)>) {
     const DERIVED: &str = "zl-zpr-common";
-    if manifest.repo(DERIVED).is_some() && !scan.iter().any(|name| name == DERIVED) {
-        scan.push(DERIVED.to_string());
+    if manifest.repo(DERIVED).is_some() && !scan.iter().any(|(name, _)| name == DERIVED) {
+        scan.push((DERIVED.to_string(), workspace.join(DERIVED)));
+    }
+}
+
+/// Appends `zl-zpr-common` to a real build's gate scan **at the revision the
+/// consumers pin** — what cargo will actually compile — via a throwaway
+/// detached worktree under `src/`, returned for the caller to remove once
+/// the gates have read it. Scanning the live checkout instead let gate 1
+/// reject a compatible set (or miss a real disagreement) whenever the
+/// checkout sat on a different commit than the pinned tag, and made the
+/// emitted `pins:` block vary with unrelated local state instead of
+/// round-tripping from the emitted manifest (Codex review on PR #8).
+///
+/// The pinned revision is derived from the consumer worktrees already in
+/// `scan`: the single reference every `zl-zpr-common` git dependency agrees
+/// on. When there is no such single reference — no consumer pins it, the
+/// pins disagree (gate 1's error either way), the checkout is absent, or
+/// the ref does not resolve locally — the live checkout is scanned as
+/// before, which never *hides* a finding: it is the pre-fix behavior.
+fn add_derived_scan_pinned(
+    manifest: &Manifest,
+    workspace: &Path,
+    src: &Path,
+    scan: &mut Vec<(String, PathBuf)>,
+) -> Result<Option<PathBuf>> {
+    const DERIVED: &str = "zl-zpr-common";
+    if manifest.repo(DERIVED).is_none() || scan.iter().any(|(name, _)| name == DERIVED) {
+        return Ok(None);
+    }
+    let repo = workspace.join(DERIVED);
+
+    // The consumers' agreed reference for the derived repository, when there
+    // is exactly one. URL matching is by repository name, the same join
+    // point gate 2 uses (pins are https, workspace.yaml may be ssh).
+    let names_derived = |url: &str| {
+        url.rsplit('/')
+            .next()
+            .map(|last| last.strip_suffix(".git").unwrap_or(last) == DERIVED)
+            .unwrap_or(false)
+    };
+    let (pins, _) = extract_scan_pins(scan)?;
+    let mut refs: Vec<&str> = pins
+        .iter()
+        .filter(|pin| names_derived(&pin.url))
+        .map(|pin| pin.reference.as_str())
+        .collect();
+    refs.sort_unstable();
+    refs.dedup();
+
+    if let [reference] = refs[..]
+        && crate::git::is_repo(&repo)
+        && let Ok(sha) = crate::git::rev_parse(&repo, reference)
+    {
+        let dest = src.join(DERIVED);
+        crate::git::worktree_add(&repo, &dest, &sha)?;
+        scan.push((DERIVED.to_string(), dest.clone()));
+        return Ok(Some(dest));
     }
 
-    let mut findings: Vec<gates::Finding> = Vec::new();
+    // Fallback: the live checkout, exactly as --gates-only scans it.
+    scan.push((DERIVED.to_string(), repo));
+    Ok(None)
+}
 
-    // -- pin extraction over every scanned checkout (gate 1 input) ----------
+/// What one gate run produced: the findings for the report, plus the data the
+/// emitted manifest records (spec-003 §3) — the extracted pins and the two
+/// gate-3 versions, when they parsed.
+struct GateOutcome {
+    findings: Vec<gates::Finding>,
+    pins: Vec<gates::PinOccurrence>,
+    /// `[package].version` from the compiler's `Cargo.toml`, as `x.y.z`.
+    zplc_version: Option<String>,
+    /// `POLICY_MIN_COMPILER_*` from the visa service's `vs/src/config.rs`.
+    vs_policy_min_compiler: Option<String>,
+}
+
+/// Extracts every captured pin from `scan` — pairs of display name and the
+/// directory to read manifests from — reading each root `Cargo.toml` and its
+/// literal workspace members. Non-fatal problems (no `Cargo.toml`, an
+/// unreadable member) come back as findings beside the pins, so gate
+/// orchestration and the derived-revision lookup share one reader.
+fn extract_scan_pins(
+    scan: &[(String, PathBuf)],
+) -> Result<(Vec<gates::PinOccurrence>, Vec<gates::Finding>)> {
+    let mut findings: Vec<gates::Finding> = Vec::new();
     let mut pins: Vec<gates::PinOccurrence> = Vec::new();
-    for name in &scan {
-        let dir = ctx.workspace.join(name);
+    for (name, dir) in scan {
         let root_path = dir.join("Cargo.toml");
         let Ok(root_text) = std::fs::read_to_string(&root_path) else {
             // A Go or docs repository has no Cargo.toml; that is a fact to
@@ -419,13 +671,24 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
         }
         pins.extend(gates::extract_pins(&root, &members)?);
     }
+    Ok((pins, findings))
+}
+
+/// Runs the three gates over `scan` — pairs of display name and the directory
+/// to read manifests from, which are live checkouts under `--gates-only` and
+/// detached worktrees in a real build. Gate 2's tag listing always reads the
+/// live `workspace` checkouts: tags are repository-wide, not ref-specific.
+fn collect_gate_findings(
+    scan: &[(String, PathBuf)],
+    drift: &[PinDrift],
+    downgrade: bool,
+    workspace: &Path,
+) -> Result<GateOutcome> {
+    // -- pin extraction over every scanned directory (gate 1 input) ----------
+    let (pins, mut findings) = extract_scan_pins(scan)?;
 
     // -- gate 1: agreement ---------------------------------------------------
-    findings.extend(gates::gate_pin_agreement(
-        &pins,
-        &drift,
-        args.allow_pin_drift,
-    ));
+    findings.extend(gates::gate_pin_agreement(&pins, drift, downgrade));
 
     // -- gate 2: freshness, against the workspace checkouts' tags -----------
     findings.extend(gates::gate_freshness(&pins, |url| {
@@ -436,7 +699,7 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
             .rsplit('/')
             .next()
             .map(|last| last.strip_suffix(".git").unwrap_or(last))?;
-        let dir = ctx.workspace.join(name);
+        let dir = workspace.join(name);
         if !crate::git::is_repo(&dir) {
             return None;
         }
@@ -444,16 +707,24 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
     }));
 
     // -- gate 3: zplc vs the visa service's POLICY_MIN_COMPILER --------------
-    // Runs when both repositories are checked out; a missing checkout is
-    // reported rather than silently narrowing coverage (spec-003 §4.3). An
-    // unreadable value in a present file is an error inside the parsers.
-    let vs_config = ctx
-        .workspace
-        .join("zl-zpr-visaservice")
+    // Reads from the scanned directories (worktrees in a real build) when the
+    // set names those repositories, falling back to the live checkouts so
+    // gates-only coverage never narrows. A missing file is reported rather
+    // than silently skipped (spec-003 §4.3). An unreadable value in a present
+    // file is an error inside the parsers.
+    let scan_dir = |wanted: &str| -> PathBuf {
+        scan.iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, dir)| dir.clone())
+            .unwrap_or_else(|| workspace.join(wanted))
+    };
+    let vs_config = scan_dir("zl-zpr-visaservice")
         .join("vs")
         .join("src")
         .join("config.rs");
-    let zplc_manifest = ctx.workspace.join("zl-zpr-compiler").join("Cargo.toml");
+    let zplc_manifest = scan_dir("zl-zpr-compiler").join("Cargo.toml");
+    let mut zplc_version: Option<String> = None;
+    let mut vs_policy_min_compiler: Option<String> = None;
     match (
         std::fs::read_to_string(&vs_config),
         std::fs::read_to_string(&zplc_manifest),
@@ -469,6 +740,9 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
             let zplc = gates::package_version(&manifest_text, "zl-zpr-compiler/Cargo.toml");
             match (minimum, zplc) {
                 (Ok(minimum), Ok(zplc)) => {
+                    let display = |(a, b, c): (u64, u64, u64)| format!("{a}.{b}.{c}");
+                    zplc_version = Some(display(zplc));
+                    vs_policy_min_compiler = Some(display(minimum));
                     findings.extend(gates::gate_compiler_version(
                         zplc,
                         "zl-zpr-compiler/Cargo.toml",
@@ -504,14 +778,24 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
         }
     }
 
-    // -- the report, in `zpr-dev validate` style (spec-003 §4) ---------------
+    Ok(GateOutcome {
+        findings,
+        pins,
+        zplc_version,
+        vs_policy_min_compiler,
+    })
+}
+
+/// Prints the findings in `zpr-dev validate` style (spec-003 §4) and returns
+/// the error count, which decides the exit code.
+fn print_findings(quiet: bool, set_name: &str, findings: &[gates::Finding]) -> usize {
     let mut errors = 0usize;
     let mut warnings = 0usize;
-    if !ctx.quiet {
+    if !quiet {
         println!("compatibility gates: build set {set_name}");
         println!();
     }
-    for finding in &findings {
+    for finding in findings {
         let tag = match finding.severity {
             gates::Severity::Ok => "[OK]",
             gates::Severity::Info => "[INFO]",
@@ -524,7 +808,7 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
                 "[ERROR]"
             }
         };
-        if ctx.quiet {
+        if quiet {
             continue;
         }
         let mut lines = finding.message.lines();
@@ -535,7 +819,7 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
             println!("        {line}");
         }
     }
-    if !ctx.quiet {
+    if !quiet {
         println!();
         let plural = |n: usize| if n == 1 { "" } else { "s" };
         if errors > 0 {
@@ -548,11 +832,7 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
             println!("Gates passed with {warnings} warning{}.", plural(warnings));
         }
     }
-    Ok(if errors > 0 {
-        std::process::ExitCode::from(1)
-    } else {
-        std::process::ExitCode::SUCCESS
-    })
+    errors
 }
 
 /// Prints the §7.2 dry-run report: resolved shas, planned build order, planned
@@ -692,6 +972,11 @@ pub struct EmittedManifest {
 pub struct ResolvedBlock {
     pub built_at: String,
     pub built_from: BuiltFrom,
+    /// Host os/arch and toolchain versions that produced the binaries
+    /// (spec-003 §3): recorded because reproducible *inputs* are guaranteed
+    /// and byte-identical binaries are not — the toolchain is what varied.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub host: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pins: Vec<Pin>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -711,10 +996,9 @@ pub struct BuiltFrom {
     pub tip: bool,
 }
 
-/// One agreed pin, recomputed by gate 1. Constructed by B2; the shape is fixed
-/// here so the emitted manifest's contract is complete in one document.
-#[allow(dead_code)]
-#[derive(Debug, Serialize)]
+/// One agreed pin, recomputed by gate 1 for the emitted manifest (spec-003
+/// §3): what cargo actually compiled against.
+#[derive(Debug, Clone, Serialize)]
 pub struct Pin {
     #[serde(rename = "crate")]
     pub crate_name: String,
@@ -725,8 +1009,8 @@ pub struct Pin {
     pub newest_available: Option<String>,
 }
 
-/// One staged binary's identity. Constructed by B3; shape fixed here.
-#[allow(dead_code)]
+/// One staged binary's identity, recorded by B3 (spec-003 §3). The digest is
+/// for *comparison* between builds, never a reproducibility claim.
 #[derive(Debug, Serialize)]
 pub struct Binary {
     pub name: String,
@@ -775,6 +1059,368 @@ pub fn emit(set: &BuildSet, resolved: &[Resolved], tip: bool) -> Result<EmittedM
 /// `dist/zpr-set-<name>.yaml`.
 pub fn emitted_yaml(manifest: &EmittedManifest) -> Result<String> {
     Ok(serde_yaml_ng::to_string(manifest)?)
+}
+
+// ---------------------------------------------------------------------------
+// The real build (spec-003 §5, task B3)
+// ---------------------------------------------------------------------------
+
+/// Everything `execute_build` needs, gathered by `run()`: the resolved set,
+/// where to build, which recipes to use (the fixture recipes in tests, the
+/// contract-4 table in production), and what the emitted manifest should
+/// record about its own provenance.
+struct BuildInputs<'a> {
+    set: &'a BuildSet,
+    resolved: &'a [Resolved],
+    workspace: &'a Path,
+    /// The workspace manifest, for the derived `zl-zpr-common` gate scan.
+    manifest: &'a Manifest,
+    build_dir: &'a Path,
+    recipes: &'a [recipes::Recipe],
+    tip: bool,
+    keep: bool,
+    quiet: bool,
+    no_tarball: bool,
+    /// The `--allow-pin-drift` flag: gate 1 disagreements warn, not fail.
+    downgrade_pin_drift: bool,
+    /// What `built_from.manifest` records: the input path, or `--tip`.
+    manifest_path: String,
+    /// The context checkout's short sha, for `built_from.context`.
+    context_sha: String,
+}
+
+/// Worktrees, gates, recipes, staging, verification, the emitted manifest and
+/// the tarball (task B3 steps 5-7). Returns `Ok(true)` on success and
+/// `Ok(false)` on a gate or build failure — which is a gate-style exit 1, not
+/// a command error — and `Err` only for failures outside the build itself
+/// (unwritable build directory, a worktree that cannot be created).
+///
+/// Ordering invariants, from spec-003 §3-§5 and the task list:
+/// - the gates run against the worktrees **before any compilation** — a set
+///   whose pins disagree must fail in seconds, not after fifteen minutes of
+///   cargo;
+/// - the emitted manifest is written whenever the gates pass, **even when a
+///   recipe fails**, with the failure reported — the most interesting set to
+///   reproduce is the broken one; a gate failure emits nothing, because the
+///   manifest contract is "emitted whenever the gates pass";
+/// - worktrees are pruned on success (unless `keep`) and left in place on a
+///   build failure, because they are what a person debugs with; on a gate
+///   failure they are pruned, because nothing was built and the findings are
+///   the debug artifact. `dist/` always survives.
+fn execute_build(inputs: &BuildInputs) -> Result<bool> {
+    let dist = inputs.build_dir.join("dist");
+    let logs = inputs.build_dir.join("logs");
+    let src = inputs.build_dir.join("src");
+    std::fs::create_dir_all(&src)?;
+
+    // -- worktrees: one per resolved repository that has a recipe ------------
+    // (spec-003 §5: sources come from `git worktree add --detach`; the live
+    // checkouts are never modified). A resolved repository without a recipe
+    // is stated and skipped, not silently dropped.
+    let mut worktrees: Vec<(&recipes::Recipe, PathBuf)> = Vec::new();
+    for entry in inputs.resolved {
+        let Some(recipe) = inputs
+            .recipes
+            .iter()
+            .find(|recipe| recipe.repo == entry.repo)
+        else {
+            if !inputs.quiet {
+                println!("{}: no build recipe, skipped", entry.repo);
+            }
+            continue;
+        };
+        let dest = src.join(&entry.repo);
+        crate::git::worktree_add(&inputs.workspace.join(&entry.repo), &dest, &entry.sha)?;
+        worktrees.push((recipe, dest));
+    }
+
+    // -- gates, against the worktrees, before any compilation ----------------
+    // The derived zl-zpr-common is gated at the revision the consumers pin —
+    // what cargo will compile — through a throwaway worktree removed as soon
+    // as the gates have read it (Codex review on PR #8).
+    let mut scan: Vec<(String, PathBuf)> = worktrees
+        .iter()
+        .map(|(recipe, dest)| (recipe.repo.to_string(), dest.clone()))
+        .collect();
+    let derived_worktree =
+        add_derived_scan_pinned(inputs.manifest, inputs.workspace, &src, &mut scan)?;
+    let outcome = collect_gate_findings(
+        &scan,
+        &inputs.set.allow_pin_drift,
+        inputs.downgrade_pin_drift,
+        inputs.workspace,
+    );
+    if let Some(dest) = derived_worktree {
+        // Read by the gates above and never built: gone before compilation,
+        // so a failure path cannot leave it behind for --force to trip on.
+        crate::git::worktree_remove(&inputs.workspace.join("zl-zpr-common"), &dest)?;
+    }
+    let outcome = outcome?;
+    let gate_errors = print_findings(inputs.quiet, &inputs.set.name, &outcome.findings);
+    if gate_errors > 0 {
+        // No manifest: it is emitted only when the gates pass (spec-003 §3).
+        // Nothing was built, so the worktrees hold nothing to debug.
+        for (recipe, dest) in &worktrees {
+            crate::git::worktree_remove(&inputs.workspace.join(recipe.repo), dest)?;
+        }
+        let _ = std::fs::remove_dir(&src);
+        return Ok(false);
+    }
+
+    // -- recipes, in table order (already build order) -----------------------
+    // The first failure stops the build: later repositories may need this
+    // one's output, and a half-built set must not look built.
+    let mut failure: Option<String> = None;
+    for (recipe, worktree) in &worktrees {
+        if !inputs.quiet {
+            println!("building {}...", recipe.repo);
+        }
+        let result = recipe
+            .steps
+            .iter()
+            .try_for_each(|step| {
+                recipes::run_step(recipe.repo, step, worktree, &logs, inputs.quiet)
+            })
+            .and_then(|()| recipes::stage_into(recipe, worktree, &dist));
+        if let Err(error) = result {
+            eprintln!("error: {error:#}");
+            failure = Some(error.to_string());
+            break;
+        }
+    }
+
+    // -- verify dist/ (task B3 step 4) ---------------------------------------
+    // Against the **whole distribution** the recipe table stages — never the
+    // subset whose worktrees happened to exist. Deriving `expected` from the
+    // worktrees let a set naming one repository "verify" a tarball holding a
+    // fraction of the required binaries (Codex review on PR #8): a recipe
+    // without a worktree stages nothing, so its binaries turn up missing
+    // here and the build fails instead of shipping a subset.
+    if failure.is_none() {
+        let expected: Vec<&str> = inputs
+            .recipes
+            .iter()
+            .flat_map(|recipe| recipe.staged.iter().map(|staged| staged.name))
+            .collect();
+        if let Err(error) = verify_dist(&dist, &expected) {
+            eprintln!("error: {error:#}");
+            failure = Some(error.to_string());
+        }
+    }
+
+    // -- the emitted manifest, written even on build failure (spec-003 §3) ---
+    let mut emitted = emit(inputs.set, inputs.resolved, inputs.tip)?;
+    emitted.resolved.built_from.manifest = inputs.manifest_path.clone();
+    emitted.resolved.built_from.context = inputs.context_sha.clone();
+    emitted.resolved.host = host_stamps();
+    emitted.resolved.pins = pins_for_manifest(&outcome.pins, inputs.workspace);
+    if let Some(zplc) = &outcome.zplc_version {
+        emitted
+            .resolved
+            .versions
+            .insert("zplc".to_string(), zplc.clone());
+    }
+    if let Some(minimum) = &outcome.vs_policy_min_compiler {
+        emitted
+            .resolved
+            .versions
+            .insert("vs_policy_min_compiler".to_string(), minimum.clone());
+    }
+    emitted.resolved.binaries = digest_binaries(&dist, &worktrees)?;
+    let manifest_file = dist.join(format!("zpr-set-{}.yaml", inputs.set.name));
+    std::fs::write(&manifest_file, emitted_yaml(&emitted)?)
+        .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", manifest_file.display()))?;
+    if !inputs.quiet {
+        println!("emitted manifest: {}", manifest_file.display());
+    }
+
+    if let Some(failure) = failure {
+        // Worktrees stay for debugging; dist/ (with the manifest) survives.
+        if !inputs.quiet {
+            println!("build failed: {failure}");
+            println!("worktrees left in {} for debugging", src.display());
+        }
+        return Ok(false);
+    }
+
+    // -- tarball (task B3 step 6) --------------------------------------------
+    if !inputs.no_tarball {
+        write_tarball(&dist, &inputs.set.name, inputs.quiet)?;
+    }
+
+    // -- prune worktrees on success unless --keep (task B3 step 7) -----------
+    if inputs.keep {
+        if !inputs.quiet {
+            println!("worktrees kept in {} (--keep)", src.display());
+        }
+    } else {
+        for (recipe, dest) in &worktrees {
+            crate::git::worktree_remove(&inputs.workspace.join(recipe.repo), dest)?;
+        }
+        // Only ever holds worktrees, so it is empty now; removing it keeps
+        // the build directory to dist/ and logs/.
+        let _ = std::fs::remove_dir(&src);
+    }
+    Ok(true)
+}
+
+/// The sha256 of one file, streamed, as lowercase hex.
+fn sha256_hex(path: &Path) -> Result<String> {
+    use sha2::Digest as _;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| anyhow::anyhow!("cannot open {}: {e}", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Digests every staged binary in `dist/` for the emitted manifest's
+/// `binaries:` block, attributing each to the repository whose recipe staged
+/// it. A binary missing after a failed build is simply absent — honest
+/// emptiness, matching what actually landed in `dist/`.
+fn digest_binaries(dist: &Path, worktrees: &[(&recipes::Recipe, PathBuf)]) -> Result<Vec<Binary>> {
+    let mut binaries: Vec<Binary> = Vec::new();
+    for (recipe, _) in worktrees {
+        for staged in recipe.staged {
+            let path = dist.join(staged.name);
+            if !path.is_file() {
+                continue;
+            }
+            binaries.push(Binary {
+                name: staged.name.to_string(),
+                sha256: sha256_hex(&path)?,
+                bytes: std::fs::metadata(&path)?.len(),
+                from: recipe.repo.to_string(),
+            });
+        }
+    }
+    Ok(binaries)
+}
+
+/// The host block of the emitted manifest (spec-003 §3): os, arch, and the
+/// version line of each toolchain that produced binaries. A tool that is not
+/// installed is recorded as absent rather than failing the build — the demo
+/// repo needs no Go on a machine that never builds `coredns`.
+fn host_stamps() -> BTreeMap<String, String> {
+    let mut host = BTreeMap::new();
+    host.insert("os".to_string(), std::env::consts::OS.to_string());
+    host.insert("arch".to_string(), std::env::consts::ARCH.to_string());
+    for (name, args) in [
+        ("rustc", &["--version"][..]),
+        ("cargo", &["--version"][..]),
+        ("go", &["version"][..]),
+        ("capnp", &["--version"][..]),
+    ] {
+        let version = std::process::Command::new(name)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .map(str::to_string)
+            });
+        if let Some(version) = version {
+            host.insert(name.to_string(), version);
+        }
+    }
+    host
+}
+
+/// Writes `dist/zpr-set-<name>-linux-<arch>.tar.gz` holding everything in
+/// `dist/` except the tarball itself (the emitted manifest is deliberately
+/// inside). Shells out to `tar`, consistent with how git is invoked (spec-001
+/// §6.1: no new crates beyond `toml` and `sha2`).
+fn write_tarball(dist: &Path, name: &str, quiet: bool) -> Result<()> {
+    let arch = std::env::consts::ARCH;
+    let tarball = format!("zpr-set-{name}-linux-{arch}.tar.gz");
+    let mut entries: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(dist)?.flatten() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name != tarball {
+            entries.push(file_name);
+        }
+    }
+    entries.sort();
+
+    let mut command = std::process::Command::new("tar");
+    command.arg("-czf").arg(&tarball).arg("-C").arg(dist);
+    command.args(&entries);
+    command.current_dir(dist);
+    let output = command
+        .output()
+        .map_err(|e| anyhow::anyhow!("cannot run tar: {e}"))?;
+    if !output.status.success() {
+        bail!(
+            "tar failed creating {tarball}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if !quiet {
+        println!("tarball: {}", dist.join(&tarball).display());
+    }
+    Ok(())
+}
+
+/// Converts gate 1's raw occurrences into the emitted manifest's `pins:`
+/// block: one entry per agreed `(crate, url, reference)` with every pinning
+/// manifest listed, and `newest_available` computed against the workspace
+/// checkouts' tags by the same prefix rule as gate 2. Disagreeing crates are
+/// omitted — they cannot appear in a manifest that only exists because the
+/// gates passed (an allow_pin_drift crate's divergence is recorded by its
+/// drift entry instead).
+fn pins_for_manifest(pins: &[gates::PinOccurrence], workspace: &Path) -> Vec<Pin> {
+    let mut by_crate: BTreeMap<&str, Vec<&gates::PinOccurrence>> = BTreeMap::new();
+    for pin in pins {
+        by_crate.entry(&pin.crate_name).or_default().push(pin);
+    }
+
+    let mut result: Vec<Pin> = Vec::new();
+    for (crate_name, occurrences) in by_crate {
+        let mut variants: Vec<(&str, &str)> = occurrences
+            .iter()
+            .map(|p| (p.url.as_str(), p.reference.as_str()))
+            .collect();
+        variants.sort_unstable();
+        variants.dedup();
+        if variants.len() != 1 {
+            continue;
+        }
+        let (url, reference) = variants[0];
+
+        // Newest tag sharing the pin's prefix in the pinned repository's
+        // local checkout, when both exist — same rule as gate 2.
+        let newest_available = gates::split_tag(reference).and_then(|(prefix, pinned)| {
+            let repo = url
+                .rsplit('/')
+                .next()
+                .map(|last| last.strip_suffix(".git").unwrap_or(last))?;
+            let dir = workspace.join(repo);
+            if !crate::git::is_repo(&dir) {
+                return None;
+            }
+            let newest = crate::git::tag_list(&dir)
+                .ok()?
+                .iter()
+                .filter_map(|tag| match gates::split_tag(tag) {
+                    Some((p, version)) if p == prefix => Some(version),
+                    _ => None,
+                })
+                .max()?;
+            (newest > pinned).then(|| format!("{prefix}{}", gates::join_version(&newest)))
+        });
+
+        result.push(Pin {
+            crate_name: crate_name.to_string(),
+            url: url.to_string(),
+            tag: reference.to_string(),
+            pinned_by: occurrences.iter().map(|p| p.file.clone()).collect(),
+            newest_available,
+        });
+    }
+    result
 }
 
 /// The current time as `YYYY-MM-DDTHH:MM:SSZ`, from the system clock and the
@@ -867,6 +1513,20 @@ allow_pin_drift:
     #[test]
     fn empty_repositories_is_rejected() {
         assert!(parse("version: 1\nname: x\nrepositories: {}\n").is_err());
+    }
+
+    /// A name that is not a single plain path component is rejected at parse
+    /// time: the name lands in `.zpr-build/<name>` and the emitted file
+    /// names, and `--force` removes that directory wholesale — so `..`, a
+    /// separator or an absolute path could escape the build root and delete
+    /// an arbitrary directory (Codex review on PR #8).
+    #[test]
+    fn traversal_names_are_rejected_naming_the_rule() {
+        for name in ["'..'", "'.'", "'../evil'", "'/abs'", "'a/b'", "'a\\b'"] {
+            let text = VALID.replace("name: 2026-09-17", &format!("name: {name}"));
+            let error = parse(&text).unwrap_err().to_string();
+            assert!(error.contains("path component"), "{name}: {error}");
+        }
     }
 
     /// A key that is not a repository in `workspace.yaml` is rejected *naming
@@ -1125,5 +1785,445 @@ allow_pin_drift:
         assert!(emitted.resolved.tiers.is_empty());
         // But the emission time is real.
         assert!(!emitted.resolved.built_at.is_empty());
+    }
+
+    // -- build directory lifecycle (task B3 step 2) ---------------------------
+
+    /// A fresh build directory is created with `logs/` and `dist/` inside.
+    #[test]
+    fn prepare_build_dir_creates_logs_and_dist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tip");
+        prepare_build_dir(&dir, false, tmp.path()).unwrap();
+        assert!(dir.join("logs").is_dir());
+        assert!(dir.join("dist").is_dir());
+    }
+
+    /// A pre-existing build directory is refused with a message naming both
+    /// the path and `--force` (approved Q1: refuse, never reuse — reused
+    /// half-built state is how silent staleness gets shipped).
+    #[test]
+    fn prepare_build_dir_refuses_preexisting_naming_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tip");
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
+
+        let error = prepare_build_dir(&dir, false, tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tip"), "path not named: {error}");
+        assert!(error.contains("--force"), "remedy not named: {error}");
+        // Nothing was touched: the stale content is intact.
+        assert!(dir.join("dist").join("stale-binary").exists());
+    }
+
+    /// `--force` removes the previous directory entirely and recreates it
+    /// fresh: no stale file survives into the new run.
+    #[test]
+    fn prepare_build_dir_force_removes_and_recreates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tip");
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
+
+        prepare_build_dir(&dir, true, tmp.path()).unwrap();
+        assert!(!dir.join("dist").join("stale-binary").exists());
+        assert!(dir.join("logs").is_dir());
+        assert!(dir.join("dist").is_dir());
+    }
+
+    /// `--force` over a build directory holding worktrees retained by a
+    /// previous failed run must *unregister* them, not just delete their
+    /// directories: a raw `remove_dir_all` leaves the source repository's
+    /// worktree registration behind, and the very next `git worktree add`
+    /// fails with "missing but already registered worktree" — making the
+    /// documented `--force` recovery path unusable (Codex review on PR #8).
+    #[test]
+    fn prepare_build_dir_force_unregisters_retained_worktrees() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let build_dir = workspace.join(".zpr-build").join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        // A retained worktree, as a failed run leaves it.
+        let dest = build_dir.join("src").join("zl-zpr-core");
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+
+        // The --force retry must clear the directory AND the registration...
+        prepare_build_dir(&build_dir, true, &workspace).unwrap();
+        assert!(!dest.exists());
+        let listing =
+            crate::git::git(&workspace.join("zl-zpr-core"), &["worktree", "list"]).unwrap();
+        assert_eq!(listing.lines().count(), 1, "stale registration: {listing}");
+
+        // ...so the next run's worktree_add succeeds where it used to fail.
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+    }
+
+    // -- dist/ verification (task B3 step 4) ----------------------------------
+
+    /// Writes a mode-0755 stand-in binary named `name` into `dir`.
+    fn fake_dist_binary(dir: &Path, name: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("{name}\n")).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+    }
+
+    /// A dist/ holding every expected name, each executable, verifies.
+    #[test]
+    fn verify_dist_passes_when_all_names_present_and_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["zplc", "zpdump"] {
+            fake_dist_binary(tmp.path(), name);
+        }
+        verify_dist(tmp.path(), &["zplc", "zpdump"]).unwrap();
+    }
+
+    /// A missing binary fails naming it — a recipe that silently produced
+    /// nothing must not pass (task B3 step 4).
+    #[test]
+    fn verify_dist_names_missing_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        fake_dist_binary(tmp.path(), "zplc");
+        let error = verify_dist(tmp.path(), &["zplc", "zpdump", "vs"])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zpdump"), "{error}");
+        assert!(error.contains("vs"), "{error}");
+        assert!(!error.contains("zplc"), "present binary named: {error}");
+    }
+
+    /// A present but non-executable file fails the mode check naming it.
+    #[test]
+    fn verify_dist_names_non_executable_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("zplc"), "not executable\n").unwrap();
+        let error = verify_dist(tmp.path(), &["zplc"]).unwrap_err().to_string();
+        assert!(error.contains("zplc"), "{error}");
+        assert!(error.contains("executable"), "{error}");
+    }
+
+    // -- orchestration: worktrees, manifest, digests, tarball, pruning --------
+    // (task B3 steps 5-7, driven through execute_build with fixture recipes)
+
+    /// A recipe whose one step copies a committed file to an executable
+    /// "binary" — enough to exercise staging, digests and the tarball without
+    /// compiling anything.
+    fn ok_recipe() -> recipes::Recipe {
+        recipes::Recipe {
+            repo: "zl-zpr-core",
+            steps: &[recipes::Step {
+                name: "build",
+                program: "sh",
+                args: &[
+                    "-c",
+                    "mkdir -p out && cp README.md out/bin1 && chmod +x out/bin1",
+                ],
+            }],
+            staged: &[recipes::Staged {
+                name: "bin1",
+                source: "out/bin1",
+            }],
+        }
+    }
+
+    /// A recipe whose one step fails.
+    fn failing_recipe() -> recipes::Recipe {
+        recipes::Recipe {
+            repo: "zl-zpr-core",
+            steps: &[recipes::Step {
+                name: "boom",
+                program: "sh",
+                args: &["-c", "echo broken build; exit 3"],
+            }],
+            staged: &[],
+        }
+    }
+
+    /// Builds the standard inputs for `execute_build` over the one-repo
+    /// fixture workspace. The fixture repository has no Cargo.toml, so the
+    /// gates report an INFO and pass — the gate path is exercised without a
+    /// manifest fixture.
+    fn inputs<'a>(
+        set: &'a BuildSet,
+        resolved: &'a [Resolved],
+        workspace: &'a Path,
+        manifest: &'a Manifest,
+        build_dir: &'a Path,
+        recipes: &'a [recipes::Recipe],
+        no_tarball: bool,
+        keep: bool,
+    ) -> BuildInputs<'a> {
+        BuildInputs {
+            set,
+            resolved,
+            workspace,
+            manifest,
+            build_dir,
+            recipes,
+            tip: false,
+            keep,
+            quiet: true,
+            no_tarball,
+            downgrade_pin_drift: false,
+            manifest_path: "test-set.yaml".to_string(),
+            context_sha: "deadbee".to_string(),
+        }
+    }
+
+    /// The emitted manifest is written to `dist/zpr-set-<name>.yaml` **even
+    /// when a recipe fails** (spec-003 §3: the most interesting set to
+    /// reproduce is the one that broke), the failure is reported by the
+    /// `false` return, and the worktree is left in place for debugging.
+    #[test]
+    fn execute_build_writes_manifest_even_when_a_recipe_fails() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![failing_recipe()];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+        ))
+        .unwrap();
+        assert!(!ok, "a failing recipe must report failure");
+
+        // The manifest exists, parses as a build set, and carries the sha.
+        let manifest_path = build_dir.join("dist").join("zpr-set-t.yaml");
+        let text = std::fs::read_to_string(&manifest_path).unwrap();
+        let reread = parse(&text).unwrap();
+        assert_eq!(reread.repositories["zl-zpr-core"], sha);
+
+        // The worktree is left in place on failure: it is what a person
+        // needs in order to debug (task B3 step 7).
+        assert!(build_dir.join("src").join("zl-zpr-core").exists());
+        // The failing step's log was written.
+        assert!(build_dir.join("logs").join("zl-zpr-core-boom.log").exists());
+    }
+
+    /// A successful run: the written manifest round-trips (re-read resolution
+    /// is the identity), the staged binary is digested with its size and
+    /// origin recorded, toolchain stamps are present, and the worktree is
+    /// pruned.
+    #[test]
+    fn execute_build_success_round_trips_digests_and_prunes() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+        ))
+        .unwrap();
+        assert!(ok);
+
+        // dist/ holds the staged binary and the manifest.
+        let dist = build_dir.join("dist");
+        assert!(dist.join("bin1").is_file());
+        let text = std::fs::read_to_string(dist.join("zpr-set-t.yaml")).unwrap();
+
+        // Round-trip: re-read as an input set, resolution is the identity.
+        let reread = parse(&text).unwrap();
+        assert_eq!(reread.repositories["zl-zpr-core"], sha);
+        let again = resolve_set(&workspace, &reread).unwrap();
+        assert_eq!(again[0].sha, sha);
+
+        // The diagnostic block records the binary digest and the source repo.
+        assert!(text.contains("bin1"), "{text}");
+        assert!(text.contains("from: zl-zpr-core"), "{text}");
+        // A sha256 is 64 hex characters; spot-check one is present.
+        assert!(
+            text.lines()
+                .any(|line| line.contains("sha256:") && line.trim().len() >= 64),
+            "no sha256 in manifest: {text}"
+        );
+        // Toolchain stamps: rustc and cargo exist on any machine that builds
+        // this tool.
+        assert!(text.contains("rustc"), "{text}");
+
+        // The worktree was pruned on success (no --keep).
+        assert!(!build_dir.join("src").join("zl-zpr-core").exists());
+        // The source checkout has no lingering worktree entry.
+        let listing =
+            crate::git::git(&workspace.join("zl-zpr-core"), &["worktree", "list"]).unwrap();
+        assert_eq!(listing.lines().count(), 1, "{listing}");
+    }
+
+    /// Verification must cover the **whole distribution** the recipe table
+    /// stages, not just the repositories the set happened to name: a set
+    /// naming one repository used to derive `expected` from its own
+    /// worktrees, so a tarball with a fraction of the binaries "verified"
+    /// (Codex review on PR #8). A recipe with no worktree means its binaries
+    /// cannot exist, and the build must fail rather than emit a subset.
+    #[test]
+    fn execute_build_fails_verification_when_the_set_skips_a_recipe() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        // The table stages bin1 (buildable here) and bin2 from a repository
+        // the set does not name — so bin2 can never be staged.
+        let recipes = vec![
+            ok_recipe(),
+            recipes::Recipe {
+                repo: "zl-zpr-absent",
+                steps: &[],
+                staged: &[recipes::Staged {
+                    name: "bin2",
+                    source: "out/bin2",
+                }],
+            },
+        ];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+        ))
+        .unwrap();
+        assert!(!ok, "a subset of the distribution must not verify");
+    }
+
+    /// Fixture for the derived-common gate: `zl-zpr-core` pins `zpr` from
+    /// `zl-zpr-common` at `v0.26.0` and `zpr-utils` at `zpr-utils-v0.2.2`.
+    /// The common checkout's manifest at the *tagged* revision agrees with
+    /// core's pins, but its live `HEAD` has moved to a conflicting one.
+    fn workspace_with_pinned_common() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        let init = |name: &str| -> PathBuf {
+            let dir = workspace.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            setup_git(&dir, &["init", "-b", "main"]);
+            setup_git(&dir, &["config", "user.name", "zpr-dev tests"]);
+            setup_git(&dir, &["config", "user.email", "tests@example.invalid"]);
+            setup_git(&dir, &["config", "commit.gpgsign", "false"]);
+            dir
+        };
+        let commit = |dir: &Path, message: &str| {
+            setup_git(dir, &["add", "-A"]);
+            setup_git(dir, &["commit", "-m", message]);
+        };
+
+        let common = init("zl-zpr-common");
+        let utils_pin = |tag: &str| {
+            format!(
+                "[package]\nname = \"zpr\"\nversion = \"0.26.0\"\n\n[dependencies]\n\
+                 zpr-utils = {{ git = \"https://github.com/mkolehmainen/zl-zpr-utils.git\", tag = \"{tag}\" }}\n"
+            )
+        };
+        std::fs::write(common.join("Cargo.toml"), utils_pin("zpr-utils-v0.2.2")).unwrap();
+        commit(&common, "manifest agreeing with the consumers");
+        setup_git(&common, &["tag", "v0.26.0"]);
+        std::fs::write(common.join("Cargo.toml"), utils_pin("zpr-utils-v0.9.9")).unwrap();
+        commit(&common, "live checkout moved past the pinned tag");
+
+        let core = init("zl-zpr-core");
+        std::fs::write(
+            core.join("Cargo.toml"),
+            "[package]\nname = \"core-fixture\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+             zpr = { git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"v0.26.0\" }\n\
+             zpr-utils = { git = \"https://github.com/mkolehmainen/zl-zpr-utils.git\", tag = \"zpr-utils-v0.2.2\" }\n",
+        )
+        .unwrap();
+        std::fs::write(core.join("README.md"), "fixture\n").unwrap();
+        commit(&core, "core with pins");
+
+        (tmp, workspace)
+    }
+
+    /// The derived `zl-zpr-common` gate scan must read the revision the
+    /// consumers pin — what cargo will actually compile — never the live
+    /// checkout: a live checkout sitting on a different commit made gate 1
+    /// reject a compatible set (this test's RED) or miss a real
+    /// disagreement, and made the emitted `pins` block vary with unrelated
+    /// local state (Codex review on PR #8).
+    #[test]
+    fn execute_build_gates_common_at_the_pinned_revision_not_the_live_checkout() {
+        let (_tmp, workspace) = workspace_with_pinned_common();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+        ))
+        .unwrap();
+        assert!(ok, "the live checkout's drift must not fail a coherent set");
+
+        // The emitted pins round-trip from the manifest: they record what
+        // cargo compiles (the tagged revision's pin), not the live drift.
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("zpr-utils-v0.2.2"), "{text}");
+        assert!(!text.contains("zpr-utils-v0.9.9"), "{text}");
+
+        // The throwaway common worktree is gone: directory and registration.
+        assert!(!build_dir.join("src").join("zl-zpr-common").exists());
+        let listing =
+            crate::git::git(&workspace.join("zl-zpr-common"), &["worktree", "list"]).unwrap();
+        assert_eq!(listing.lines().count(), 1, "{listing}");
+    }
+
+    /// `--keep` leaves the worktree in place after a successful run.
+    #[test]
+    fn execute_build_keep_leaves_worktrees() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, true,
+        ))
+        .unwrap();
+        assert!(ok);
+        assert!(build_dir.join("src").join("zl-zpr-core").exists());
+    }
+
+    /// Without `--no-tarball` a `zpr-set-<name>-linux-<arch>.tar.gz` lands in
+    /// `dist/`.
+    #[test]
+    fn execute_build_writes_tarball_unless_disabled() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, false, false,
+        ))
+        .unwrap();
+        assert!(ok);
+
+        let arch = std::env::consts::ARCH;
+        let tarball = build_dir
+            .join("dist")
+            .join(format!("zpr-set-t-linux-{arch}.tar.gz"));
+        assert!(tarball.is_file(), "missing {}", tarball.display());
     }
 }

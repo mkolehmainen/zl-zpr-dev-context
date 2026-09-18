@@ -240,7 +240,9 @@ pub fn gate_freshness(
 /// Splits a tag into its name prefix and trailing dotted-number version:
 /// `v0.26.0` → (`v`, [0, 26, 0]), `rcu-v0.1.2` → (`rcu-v`, [0, 1, 2]).
 /// `None` when the tag does not end in a dotted number sequence.
-fn split_tag(tag: &str) -> Option<(&str, Vec<u64>)> {
+/// Crate-visible so the emitted manifest's `newest_available` (spec-003 §3)
+/// is computed by the same rule as this gate's warning.
+pub(crate) fn split_tag(tag: &str) -> Option<(&str, Vec<u64>)> {
     // The version part is the longest trailing run of digits and dots.
     let start = tag
         .rfind(|c: char| !c.is_ascii_digit() && c != '.')
@@ -254,8 +256,9 @@ fn split_tag(tag: &str) -> Option<(&str, Vec<u64>)> {
     numbers.map(|numbers| (prefix, numbers))
 }
 
-/// Re-joins a parsed version for display: [0, 27, 0] → `0.27.0`.
-fn join_version(version: &[u64]) -> String {
+/// Re-joins a parsed version for display: [0, 27, 0] → `0.27.0`. Crate-visible
+/// alongside [`split_tag`].
+pub(crate) fn join_version(version: &[u64]) -> String {
     version
         .iter()
         .map(u64::to_string)

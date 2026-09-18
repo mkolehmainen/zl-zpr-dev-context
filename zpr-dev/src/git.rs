@@ -150,6 +150,42 @@ pub fn tag_list(dir: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Adds a detached worktree of `repo` at `dest`, checked out at `sha`
+/// (spec-003 §5). Detached means the source checkout's branch, `HEAD` and
+/// working tree are untouched — the worktree shares the object store and
+/// nothing else. A `dest` that already exists and is not empty is refused
+/// naming the path: half-overwriting a previous run's directory is how stale
+/// binaries get shipped (task B3 step 1).
+pub fn worktree_add(repo: &Path, dest: &Path, sha: &str) -> Result<()> {
+    // `git worktree add` itself refuses a non-empty directory, but its message
+    // names neither our context nor the remedy; check first so the error is
+    // diagnosable from a build report.
+    if dest.exists() && std::fs::read_dir(dest)?.next().is_some() {
+        bail!(
+            "worktree destination {} already exists and is not empty; \
+             remove it or build with --force",
+            dest.display()
+        );
+    }
+    git(
+        repo,
+        &["worktree", "add", "--detach", &dest.to_string_lossy(), sha],
+    )?;
+    Ok(())
+}
+
+/// Removes the worktree of `repo` at `dest` and prunes stale administrative
+/// entries (spec-003 §5). `--force` because build worktrees are throwaways:
+/// logs and build artifacts in them must not block removal.
+pub fn worktree_remove(repo: &Path, dest: &Path) -> Result<()> {
+    git(
+        repo,
+        &["worktree", "remove", "--force", &dest.to_string_lossy()],
+    )?;
+    git(repo, &["worktree", "prune"])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +387,101 @@ mod tests {
         let mut tags = tag_list(tmp.path()).unwrap();
         tags.sort();
         assert_eq!(tags, vec!["v0.1.0", "v0.2.0"]);
+    }
+
+    // -- worktree lifecycle (spec-003 §5, task B3 step 1) ---------------------
+
+    /// A detached worktree appears at the requested sha, and the source
+    /// checkout — branch, `HEAD`, and a dirty file — is byte-identical
+    /// afterwards. This is the §5 guarantee that a build never touches the
+    /// live checkouts.
+    #[test]
+    fn worktree_add_is_detached_at_sha_and_leaves_source_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+        let first = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        commit_file(&repo, "second.md");
+        let head_before = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+
+        // Dirty the source checkout: the worktree must not disturb it.
+        std::fs::write(repo.join("README.md"), "dirty edit\n").unwrap();
+
+        let dest = tmp.path().join("wt");
+        worktree_add(&repo, &dest, &first).unwrap();
+
+        // The worktree is at the requested (older) sha, detached.
+        assert_eq!(git(&dest, &["rev-parse", "HEAD"]).unwrap(), first);
+        assert_eq!(branch(&dest).unwrap(), None, "worktree must be detached");
+        // The requested sha's tree, not the source's: second.md predates it.
+        assert!(!dest.join("second.md").exists());
+
+        // The source checkout is untouched: same branch, same HEAD, still
+        // dirty with the same content.
+        assert_eq!(branch(&repo).unwrap().as_deref(), Some("main"));
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), head_before);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.md")).unwrap(),
+            "dirty edit\n"
+        );
+    }
+
+    /// Removal leaves no entry in `git worktree list` and deletes the
+    /// directory.
+    #[test]
+    fn worktree_remove_leaves_no_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+        let sha = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let dest = tmp.path().join("wt");
+        worktree_add(&repo, &dest, &sha).unwrap();
+
+        worktree_remove(&repo, &dest).unwrap();
+
+        assert!(!dest.exists());
+        let listing = git(&repo, &["worktree", "list"]).unwrap();
+        assert!(
+            !listing.contains("wt"),
+            "stale worktree entry after removal: {listing}"
+        );
+    }
+
+    /// Adding over a non-empty destination fails with a message naming the
+    /// path, rather than half-overwriting whatever is there.
+    #[test]
+    fn worktree_add_refuses_nonempty_destination_naming_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+        let sha = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+
+        let dest = tmp.path().join("occupied");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("leftover.txt"), "previous run\n").unwrap();
+
+        let error = worktree_add(&repo, &dest, &sha).unwrap_err().to_string();
+        assert!(
+            error.contains("occupied"),
+            "path not named in error: {error}"
+        );
+        // The leftover file survives: nothing was half-overwritten.
+        assert!(dest.join("leftover.txt").exists());
+    }
+
+    /// `worktree_remove` on a worktree with local modifications still removes
+    /// it: build worktrees are throwaways, so removal is `--force`.
+    #[test]
+    fn worktree_remove_forces_out_a_dirty_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+        let sha = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let dest = tmp.path().join("wt");
+        worktree_add(&repo, &dest, &sha).unwrap();
+        std::fs::write(dest.join("build-artifact.o"), "junk\n").unwrap();
+
+        worktree_remove(&repo, &dest).unwrap();
+        assert!(!dest.exists());
     }
 }

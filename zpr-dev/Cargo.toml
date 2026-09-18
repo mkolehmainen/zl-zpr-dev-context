@@ -13,6 +13,9 @@ anyhow = "1"
 # Reads git-dependency pins out of every Cargo.toml for the pin-agreement gate
 # (spec-003 §4.1); its arrival with the gates stage is recorded in spec-001 §6.1.
 toml = "0.9"
+# Digests staged binaries for the emitted manifest (spec-003 §3); its arrival
+# with dist/ staging (B3) is recorded in spec-001 §6.1.
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
