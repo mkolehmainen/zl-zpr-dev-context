@@ -1425,3 +1425,78 @@ fn build_gates_only_unreadable_member_manifest_is_an_error_finding() {
     assert!(out.contains("[ERROR]"), "{out}");
     assert!(out.contains("zl-zpr-core/member-a/Cargo.toml"), "{out}");
 }
+
+// ---------------------------------------------------------------------------
+// build --clean (zipline#71)
+// ---------------------------------------------------------------------------
+
+/// `--clean` over a build directory wiped by hand recovers the workspace:
+/// `git worktree list` shows only the checkout itself afterwards, and the
+/// `.zpr-build` tree is gone — no flag, no manual `git worktree prune`.
+#[test]
+fn build_clean_recovers_a_hand_wiped_build_dir() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+
+    // A registered build worktree whose directory is then deleted by hand —
+    // the zipline#71 wedge.
+    let core = fixture.workspace.join("zl-zpr-core");
+    let sha = common::git(&core, &["rev-parse", "HEAD"]);
+    let build_dir = fixture.workspace.join(".zpr-build").join("tip");
+    let dest = build_dir.join("src").join("zl-zpr-core");
+    common::git(
+        &core,
+        &["worktree", "add", "--detach", &dest.to_string_lossy(), &sha],
+    );
+    std::fs::remove_dir_all(fixture.workspace.join(".zpr-build")).unwrap();
+    let listing = common::git(&core, &["worktree", "list"]);
+    assert_eq!(listing.lines().count(), 2, "fixture not wedged: {listing}");
+
+    let out = stdout_of(&fixture.run(&["build", "--clean"]));
+    assert!(out.contains("clean:"), "{out}");
+
+    // Only the checkout itself remains registered, and no build tree exists.
+    let listing = common::git(&core, &["worktree", "list"]);
+    assert_eq!(listing.lines().count(), 1, "stale registration: {listing}");
+    assert!(!fixture.workspace.join(".zpr-build").exists());
+}
+
+/// `--clean` on an already-clean workspace exits 0 and says there was
+/// nothing to clean — cleaning clean is a success, not an error.
+#[test]
+fn build_clean_on_clean_workspace_exits_zero() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+
+    let out = output_with_code(&fixture.run(&["build", "--clean"]), 0);
+    assert!(out.contains("nothing to clean"), "{out}");
+}
+
+/// `--clean` is a mode, not a modifier: combining it with a build-shaping
+/// flag is a clap usage error (exit 2), before anything runs.
+#[test]
+fn build_clean_with_tip_is_a_usage_error() {
+    let fixture = Fixture::new();
+    let err = error_with_code(&fixture.run(&["build", "--clean", "--tip"]), 2);
+    assert!(err.contains("--clean"), "{err}");
+    assert!(err.contains("--tip"), "{err}");
+}
+
+/// `--build-dir` scopes the clean: the named directory goes, an unrelated
+/// build directory under the default tree stays.
+#[test]
+fn build_clean_build_dir_scopes_the_clean() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+
+    let named = fixture.workspace.join("custom-build");
+    std::fs::create_dir_all(named.join("dist")).unwrap();
+    let other = fixture.workspace.join(".zpr-build").join("keepme");
+    std::fs::create_dir_all(&other).unwrap();
+
+    let out =
+        stdout_of(&fixture.run(&["build", "--clean", "--build-dir", &named.to_string_lossy()]));
+    assert!(out.contains("removed"), "{out}");
+    assert!(!named.exists());
+    assert!(other.exists(), "unscoped clean removed the default tree");
+}

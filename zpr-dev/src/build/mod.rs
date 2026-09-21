@@ -235,6 +235,12 @@ pub struct BuildArgs {
     /// run, so the netns tier can run without a NOPASSWD sudoers entry
     /// (zipline#70). Opt-in, and refused when stdin is not a terminal.
     pub prompt_for_sudo: bool,
+    /// `--clean`: remove the build directory and clear its worktree
+    /// registrations, then exit — a mode, not a modifier (zipline#71). It
+    /// resolves nothing and fetches nothing, so it works on a workspace too
+    /// broken to resolve a build set. Conflicts with every build-shaping
+    /// flag; `--build-dir` is allowed because it scopes the clean.
+    pub clean: bool,
 }
 
 /// Creates the build directory `<build_dir>` with `logs/` and `dist/` inside.
@@ -347,6 +353,14 @@ fn verify_dist(dist: &Path, expected: &[&str]) -> Result<()> {
 /// against the live checkouts (B2); worktrees, builds and tiers land with
 /// B3-B5.
 pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
+    // `--clean` is a mode, not a modifier (zipline#71): it runs before the
+    // tier-selection parse and the `--gates-only` branch, resolves no refs,
+    // fetches nothing, and runs no gates — it must work on a workspace too
+    // broken to resolve a build set, which is when it is needed.
+    if args.clean {
+        return run_clean(ctx, args);
+    }
+
     // `--repo` parses but its stage has not landed (spec-003 §7.1); saying so
     // beats silently ignoring it.
     if args.repo.is_some() && !ctx.quiet {
@@ -567,6 +581,93 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     } else {
         std::process::ExitCode::from(1)
     })
+}
+
+/// The `build --clean` path (zipline#71): removes the build directory and
+/// clears its worktree registrations, then exits. With `--build-dir` it
+/// cleans that directory; without it, the whole `<workspace>/.zpr-build`
+/// tree — cleaning is not per-set, because there is nothing to name a set
+/// with. Then `git worktree prune` runs in every workspace-manifest
+/// repository, which is what catches registrations whose directories a
+/// person already deleted. No ref resolution, no fetch, no gates, no build;
+/// the only manifest read is the repository list. Exit 0 even when there was
+/// nothing to clean — cleaning an already-clean workspace is a success, not
+/// an error. Under `--dry-run` the same report prints and nothing is removed
+/// (spec-003 §7: a dry run writes nothing).
+fn run_clean(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
+    let manifest = crate::config::load(&ctx.context.join(crate::config::MANIFEST_FILE))?;
+    let manifest_repo_names: Vec<&str> = manifest
+        .repositories
+        .iter()
+        .map(|repo| repo.name.as_str())
+        .collect();
+
+    // The directories to remove: the named one, or every entry of the
+    // default `.zpr-build` tree (one subdirectory per set name).
+    let targets: Vec<PathBuf> = match &args.build_dir {
+        Some(dir) => {
+            if dir.exists() {
+                vec![dir.clone()]
+            } else {
+                vec![]
+            }
+        }
+        None => {
+            let root = ctx.workspace.join(".zpr-build");
+            if root.exists() { vec![root] } else { vec![] }
+        }
+    };
+
+    if ctx.dry_run {
+        if !ctx.quiet {
+            if targets.is_empty() {
+                println!("clean (dry-run): nothing to clean");
+            } else {
+                for dir in &targets {
+                    println!("clean (dry-run): would remove {}", dir.display());
+                }
+            }
+            println!(
+                "clean (dry-run): would prune worktree registrations in {} \
+                 workspace repositories",
+                manifest_repo_names.len()
+            );
+            println!("dry-run: nothing was removed, and nothing was fetched");
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+
+    for dir in &targets {
+        // Unregister what can still be enumerated, then remove the tree.
+        // The manifest-wide prune inside unregister_worktrees is what clears
+        // registrations whose directories are already gone.
+        unregister_worktrees(dir, &ctx.workspace, &manifest_repo_names);
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| anyhow::anyhow!("cannot remove {}: {e}", dir.display()))?;
+        if !ctx.quiet {
+            println!("clean: removed {}", dir.display());
+        }
+    }
+    if targets.is_empty() {
+        // The registrations may still be stale even with no directory left —
+        // the zipline#71 case is exactly `rm -rf` ahead of the tool — so the
+        // prune pass runs regardless.
+        unregister_worktrees(
+            &ctx.workspace.join(".zpr-build"),
+            &ctx.workspace,
+            &manifest_repo_names,
+        );
+        if !ctx.quiet {
+            println!("clean: nothing to clean");
+        }
+    }
+    if !ctx.quiet {
+        println!(
+            "clean: pruned worktree registrations in {} workspace repositories",
+            manifest_repo_names.len()
+        );
+    }
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 /// The `build --gates-only` path (spec-003 §4, stage B2): runs the three

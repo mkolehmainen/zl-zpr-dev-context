@@ -144,6 +144,24 @@ enum Command {
         /// tier can run without a NOPASSWD sudoers entry (needs a terminal)
         #[arg(long)]
         prompt_for_sudo: bool,
+
+        /// Remove the build directory and clear its worktree registrations,
+        /// then exit: no ref resolution, no fetch, no gates, no build
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "manifest",
+                "tip",
+                "test",
+                "repo",
+                "keep",
+                "gates_only",
+                "allow_pin_drift",
+                "no_tarball",
+                "prompt_for_sudo"
+            ]
+        )]
+        clean: bool,
     },
 
     /// Configure or inspect a coding agent's global setup
@@ -240,6 +258,7 @@ fn run() -> Result<ExitCode> {
             allow_pin_drift,
             no_tarball,
             prompt_for_sudo,
+            clean,
         } => build::run(
             &ctx,
             &build::BuildArgs {
@@ -253,6 +272,7 @@ fn run() -> Result<ExitCode> {
                 allow_pin_drift: *allow_pin_drift,
                 no_tarball: *no_tarball,
                 prompt_for_sudo: *prompt_for_sudo,
+                clean: *clean,
             },
         ),
         Command::Agent { command } => match command {
