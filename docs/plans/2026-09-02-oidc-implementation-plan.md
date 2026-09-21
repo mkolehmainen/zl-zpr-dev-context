@@ -1,7 +1,7 @@
 # OIDC Authentication Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
->
+**Status:** COMPLETE (2026-09-09) — umbrella [zipline#1](https://github.com/mkolehmainen/zipline/issues/1); tasks A0–D5 all merged, see *Issue map*. X1–X5 remain deferred (see *Deferred*); X3 is **superseded** by `docs/plans/2026-09-16-silent-oidc-reauth.md`. The current OIDC reference is `docs/OIDC.md`. Historical record: read it for *why*, not for what the code does now.
+
 > **ZPR process rule (`zpr-dev-context/skills/zpr/SKILL.md`):** every GitHub issue gets its own plan posted as an issue comment *before* implementation. This document is the **master plan**: it fixes the ordering, the cross-repository interface contracts, and the scope and acceptance criteria of each issue. When an issue is picked up, expand its section here into the bite-sized TDD plan on the issue, against the code as it is *then*. Several of the spec's line references were already stale by the time this plan was written (see *What changed since the spec*), which is why per-issue plans are deferred to pickup.
 
 **Goal:** Add OpenID Connect (Google first) as a second, independently-expiring authentication method for ZPR actors, with the adapter as Relying Party and the visa service validating `id_token`s offline against a cached JWKS.
@@ -258,24 +258,24 @@ Umbrella: **[mkolehmainen/zipline#1](https://github.com/mkolehmainen/zipline/iss
 
 | ID | Repo | Title | Blocked by |
 |---|---|---|---|
-| A0 | all four | [#17](https://github.com/mkolehmainen/zipline/issues/17) Repoint fork dependencies to `mkolehmainen/zl-zpr-*` | — |
-| A1 | zpr-policy | [#2](https://github.com/mkolehmainen/zipline/issues/2) Add `OidcConfig` to `TrustedService` | — |
-| A2 | zpr-vsapi | Add `OidcBlob`, `OidcClientConfig`, `ServiceT.oidcAuthentication`, `ErrorCode.policyDenied` | — |
-| A3 | zpr-common | [#4](https://github.com/mkolehmainen/zipline/issues/4) OIDC schema bump: Rust mirrors for OidcConfig/OidcBlob/ServiceDescriptor, tag v0.26.0 | **A0**, A1, A2 |
+| A0 · [#17](https://github.com/mkolehmainen/zipline/issues/17) | all four | Repoint fork dependencies to `mkolehmainen/zl-zpr-*` | — |
+| A1 · [#2](https://github.com/mkolehmainen/zipline/issues/2) | zpr-policy | Add `OidcConfig` to `TrustedService` | — |
+| A2 · [#3](https://github.com/mkolehmainen/zipline/issues/3) | zpr-vsapi | Add `OidcBlob`, `OidcClientConfig`, `ServiceT.oidcAuthentication`, `ErrorCode.policyDenied` | — |
+| A3 · [#4](https://github.com/mkolehmainen/zipline/issues/4) | zpr-common | OIDC schema bump: Rust mirrors for OidcConfig/OidcBlob/ServiceDescriptor, tag v0.26.0 | **A0**, A1, A2 |
 | ~~B0~~ | zpr-compiler | ~~Reserve the `zpr.` sub-namespace from declared trusted services~~ — **DONE**, upstream #146 / PR #147, merged on the fork as e2eecd6 | — |
-| B1 | zpr-compiler | `api = "oidc"` trusted-service configuration: parsing and validation | — (B0 done) |
-| B2 | zpr-compiler | `api = "oidc"`: emit `OidcConfig`, weave the JWKS-proxy rule, `zpdump`, bump to 0.17.0 | A3, B1 |
+| B1 · [#5](https://github.com/mkolehmainen/zipline/issues/5) | zpr-compiler | `api = "oidc"` trusted-service configuration: parsing and validation | — (B0 done) |
+| B2 · [#6](https://github.com/mkolehmainen/zipline/issues/6) | zpr-compiler | `api = "oidc"`: emit `OidcConfig`, weave the JWKS-proxy rule, `zpdump`, bump to 0.17.0 | A3, B1 |
 | ~~C0~~ | zpr-visaservice | ~~Namespaced authority attributes and compiler 0.16 floor~~ — **DONE**, upstream #324, merged on the fork as 72230cf | — |
-| C1 | zpr-visaservice | Accept multiple auth blobs; presented-and-invalid fails, absent is not a failure | A3 (C0 done) |
-| C2 | zpr-visaservice | Offline `id_token` validation module with table-driven vectors | — |
-| C3 | zpr-visaservice | JWKS key source: policy seed, `CONNECT`-proxied refresh, stale tolerance | A3, C2 |
-| C4 | zpr-visaservice | `oidc` trusted-service implementation and off-net IdP `ServiceDescriptor` | A3 |
-| C5 | zpr-visaservice | OIDC blob on the connect path: authority stamping, claim mapping, error codes, `zpt` tests; min compiler 0.17 | C1–C4, B2 |
-| D1 | zpr-core | Node: zpr-common v0.26, `OIDC_IDP` TLV, blob arrays, forward OIDC blobs, propagate failure reason, auth timeout | A3 |
-| D2 | zpr-core | Adapter: `AuthAgent` RPC, `WaitForUserAuth` state, interaction timeout, failure reasons to CLI, AAA gate | D1 |
-| D3 | zpr-core | `ph-cli`: OIDC Relying Party flow (`connect`, `auth-agent`, `--no-browser`) | — (D2 for wiring) |
-| D4 | zpr-core | Remove BAS/`OAuthRsa` legacy: hardcoded cert, `danger_accept_invalid_certs`, AC blob | D2 |
-| D5 | zpr-core | Fake-IdP integration test, `VISA_SERVICE_RELEASE` bump, manual Google checklist | C5 release, D1–D3 |
+| C1 · [#7](https://github.com/mkolehmainen/zipline/issues/7) | zpr-visaservice | Accept multiple auth blobs; presented-and-invalid fails, absent is not a failure | A3 (C0 done) |
+| C2 · [#8](https://github.com/mkolehmainen/zipline/issues/8) | zpr-visaservice | Offline `id_token` validation module with table-driven vectors | — |
+| C3 · [#9](https://github.com/mkolehmainen/zipline/issues/9) | zpr-visaservice | JWKS key source: policy seed, `CONNECT`-proxied refresh, stale tolerance | A3, C2 |
+| C4 · [#10](https://github.com/mkolehmainen/zipline/issues/10) | zpr-visaservice | `oidc` trusted-service implementation and off-net IdP `ServiceDescriptor` | A3 |
+| C5 · [#11](https://github.com/mkolehmainen/zipline/issues/11) | zpr-visaservice | OIDC blob on the connect path: authority stamping, claim mapping, error codes, `zpt` tests; min compiler 0.17 | C1–C4, B2 |
+| D1 · [#12](https://github.com/mkolehmainen/zipline/issues/12) | zpr-core | Node: zpr-common v0.26, `OIDC_IDP` TLV, blob arrays, forward OIDC blobs, propagate failure reason, auth timeout | A3 |
+| D2 · [#13](https://github.com/mkolehmainen/zipline/issues/13) | zpr-core | Adapter: `AuthAgent` RPC, `WaitForUserAuth` state, interaction timeout, failure reasons to CLI, AAA gate | D1 |
+| D3 · [#14](https://github.com/mkolehmainen/zipline/issues/14) | zpr-core | `ph-cli`: OIDC Relying Party flow (`connect`, `auth-agent`, `--no-browser`) | — (D2 for wiring) |
+| D4 · [#15](https://github.com/mkolehmainen/zipline/issues/15) | zpr-core | Remove BAS/`OAuthRsa` legacy: hardcoded cert, `danger_accept_invalid_certs`, AC blob | D2 |
+| D5 · [#16](https://github.com/mkolehmainen/zipline/issues/16) | zpr-core | Fake-IdP integration test, `VISA_SERVICE_RELEASE` bump, manual Google checklist | C5 release, D1–D3 |
 | X1 | zpr-compiler + zpr-policy + zpr-visaservice | `[bootstrap] expiration_seconds` (device auth lifetime knob) | deferred |
 | X2 | zpr-visaservice | Per-namespace graceful degradation on user-auth expiry | deferred (still) |
 | ~~X3~~ | zpr-core | ~~Refresh tokens / `offline_access` / OS keyring in `ph-cli auth-agent`~~ — **SUPERSEDED** by `docs/plans/2026-09-16-silent-oidc-reauth.md` | — |
@@ -284,29 +284,29 @@ Umbrella: **[mkolehmainen/zipline#1](https://github.com/mkolehmainen/zipline/iss
 
 ## Phase A — Schemas and shared types
 
-### Task A1: `policy.capnp` — `OidcConfig`
+### Task A1: `policy.capnp` — `OidcConfig` ([zipline#2](https://github.com/mkolehmainen/zipline/issues/2), merged)
 
 Repo `zpr-policy`. **Files:** Modify `policy.capnp:77-83`.
 
 **Produces:** the `TrustedService.oidc @4` field and `struct OidcConfig` exactly as in *Contract 1*.
 
-- [ ] **Step 1:** Add the struct and field verbatim from Contract 1, with the comments.
-- [ ] **Step 2:** `capnp compile -o- policy.capnp >/dev/null` succeeds (there is no other build here).
-- [ ] **Step 3:** Commit `feat: OidcConfig for api="oidc" trusted services`; PR; after merge tag `v0.11.0`.
+- **Step 1:** Add the struct and field verbatim from Contract 1, with the comments.
+- **Step 2:** `capnp compile -o- policy.capnp >/dev/null` succeeds (there is no other build here).
+- **Step 3:** Commit `feat: OidcConfig for api="oidc" trusted services`; PR; after merge tag `v0.11.0`.
 
 **Acceptance:** schema compiles; ordinals `@4` on `TrustedService` and `@0..@9` on `OidcConfig` match Contract 1 exactly.
 
-### Task A2: `vs.capnp` — `OidcBlob`, `OidcClientConfig`, `ServiceT`, `ErrorCode`
+### Task A2: `vs.capnp` — `OidcBlob`, `OidcClientConfig`, `ServiceT`, `ErrorCode` ([zipline#3](https://github.com/mkolehmainen/zipline/issues/3), merged)
 
 Repo `zpr-vsapi`. **Files:** Modify `vs.capnp:384-389` (`AuthBlob`), `:592-610` (`Error`/`ErrorCode`), `:657-666` (`ServiceDescriptor`, `ServiceT`).
 
-- [ ] **Step 1:** Apply Contract 2 verbatim. Do not touch `SelfSignedBlob` or `AuthCodeBlob`.
-- [ ] **Step 2:** `capnp compile -o- vs.capnp >/dev/null`.
-- [ ] **Step 3:** Commit `feat: OIDC auth blob, IdP service descriptor, policyDenied error`; PR; tag on merge.
+- **Step 1:** Apply Contract 2 verbatim. Do not touch `SelfSignedBlob` or `AuthCodeBlob`.
+- **Step 2:** `capnp compile -o- vs.capnp >/dev/null`.
+- **Step 3:** Commit `feat: OIDC auth blob, IdP service descriptor, policyDenied error`; PR; tag on merge.
 
 **Acceptance:** `AuthBlob.oidc @2`, `ServiceDescriptor.oidc @4`, `ServiceT.oidcAuthentication @1`, `ErrorCode.policyDenied @10`.
 
-### Task A3: `zpr-common` — Rust mirrors and tag `v0.26.0`
+### Task A3: `zpr-common` — Rust mirrors and tag `v0.26.0` ([zipline#4](https://github.com/mkolehmainen/zipline/issues/4), merged)
 
 Repo `zpr-common`. **Files:** Modify `.gitmodules` pointers (`zpr-policy`, `zpr-vsapi`), `src/policy_types/trusted_service.rs:26-32,136-197`, `src/vsapi_types/auth.rs:5-35`, `src/vsapi_types/services.rs:15-92`. **Test:** inline `mod tests` in each.
 
@@ -347,11 +347,11 @@ impl ServiceDescriptor { pub fn get_socket_addr(&self) -> Option<SocketAddr> /* 
 
 Also add `write_to` for `ServiceDescriptor` if one does not exist (the visa service needs to encode it in `setServices`); check `services.rs` first, reuse if present.
 
-- [ ] **Step 1:** Bump both submodule pointers to the A1/A2 tags; `make submodules-pull && make build`.
-- [ ] **Step 2 (test first):** round-trip tests: `TrustedService` with `oidc: Some(..)` → `write_to` → `TryFrom` equals original; `oidc: None` → reader `has_oidc() == false`; `AuthBlob::Oidc` `TryFrom` reader; `ServiceDescriptor` with `OidcAuthentication` decodes `oidc` and `get_socket_addr()` is `None`; `ActorAuthentication` behaviour unchanged (existing tests still pass).
-- [ ] **Step 3:** Implement; `make build && make test`.
-- [ ] **Step 4:** Grep both consumers for every `ServiceDescriptor {` / `AuthBlob::` match to list the compile breaks the tag bump will cause (`zpr-core`: `visa_mgmt.rs:96-113`, `link_state.rs:880-888`, `libnode2/src/vss.rs:417`; `zpr-visaservice`: `connection_control.rs:238-259`, `actor_mgr.rs:429-437`). Put the list in the PR description.
-- [ ] **Step 5:** Commit, PR, tag `v0.26.0` on merge.
+- **Step 1:** Bump both submodule pointers to the A1/A2 tags; `make submodules-pull && make build`.
+- **Step 2 (test first):** round-trip tests: `TrustedService` with `oidc: Some(..)` → `write_to` → `TryFrom` equals original; `oidc: None` → reader `has_oidc() == false`; `AuthBlob::Oidc` `TryFrom` reader; `ServiceDescriptor` with `OidcAuthentication` decodes `oidc` and `get_socket_addr()` is `None`; `ActorAuthentication` behaviour unchanged (existing tests still pass).
+- **Step 3:** Implement; `make build && make test`.
+- **Step 4:** Grep both consumers for every `ServiceDescriptor {` / `AuthBlob::` match to list the compile breaks the tag bump will cause (`zpr-core`: `visa_mgmt.rs:96-113`, `link_state.rs:880-888`, `libnode2/src/vss.rs:417`; `zpr-visaservice`: `connection_control.rs:238-259`, `actor_mgr.rs:429-437`). Put the list in the PR description.
+- **Step 5:** Commit, PR, tag `v0.26.0` on merge.
 
 **Acceptance:** `make build`, `make test` green; the four new/changed types round-trip; consumers' break list posted.
 
@@ -363,7 +363,7 @@ Also add `write_to` for `ServiceDescriptor` if one does not exist (the visa serv
 
 Merged upstream as zpr-compiler#146 / PR #147 and present on `zl-zpr-compiler` `zipline` as e2eecd6 (`src/config/trusted_service.rs:127`, tests `test_reserved_zpr_namespace_rejected_for_declared_service` and `test_reserved_zpr_namespace_scope`). Nothing to do. The one carry-over into B1: `returns_attributes` for `oidc` must go through the same `parse_return_mappings` choke point so the reserved-namespace check covers OIDC declarations for free.
 
-### Task B1: `api = "oidc"` configuration parsing and validation
+### Task B1: `api = "oidc"` configuration parsing and validation ([zipline#5](https://github.com/mkolehmainen/zipline/issues/5), merged)
 
 **Files:** Modify `src/zpl.rs:19-24` (add `TS_API_OIDC`), `src/config/mod.rs:146-158` (`TrustedService` gains `oidc: Option<OidcTsConfig>`), `src/config/trusted_service.rs:16-34` (`warn_unknown_ts_property` list), `:176-298` (`parse_trusted_service` dispatch at `:198`), new `parse_oidc_trusted_service` beside `parse_file_trusted_service` (`:131-173`); tests in `src/config/trusted_service.rs` `mod test` (`:300+`); fixtures `test-data/bad-oidc-*.zplc` only if a whole-compile test is needed (config unit tests are sufficient here).
 
@@ -413,15 +413,15 @@ Validation rules (each is one unit test; error text is the contract, since `comp
 | `cert_path` | rejected | `trusted_service {id}: "cert_path" is not allowed for api="oidc" (TLS to the provider is verified against system roots)` |
 | `prefix` | rejected (as for `file`) | existing pattern |
 
-- [ ] **Step 1 (tests first):** in `trusted_service.rs mod test`, one `#[test]` per row above using the existing `body(toml)` + `parse_trusted_service(id, &t, &CompilationCtx::default()).unwrap_err()` shape (model: `test_file_forbidden_properties_rejected` `:394-413`), plus `test_oidc_minimal_valid` asserting the parsed `OidcTsConfig` and defaults, and `test_oidc_missing_service_warns` using a `CompilationCtx` with `werror = true` to turn the warning into an `Err(CompilationError::Warning(..))`.
-- [ ] **Step 2:** Run: `cargo test -p zplc config::trusted_service` → all new tests FAIL (no `oidc` arm).
-- [ ] **Step 3:** Implement `parse_oidc_trusted_service`, the `:198` dispatch, `warn_unknown_ts_property` additions (`issuer`, `jwks_uri`, `client_id`, `client_secret`, `scopes`, `allowed_domains`, `seed_jwks`, `max_auth_age_seconds`, `allow_offline_access`). Do **not** touch `weaver.rs` yet (B2).
-- [ ] **Step 4:** `make test && make check` green.
-- [ ] **Step 5:** Commit `feat(config): parse and validate api="oidc" trusted services`; PR.
+- **Step 1 (tests first):** in `trusted_service.rs mod test`, one `#[test]` per row above using the existing `body(toml)` + `parse_trusted_service(id, &t, &CompilationCtx::default()).unwrap_err()` shape (model: `test_file_forbidden_properties_rejected` `:394-413`), plus `test_oidc_minimal_valid` asserting the parsed `OidcTsConfig` and defaults, and `test_oidc_missing_service_warns` using a `CompilationCtx` with `werror = true` to turn the warning into an `Err(CompilationError::Warning(..))`.
+- **Step 2:** Run: `cargo test -p zplc config::trusted_service` → all new tests FAIL (no `oidc` arm).
+- **Step 3:** Implement `parse_oidc_trusted_service`, the `:198` dispatch, `warn_unknown_ts_property` additions (`issuer`, `jwks_uri`, `client_id`, `client_secret`, `scopes`, `allowed_domains`, `seed_jwks`, `max_auth_age_seconds`, `allow_offline_access`). Do **not** touch `weaver.rs` yet (B2).
+- **Step 4:** `make test && make check` green.
+- **Step 5:** Commit `feat(config): parse and validate api="oidc" trusted services`; PR.
 
 **Acceptance:** every row's test passes; existing `file`/`validation/2` tests untouched; `email` identity attribute produces the dedicated message.
 
-### Task B2: codegen, weaving, `zpdump`, version 0.17.0
+### Task B2: codegen, weaving, `zpdump`, version 0.17.0 ([zipline#6](https://github.com/mkolehmainen/zipline/issues/6), merged)
 
 **Files:** Modify `Cargo.toml:3` (0.17.0) and `:21` (`zpr` tag `v0.26.0`), `src/weaver.rs:1229-1366` (`add_trusted_services`), `:1375-1434` (`check_ts_components`, the `else` at `:1424`), `:1181-1226` (`resolve_trusted_service_providers`, skip `oidc` like `file` at `:1204`), `src/fabric.rs:38-50` (`TrustedServiceSpec.oidc: Option<zpr::policy_types::OidcConfig>`), `:270-301`, `src/policybuilder.rs:259-279` (`set_connects` protocol guard: `api != TS_API_FILE && api != TS_API_OIDC`), `src/dumpv2.rs:270-310`; fixtures `test-data/test-oidc.zpl`, `test-data/test-oidc.zplc`, `test-data/google-jwks-seed.json`; tests in `tests/zpl-test.rs` (model `test_file_trusted_service_end_to_end` `:315-412`).
 
@@ -436,11 +436,11 @@ Behaviour:
 5. **`zpdump`.** In the `TRUSTED SERVICES` section print, when `ts.oidc.is_some()`: `issuer`, `jwks_uri`, `client_id`, `scopes`, `allowed_domains`, `expiration`, `max_auth_age`, `offline_access`, `jwks_proxy_service`, and `seed_jwks: <n> keys`. Never print `client_secret`'s value; print `client_secret: (set)` or `(none)`.
 6. **`[services.google-*]` is an error** only if `[services.<id>]` or `[services.<id>-vs]` or `[services.<id>-client]` exists for an oidc TS `<id>` and is not the declared proxy `service`: `trusted_service {id}: api="oidc" has no on-net service; remove [services.{name}]`.
 
-- [ ] **Step 1 (fixture):** `test-data/test-oidc.zpl` = copy of `test-file.zpl` minus BAS, plus `allow domain:example.com users to access Webby.`; `test-oidc.zplc` = the spec's ZPLC block (`[trusted_services.google]` with `service = "google-jwks-proxy"`, `[services.google-jwks-proxy] protocol="tcp" port=3128 provider=[["device.zpr.adapter.cn","proxy1.zpr"]]`), `seed_jwks = "google-jwks-seed.json"` (a two-key RSA JWKS generated once with `openssl` + a tiny script, checked in).
-- [ ] **Step 2 (tests first):** `tests/zpl-test.rs::test_oidc_trusted_service_end_to_end`: compile, `decode_records`, assert one `TrustedService` with `service_id == "google"`, `oidc.issuer == "https://accounts.google.com"`, `jwks_proxy_service == Some("google-jwks-proxy")`, `seed_jwks` parses to 2 keys, `identity_attrs == ["sub"]`; assert the join policy list contains a client policy on `google-jwks-proxy` whose `cli_condition == [device.zpr.adapter.cn EQ vs.zpr]`; assert the `Service` for `google` has `kind == trusted("oidc")` and **no** endpoints. Add `bad-oidc-services-block.zpl/.zplc` (has `[services.google-vs]`) asserting the error text; `bad-oidc-missing-proxy-service.zplc` (`service = "nope"`).
-- [ ] **Step 3:** Run → FAIL. Implement 1–6. `can_compile_misc_test_policies` now also sweeps `test-oidc` through `dump_v2` (covers 5).
-- [ ] **Step 4:** Bump `Cargo.toml` version to `0.17.0` and `zpr` tag to `v0.26.0`; `make test && make check`.
-- [ ] **Step 5:** Commit `feat: compile api="oidc" trusted services to OidcConfig; weave JWKS proxy rule; 0.17.0`; PR. PR body must say: *visa service follow-up: `POLICY_MIN_COMPILER_MINOR` 16 → 17 in C5*.
+- **Step 1 (fixture):** `test-data/test-oidc.zpl` = copy of `test-file.zpl` minus BAS, plus `allow domain:example.com users to access Webby.`; `test-oidc.zplc` = the spec's ZPLC block (`[trusted_services.google]` with `service = "google-jwks-proxy"`, `[services.google-jwks-proxy] protocol="tcp" port=3128 provider=[["device.zpr.adapter.cn","proxy1.zpr"]]`), `seed_jwks = "google-jwks-seed.json"` (a two-key RSA JWKS generated once with `openssl` + a tiny script, checked in).
+- **Step 2 (tests first):** `tests/zpl-test.rs::test_oidc_trusted_service_end_to_end`: compile, `decode_records`, assert one `TrustedService` with `service_id == "google"`, `oidc.issuer == "https://accounts.google.com"`, `jwks_proxy_service == Some("google-jwks-proxy")`, `seed_jwks` parses to 2 keys, `identity_attrs == ["sub"]`; assert the join policy list contains a client policy on `google-jwks-proxy` whose `cli_condition == [device.zpr.adapter.cn EQ vs.zpr]`; assert the `Service` for `google` has `kind == trusted("oidc")` and **no** endpoints. Add `bad-oidc-services-block.zpl/.zplc` (has `[services.google-vs]`) asserting the error text; `bad-oidc-missing-proxy-service.zplc` (`service = "nope"`).
+- **Step 3:** Run → FAIL. Implement 1–6. `can_compile_misc_test_policies` now also sweeps `test-oidc` through `dump_v2` (covers 5).
+- **Step 4:** Bump `Cargo.toml` version to `0.17.0` and `zpr` tag to `v0.26.0`; `make test && make check`.
+- **Step 5:** Commit `feat: compile api="oidc" trusted services to OidcConfig; weave JWKS proxy rule; 0.17.0`; PR. PR body must say: *visa service follow-up: `POLICY_MIN_COMPILER_MINOR` 16 → 17 in C5*.
 
 **Acceptance:** fixture compiles and dumps; the woven proxy rule is present and targets the proxy service; the two `bad-*` fixtures fail with the specified text; version and tag bumped.
 
@@ -461,15 +461,15 @@ Behaviour:
 - `authorize_connection` (`:489-494`) stops adding a blanket authority; the blob arms own it (this is what makes C1/C5 possible). The identity-key registration `add_identity_key(usize::MAX, key::AUTHORITY)` becomes: register `device.zpr.authority` if present, `user.zpr.authority` if present.
 - `get_authentication_expiration` = min over `{device.zpr.authority, user.zpr.authority} ∩ present` ∪ identity keys; `None` only if none present.
 
-- [ ] **Step 1 (failing tests):** `test_rsa_path_installs_device_authority_bootstrap` (authenticate a node with a signed challenge via existing helpers `gen_rsa_test_keypair`/`sign_node_challenge`/`make_policy_with_bootstrap_key`; assert actor has `device.zpr.authority == ["zpr-bootstrap"]`, no `zpr.authority`, no `user.zpr.authority`, and `identity_keys` contains `device.zpr.authority`); `actor.rs::test_expiration_min_over_namespaced_authorities` (two authorities with different expiry → min); `test_policy_below_0_16_rejected` (use `make_container_bytes(0,15,0,..)`).
-- [ ] **Step 2:** Run → FAIL. Implement. Delete `key::AUTHORITY`; let the compiler find every use.
-- [ ] **Step 3:** Fixture audit: `grep -rn 'zpr.authority' integration-test/ zpt/` ; regenerate `pregen` with a 0.16 `zplc` (`make pregen`, `ZPLC=../zpr-compiler/target/debug/zplc`). Fix any `.zpt` that used bare `users` to mean "any actor" (PR #145's audit says none in the compiler corpus; verify here).
-- [ ] **Step 4:** Extend `zpt-test-connect.sh` with a fourth object: device-only claims against a policy containing `allow users to access Webby.` → assert **no** match (fail-closed proof of #144 + C0 together).
-- [ ] **Step 5:** `make test && make check`; commit `feat: per-namespace authority attributes; require compiler >= 0.16`; PR.
+- **Step 1 (failing tests):** `test_rsa_path_installs_device_authority_bootstrap` (authenticate a node with a signed challenge via existing helpers `gen_rsa_test_keypair`/`sign_node_challenge`/`make_policy_with_bootstrap_key`; assert actor has `device.zpr.authority == ["zpr-bootstrap"]`, no `zpr.authority`, no `user.zpr.authority`, and `identity_keys` contains `device.zpr.authority`); `actor.rs::test_expiration_min_over_namespaced_authorities` (two authorities with different expiry → min); `test_policy_below_0_16_rejected` (use `make_container_bytes(0,15,0,..)`).
+- **Step 2:** Run → FAIL. Implement. Delete `key::AUTHORITY`; let the compiler find every use.
+- **Step 3:** Fixture audit: `grep -rn 'zpr.authority' integration-test/ zpt/` ; regenerate `pregen` with a 0.16 `zplc` (`make pregen`, `ZPLC=../zpr-compiler/target/debug/zplc`). Fix any `.zpt` that used bare `users` to mean "any actor" (PR #145's audit says none in the compiler corpus; verify here).
+- **Step 4:** Extend `zpt-test-connect.sh` with a fourth object: device-only claims against a policy containing `allow users to access Webby.` → assert **no** match (fail-closed proof of #144 + C0 together).
+- **Step 5:** `make test && make check`; commit `feat: per-namespace authority attributes; require compiler >= 0.16`; PR.
 
 **Acceptance:** 0.15 policies rejected; RSA path yields `device.zpr.authority:zpr-bootstrap`; `zpt` proves bare `allow users` does not admit a device-only actor.
 
-### Task C1: Multiple auth blobs
+### Task C1: Multiple auth blobs ([zipline#7](https://github.com/mkolehmainen/zipline/issues/7), merged)
 
 **Files:** Modify `vs/src/connection_control.rs:215-260` (`authenticate_adapter_or_node`), `:221-223` (drop the `> 1` rejection), the reauth path that reads `ReauthRequest.blobs`. Tests in the inline module.
 
@@ -478,13 +478,13 @@ Behaviour (spec *Failure rule*):
 - CN handling is already correct (never promoted by `authorize_connection`); pin it with a test.
 - `AuthBlob::Oidc(_)` arm in C1 returns `ServiceError::Internal("OIDC not yet supported")` — replaced in C5. `AuthBlob::AC(_)` keeps its current error.
 
-- [ ] **Step 1 (failing tests):** `test_two_blobs_ss_and_oidc_stub_fails_whole_connection` (valid SS + `Oidc` stub → `Err`, and **no actor persisted**); `test_zero_blobs_rejected`; `test_duplicate_device_blob_rejected` (two valid SS blobs); `test_cn_not_authenticated_without_device_blob` (call `authorize_connection` with `unauthd_claims = [CN]`, `authd_claims = [user.zpr.authority, user.oidc-subject]` against `make_trusted_service_policy_with_identity(...)`; assert the actor's `device.zpr.adapter.cn` attribute is **absent** or unauthenticated per `scrub_adapter_claims` semantics, and `identity_keys` does not contain the CN); **regression test the spec demands:** `test_user_only_actor_claiming_foreign_cn_gets_no_cn_attributes` — register a capturing trusted service (`register_capturing_ts`) that returns `device.role = admin` for identity `(device.zpr.adapter.cn, "server1.zpr")`; connect user-only with `unauthd` CN `server1.zpr`; assert the capture shows the lookup identities contained only the `user.oidc-subject` pair and the actor has no `device.role`.
-- [ ] **Step 2:** Run → FAIL. Implement the loop and `BlobOutcome`.
-- [ ] **Step 3:** `make test && make check`; commit `feat: accept multiple auth blobs; presented-and-invalid fails closed`; PR.
+- **Step 1 (failing tests):** `test_two_blobs_ss_and_oidc_stub_fails_whole_connection` (valid SS + `Oidc` stub → `Err`, and **no actor persisted**); `test_zero_blobs_rejected`; `test_duplicate_device_blob_rejected` (two valid SS blobs); `test_cn_not_authenticated_without_device_blob` (call `authorize_connection` with `unauthd_claims = [CN]`, `authd_claims = [user.zpr.authority, user.oidc-subject]` against `make_trusted_service_policy_with_identity(...)`; assert the actor's `device.zpr.adapter.cn` attribute is **absent** or unauthenticated per `scrub_adapter_claims` semantics, and `identity_keys` does not contain the CN); **regression test the spec demands:** `test_user_only_actor_claiming_foreign_cn_gets_no_cn_attributes` — register a capturing trusted service (`register_capturing_ts`) that returns `device.role = admin` for identity `(device.zpr.adapter.cn, "server1.zpr")`; connect user-only with `unauthd` CN `server1.zpr`; assert the capture shows the lookup identities contained only the `user.oidc-subject` pair and the actor has no `device.role`.
+- **Step 2:** Run → FAIL. Implement the loop and `BlobOutcome`.
+- **Step 3:** `make test && make check`; commit `feat: accept multiple auth blobs; presented-and-invalid fails closed`; PR.
 
 **Acceptance:** all five tests pass; existing single-SS tests unchanged.
 
-### Task C2: Offline `id_token` validation module
+### Task C2: Offline `id_token` validation module ([zipline#8](https://github.com/mkolehmainen/zipline/issues/8), merged)
 
 **Files:** Create `vs/src/oidc/mod.rs`, `vs/src/oidc/validate.rs`; tests inline plus fixture keypair `vs/tests/data/oidc-test-rsa.pem` and a test-only minter. No dependency changes (`jsonwebtoken` 10 with `rust_crypto` is already in `vs/Cargo.toml:33`).
 
@@ -525,14 +525,14 @@ pub fn validate_id_token(id_token: &str, keys: &jsonwebtoken::jwk::JwkSet, param
 
 Domain rule: if `allowed_domains == ["*"]`, skip; else `hd` must be present **and** in the list; email domain is never consulted.
 
-- [ ] **Step 1 (test-only minter):** `#[cfg(test)] mod mint { pub fn token(claims: serde_json::Value, kid: &str, alg: Algorithm, key: &EncodingKey) -> String }` plus `fn test_jwks() -> JwkSet` from the fixture PEM (`kid = "k1"`).
-- [ ] **Step 2 (table test):** one `#[test]` per row of the spec's *JWT validation* table, exactly: valid → `Ok` with `sub`, `hd`, `email`; `alg: none` → `Signature`; HS256 with the RSA public key bytes as HMAC secret → `Signature` (algorithm confusion); wrong `aud` → `Signature`; wrong `iss` → `Signature`; `exp` past → `Signature`; missing nonce → `Signature`; mismatched nonce → `Signature`; **`hd` absent** → `Rejected`; `hd` not allowed → `Rejected`; `email_verified: false` → `Ok` with `email == None`; unknown `kid` → `UnknownKid`; `auth_time` older than `max_auth_age` → `Rejected`; `allowed_domains == ["*"]` with no `hd` → `Ok`; no `auth_time` → `auth_time == iat`.
-- [ ] **Step 3:** Run → FAIL. Implement with `jsonwebtoken::decode_header` → `kid` → `JwkSet::find` → `DecodingKey::from_jwk` → `Validation::new(RS256)` with `set_audience`, `set_issuer`, `leeway = clock_skew`, `validate_exp = true`, then manual `nonce`/`hd`/`email_verified`/`auth_time` checks.
-- [ ] **Step 4:** `make test && make check`; commit `feat(oidc): offline id_token validation with vector tests`; PR.
+- **Step 1 (test-only minter):** `#[cfg(test)] mod mint { pub fn token(claims: serde_json::Value, kid: &str, alg: Algorithm, key: &EncodingKey) -> String }` plus `fn test_jwks() -> JwkSet` from the fixture PEM (`kid = "k1"`).
+- **Step 2 (table test):** one `#[test]` per row of the spec's *JWT validation* table, exactly: valid → `Ok` with `sub`, `hd`, `email`; `alg: none` → `Signature`; HS256 with the RSA public key bytes as HMAC secret → `Signature` (algorithm confusion); wrong `aud` → `Signature`; wrong `iss` → `Signature`; `exp` past → `Signature`; missing nonce → `Signature`; mismatched nonce → `Signature`; **`hd` absent** → `Rejected`; `hd` not allowed → `Rejected`; `email_verified: false` → `Ok` with `email == None`; unknown `kid` → `UnknownKid`; `auth_time` older than `max_auth_age` → `Rejected`; `allowed_domains == ["*"]` with no `hd` → `Ok`; no `auth_time` → `auth_time == iat`.
+- **Step 3:** Run → FAIL. Implement with `jsonwebtoken::decode_header` → `kid` → `JwkSet::find` → `DecodingKey::from_jwk` → `Validation::new(RS256)` with `set_audience`, `set_issuer`, `leeway = clock_skew`, `validate_exp = true`, then manual `nonce`/`hd`/`email_verified`/`auth_time` checks.
+- **Step 4:** `make test && make check`; commit `feat(oidc): offline id_token validation with vector tests`; PR.
 
 **Acceptance:** all 15 vectors pass; module has zero imports from `crate::` other than `config::MAX_CLOCK_SKEW_SECS`.
 
-### Task C3: JWKS key source
+### Task C3: JWKS key source ([zipline#9](https://github.com/mkolehmainen/zipline/issues/9), merged)
 
 **Files:** Create `vs/src/oidc/jwks.rs`; modify `vs/Cargo.toml` (add `reqwest = { workspace = true, features = ["json", "rustls-tls"] }` — check which TLS feature the workspace `reqwest` already uses in `vs-admin` and match it), `vs/src/config.rs:119-152` (optional `oidc_refresh_seconds: u64`, default 3600, in `CoreSection` + `Default`). Tests: inline with a local `axum` server (already a dep) serving a JWKS, and a local `CONNECT`-speaking stub (a ~40-line tokio TCP handler that answers `HTTP/1.1 200` and splices) — this also gives D5 a proxy to reuse.
 
@@ -552,13 +552,13 @@ impl KeySource {
 
 Proxy resolution (`Option<Url>`): when `cfg.jwks_proxy_service` is `Some(id)`, look up the actors currently providing service `id` (**reuse** `actor_db.list_services_for_actor` / the reverse index if one exists — check `vs/src/db` before adding a helper; if none, add `ActorDb::providers_of_service(&str) -> Vec<IpAddr>`) and the port from the policy `Service.endpoints` scope; build `http://[zpr-addr]:port`. If no provider is connected yet, `refresh()` returns `Err(Rejected("proxy not reachable"))` and the seed keeps serving. Re-resolve on each refresh (providers come and go).
 
-- [ ] **Step 1 (failing tests):** `test_seed_serves_before_first_fetch`; `test_refresh_replaces_keys` (axum JWKS, direct); `test_refresh_failure_keeps_stale_keys` (server returns 500); `test_refresh_via_connect_proxy` (stub proxy in front of the axum server; assert the proxy saw exactly `CONNECT 127.0.0.1:<port>`); `test_no_seed_no_route_is_nokeys`.
-- [ ] **Step 2:** Run → FAIL. Implement. Never log the response body.
-- [ ] **Step 3:** `make test && make check`; commit `feat(oidc): JWKS key source with seed, CONNECT-proxied refresh, stale tolerance`; PR.
+- **Step 1 (failing tests):** `test_seed_serves_before_first_fetch`; `test_refresh_replaces_keys` (axum JWKS, direct); `test_refresh_failure_keeps_stale_keys` (server returns 500); `test_refresh_via_connect_proxy` (stub proxy in front of the axum server; assert the proxy saw exactly `CONNECT 127.0.0.1:<port>`); `test_no_seed_no_route_is_nokeys`.
+- **Step 2:** Run → FAIL. Implement. Never log the response body.
+- **Step 3:** `make test && make check`; commit `feat(oidc): JWKS key source with seed, CONNECT-proxied refresh, stale tolerance`; PR.
 
 **Acceptance:** stub proxy sees `CONNECT` (never `GET https://…`); stale keys survive a failed refresh; nothing new in `Cargo.lock` beyond `reqwest` feature unification.
 
-### Task C4: `oidc` trusted-service implementation and IdP `ServiceDescriptor`
+### Task C4: `oidc` trusted-service implementation and IdP `ServiceDescriptor` ([zipline#10](https://github.com/mkolehmainen/zipline/issues/10), merged)
 
 **Files:** Create `vs/src/oidc/store.rs`; modify `vs/src/trusted_services/factory.rs:16-87` (dispatch on `api`), `vs/src/trusted_services/mod.rs` (export), `vs/src/actor_mgr.rs:429-437, 564-616` (`uri_for_service` and `get_auth_services_list`), `vs/Cargo.toml` (`zpr` tag `v0.26.0`), `Cargo.lock`. Tests inline; `test_helpers.rs::make_trusted_service_policy_with_identity` extended with an `oidc: Option<OidcConfig>` variant or a sibling helper `make_oidc_policy(...)`.
 
@@ -591,13 +591,13 @@ impl OidcTrustedService {
 
 `actor_mgr.rs`: `get_auth_services_list` emits, for each `ServiceType::Trusted("oidc")` service, a `ServiceDescriptor { stype: OidcAuthentication, service_id, service_uri: issuer, zpr_addr: Ipv6Addr::UNSPECIFIED, oidc: Some(OidcClientConfig{..}) }`. `uri_for_service` gains an `oidc` arm returning the issuer (and its tests at `:770-870` gain a case).
 
-- [ ] **Step 1 (failing tests):** `factory::test_oidc_definition_builds_oidc_store`; `store::test_admit_then_lookup_by_sub` (admit a `ValidatedToken`, lookup `[(user.oidc-subject, sub)]` → mapped attrs with the given expiry, source id == "google"); `store::test_lookup_unknown_sub_is_empty`; `store::test_email_not_mapped_when_unverified` (token with `email: None` → no `user.email`); `actor_mgr::test_auth_services_list_includes_oidc_descriptor`.
-- [ ] **Step 2:** Bump `zpr` to `v0.26.0`; fix the A3 break list; run → FAIL on the new tests. Implement.
-- [ ] **Step 3:** `make test && make check`; commit `feat(oidc): oidc trusted-service store and IdP service descriptor`; PR.
+- **Step 1 (failing tests):** `factory::test_oidc_definition_builds_oidc_store`; `store::test_admit_then_lookup_by_sub` (admit a `ValidatedToken`, lookup `[(user.oidc-subject, sub)]` → mapped attrs with the given expiry, source id == "google"); `store::test_lookup_unknown_sub_is_empty`; `store::test_email_not_mapped_when_unverified` (token with `email: None` → no `user.email`); `actor_mgr::test_auth_services_list_includes_oidc_descriptor`.
+- **Step 2:** Bump `zpr` to `v0.26.0`; fix the A3 break list; run → FAIL on the new tests. Implement.
+- **Step 3:** `make test && make check`; commit `feat(oidc): oidc trusted-service store and IdP service descriptor`; PR.
 
 **Acceptance:** policy with an `oidc` TS loads (today it is rejected wholesale at `factory.rs:39-44`); descriptor pushed to nodes carries issuer/client_id/scopes; admit→lookup round-trips.
 
-### Task C5: OIDC blob on the connect path
+### Task C5: OIDC blob on the connect path ([zipline#11](https://github.com/mkolehmainen/zipline/issues/11), merged)
 
 **Files:** Modify `vs/src/connection_control.rs` (the `Oidc` arm from C1; error mapping where `ServiceError` becomes a VSAPI `Error`), `vs/src/config.rs:30` (`16` → `17`), `integration-test/zpt-test-connect.sh` + a new `.zpt` source and `pregen`. Tests inline.
 
@@ -611,11 +611,11 @@ Arm behaviour:
 5. Do **not** push the token's claims directly; they arrive through `ts_mgr.get_attributes_for_actor(&identities)` (C4), which also fires for the mapped `sub`.
 6. `approve_connection` returning "no join policy matched" → `policyDenied`.
 
-- [ ] **Step 1 (failing tests):** `test_oidc_only_connect_yields_user_authority_and_claims` (mint with C2's test minter against a policy from `make_oidc_policy`; assert `user.zpr.authority == ["google"]`, `user.oidc-subject`, `user.email`, `user.domain`; `identity_keys == ["user.oidc-subject", "user.zpr.authority"]` ordering per `lookup_identity_keys` then authorities; no `device.*`); `test_ss_plus_oidc_connect_yields_both_authorities`; `test_oidc_wrong_nonce_fails_whole_connection_invalid_signature`; `test_oidc_consumer_account_no_hd_rejected_auth_error`; `test_oidc_unknown_issuer_param_error`; `test_oidc_no_keys_temporarily_unavailable`; `test_valid_login_no_join_policy_is_policy_denied`; `test_user_authority_expiry_is_auth_time_plus_lifetime` (mint with `auth_time = now - 1h`, lifetime 12h → expires ≈ now + 11h, **not** `exp`).
-- [ ] **Step 2:** Run → FAIL. Implement. Bump `POLICY_MIN_COMPILER_MINOR` to 17 (B2 must be merged; compile the `zpt` fixtures with the 0.17 `zplc`).
-- [ ] **Step 3 (`zpt`):** new `integration-test/zpt-test-oidc.zpt` (+ `.zpl/.zplc` from `test-oidc` in B2) driving three `APPROVE_CONNECTION` requests: device-only (`authd`: CN, `device.zpr.authority`), user-only (`authd`: `user.oidc-subject`, `user.zpr.authority:google`, `user.domain:example.com`; `unauthd`: CN), both. Assert `identity_keys` and which policies matched (`allow domain:example.com users …` matches user-only and both; a device-only rule matches device-only and both; `allow users to access services.` does not match device-only).
-- [ ] **Step 4:** `make test && make check`; commit `feat(oidc): validate OIDC blobs on connect; user.zpr.authority; policyDenied; compiler >= 0.17`; PR.
-- [ ] **Step 5 (release):** after merge, `make release`, upload `release-linux-x86_64.tar.gz` to a GitHub pre-release tagged `v0.19.0-rc.1` (`gh release create v0.19.0-rc.1 --prerelease release-linux-x86_64.tar.gz`). Final `v0.19.0` is cut in D5 after the integration test passes.
+- **Step 1 (failing tests):** `test_oidc_only_connect_yields_user_authority_and_claims` (mint with C2's test minter against a policy from `make_oidc_policy`; assert `user.zpr.authority == ["google"]`, `user.oidc-subject`, `user.email`, `user.domain`; `identity_keys == ["user.oidc-subject", "user.zpr.authority"]` ordering per `lookup_identity_keys` then authorities; no `device.*`); `test_ss_plus_oidc_connect_yields_both_authorities`; `test_oidc_wrong_nonce_fails_whole_connection_invalid_signature`; `test_oidc_consumer_account_no_hd_rejected_auth_error`; `test_oidc_unknown_issuer_param_error`; `test_oidc_no_keys_temporarily_unavailable`; `test_valid_login_no_join_policy_is_policy_denied`; `test_user_authority_expiry_is_auth_time_plus_lifetime` (mint with `auth_time = now - 1h`, lifetime 12h → expires ≈ now + 11h, **not** `exp`).
+- **Step 2:** Run → FAIL. Implement. Bump `POLICY_MIN_COMPILER_MINOR` to 17 (B2 must be merged; compile the `zpt` fixtures with the 0.17 `zplc`).
+- **Step 3 (`zpt`):** new `integration-test/zpt-test-oidc.zpt` (+ `.zpl/.zplc` from `test-oidc` in B2) driving three `APPROVE_CONNECTION` requests: device-only (`authd`: CN, `device.zpr.authority`), user-only (`authd`: `user.oidc-subject`, `user.zpr.authority:google`, `user.domain:example.com`; `unauthd`: CN), both. Assert `identity_keys` and which policies matched (`allow domain:example.com users …` matches user-only and both; a device-only rule matches device-only and both; `allow users to access services.` does not match device-only).
+- **Step 4:** `make test && make check`; commit `feat(oidc): validate OIDC blobs on connect; user.zpr.authority; policyDenied; compiler >= 0.17`; PR.
+- **Step 5 (release):** after merge, `make release`, upload `release-linux-x86_64.tar.gz` to a GitHub pre-release tagged `v0.19.0-rc.1` (`gh release create v0.19.0-rc.1 --prerelease release-linux-x86_64.tar.gz`). Final `v0.19.0` is cut in D5 after the integration test passes.
 
 **Acceptance:** all eight unit tests and the `zpt` script pass; error codes match Contract 2's table; a 0.16 policy is now rejected.
 
@@ -623,7 +623,7 @@ Arm behaviour:
 
 ## Phase D — Core (`zpr-core`)
 
-### Task D1: Node side
+### Task D1: Node side ([zipline#12](https://github.com/mkolehmainen/zipline/issues/12), merged)
 
 **Files:** Modify `Cargo.toml` (`zpr` tag `v0.26.0`), `adapter/ph/src/tlv.rs:23-35, 97, 141-151, 289-360` (`OIDC_IDP = 9`, `Str` value, encoder/parser), `adapter/ph/src/auth.rs:34-37, 122-151, 299-323` (`BLOB_TYPE_OIDC`, `ZdpOidcBlob`, `decode_blobs` returning `Vec<AuthBlob>`), `adapter/ph/src/link_state.rs:824-920` (`process_acquire_zpr_address_request`: verify every blob's challenge, forward all), `:1881-1901` (`get_available_asa_addresses` → also return OIDC descriptors), `:692-694`, `adapter/ph/src/mgmt/requests.rs:67-93` (`send_hello_success_response` gains `oidc_idps: &[OidcIdpInfo]`), `adapter/ph/src/visa_mgmt.rs:42-146` (map `AuthBlob::Oidc`; return the VS `Error.code` on failure instead of `LinkEvent::Error`), `link_state.rs:1333-1347, 1451-1459` (`send_grant_zpr_address_request` with a failure `ResponseCode`), `adapter/ph/src/zdp.rs` (`ResponseCode` variants: add `AuthFailed`, `PolicyDenied`, `AuthUnavailable` if absent — check the enum first), `adapter/ph/src/config.rs:68` (`ACTOR_AUTHENTICATION_TIMEOUT` 120 s → 330 s), `libnode2/src/vss.rs:405-442` (A3 `ServiceDescriptor` shape). Tests: `tlv.rs mod tests`, `auth.rs mod test`, `visa_mgmt.rs`.
 
@@ -650,15 +650,15 @@ pub const OIDC_IDP: TlvType = 9;   // JSON-encoded OidcIdpInfo (Str)
 pub struct OidcIdpInfo { pub issuer: String, pub client_id: String, pub client_secret: Option<String>, pub scopes: Vec<String>, pub allow_offline_access: bool }
 ```
 
-- [ ] **Step 1 (failing tests):** `auth::test_decode_blobs_legacy_object`, `test_decode_blobs_array_ss_and_oidc`, `test_decode_blobs_unknown_type_errors`, `test_oidc_nonce_is_b64url_sha256`, `test_oidc_blob_verify_challenge_rejects_bad_hmac_and_old_ctime`; `tlv::test_put_and_parse_oidc_idp` (round-trip `OidcIdpInfo` JSON); `visa_mgmt::test_build_connect_request_two_blobs_maps_oidc_with_nonce`.
-- [ ] **Step 2:** Run → FAIL. Implement. In `process_acquire_zpr_address_request`: `SelfSigned` → existing `check_self_signed_blob`; `Oidc` → `verify_challenge` then `OidcBlob { nonce: oidc_nonce_for_challenge(&c) }`; any verification failure → `process_error_response`.
-- [ ] **Step 3:** Failure propagation: in `visa_mgmt::authorize_connect`, on `Err` carrying a VSAPI `Error`, emit a new `LinkEvent::ReceivedAuthorizeFailure(ErrorCode, String)`; handler sends `send_grant_zpr_address_request(asm, link_id, ResponseCode::from(code), &[])` **before** `initiate_close`. Map: `invalidSignature`/`authError`/`paramError` → `AuthFailed`; `policyDenied` → `PolicyDenied`; `temporarilyUnavailable` → `AuthUnavailable`; everything else → existing error path.
-- [ ] **Step 4:** Check the mgmt path can carry a ~3 KB blob (JWT + SS in one array). Locate the mgmt packet size limit in `adapter/ph/src/mgmt/core.rs` (`new_heap_packet`) and `zdpr.rs` fragmentation; if the limit is below 4 KB, raise it or document the ceiling as a `ponytail:` comment and add a test that a 3 KB blob round-trips through `parse_acquire_zpr_address_request`.
-- [ ] **Step 5:** `make && make test && make check`; commit `feat(node): OIDC blobs, IdP advertisement TLV, VS failure reasons to adapter`; PR.
+- **Step 1 (failing tests):** `auth::test_decode_blobs_legacy_object`, `test_decode_blobs_array_ss_and_oidc`, `test_decode_blobs_unknown_type_errors`, `test_oidc_nonce_is_b64url_sha256`, `test_oidc_blob_verify_challenge_rejects_bad_hmac_and_old_ctime`; `tlv::test_put_and_parse_oidc_idp` (round-trip `OidcIdpInfo` JSON); `visa_mgmt::test_build_connect_request_two_blobs_maps_oidc_with_nonce`.
+- **Step 2:** Run → FAIL. Implement. In `process_acquire_zpr_address_request`: `SelfSigned` → existing `check_self_signed_blob`; `Oidc` → `verify_challenge` then `OidcBlob { nonce: oidc_nonce_for_challenge(&c) }`; any verification failure → `process_error_response`.
+- **Step 3:** Failure propagation: in `visa_mgmt::authorize_connect`, on `Err` carrying a VSAPI `Error`, emit a new `LinkEvent::ReceivedAuthorizeFailure(ErrorCode, String)`; handler sends `send_grant_zpr_address_request(asm, link_id, ResponseCode::from(code), &[])` **before** `initiate_close`. Map: `invalidSignature`/`authError`/`paramError` → `AuthFailed`; `policyDenied` → `PolicyDenied`; `temporarilyUnavailable` → `AuthUnavailable`; everything else → existing error path.
+- **Step 4:** Check the mgmt path can carry a ~3 KB blob (JWT + SS in one array). Locate the mgmt packet size limit in `adapter/ph/src/mgmt/core.rs` (`new_heap_packet`) and `zdpr.rs` fragmentation; if the limit is below 4 KB, raise it or document the ceiling as a `ponytail:` comment and add a test that a 3 KB blob round-trips through `parse_acquire_zpr_address_request`.
+- **Step 5:** `make && make test && make check`; commit `feat(node): OIDC blobs, IdP advertisement TLV, VS failure reasons to adapter`; PR.
 
 **Acceptance:** node forwards both blobs; the adapter receives a non-success `ResponseCode` when the VS rejects; a 3 KB blob round-trips; `OIDC_IDP` TLV round-trips.
 
-### Task D2: Adapter FSM and `AuthAgent` RPC
+### Task D2: Adapter FSM and `AuthAgent` RPC ([zipline#13](https://github.com/mkolehmainen/zipline/issues/13), merged)
 
 **Files:** Modify `adapter/admin-api/cli.capnp:1-21` (Contract 6), `adapter/ph/src/admin_worker.rs:368-391` (`start_link` stores the agent client on the link), `adapter/ph/src/link_state.rs:120-165` (`LinkState::WaitForUserAuth`; `LinkEvent::ReceivedHelloResponse` gains `Option<Vec<OidcIdpInfo>>`; `AuthenticationSuccess(Vec<AuthBlob>)`; `AuthenticationFailure(AuthFailureReason)`), `:1099-1225` (`process_init_auth`: choose method(s) from `bootstrap` config + OIDC IdP presence; AAA gate applies only to the legacy ASA path), `:1349-1433` (`do_oidc_authenticate` beside `do_https_authenticate`; `process_authentication_success` accepts `WaitForUserAuth`), `adapter/ph/src/mgmt/handlers.rs:248-343` (parse `OIDC_IDP`), `:568+` (grant failure code → `ReceivedGrantZprAddressRequest` carries the reason), `adapter/ph/src/config.rs` (`OIDC_USER_INTERACTION_TIMEOUT = 300 s`). Tests: `link_state.rs mod tests` (`#[tokio::test(start_paused = true)]` + `LocalSet`), `handlers.rs` (new test module), `admin_worker.rs`.
 
@@ -684,13 +684,13 @@ Flow in `process_init_auth` (non-bootstrap or bootstrap+OIDC): collect blobs —
 
 The `startLink` handler holds the `AuthAgent` client for the link's lifetime (renewal uses `interactive=false`; if the call fails → `AuthenticationFailure(NoAgent)` → log and disconnect, per spec). Failure reasons reach `ph-cli` through `showLink`'s text for now and through the blocking `connect` return in D3.
 
-- [ ] **Step 1 (failing tests):** `handlers::test_hello_response_parses_oidc_idp_tlv`; `link_state::test_wait_for_user_auth_times_out_with_interaction_timeout` (paused clock, no agent reply → `Error` state, reason `InteractionTimeout`); `test_no_agent_with_idp_and_no_bootstrap_fails_with_no_agent`; `test_agent_token_becomes_oidc_blob_with_challenge_nonce` (fake `AuthAgent::Server` in-process returning a fixed token; assert the encoded blob array contains SS+OIDC and the OIDC `challenge` equals the InitAuth payload); `test_grant_failure_code_maps_to_reason` (`PolicyDenied`).
-- [ ] **Step 2:** Run → FAIL. Implement. Keep `do_https_authenticate` untouched (D4 deletes it).
-- [ ] **Step 3:** `make && make test && make check`; commit `feat(adapter): OIDC via AuthAgent callback, WaitForUserAuth, failure reasons`; PR.
+- **Step 1 (failing tests):** `handlers::test_hello_response_parses_oidc_idp_tlv`; `link_state::test_wait_for_user_auth_times_out_with_interaction_timeout` (paused clock, no agent reply → `Error` state, reason `InteractionTimeout`); `test_no_agent_with_idp_and_no_bootstrap_fails_with_no_agent`; `test_agent_token_becomes_oidc_blob_with_challenge_nonce` (fake `AuthAgent::Server` in-process returning a fixed token; assert the encoded blob array contains SS+OIDC and the OIDC `challenge` equals the InitAuth payload); `test_grant_failure_code_maps_to_reason` (`PolicyDenied`).
+- **Step 2:** Run → FAIL. Implement. Keep `do_https_authenticate` untouched (D4 deletes it).
+- **Step 3:** `make && make test && make check`; commit `feat(adapter): OIDC via AuthAgent callback, WaitForUserAuth, failure reasons`; PR.
 
 **Acceptance:** the five tests pass; a link started without an agent on a device-only network behaves exactly as today.
 
-### Task D3: `ph-cli` Relying Party flow
+### Task D3: `ph-cli` Relying Party flow ([zipline#14](https://github.com/mkolehmainen/zipline/issues/14), merged)
 
 Can start on day one as a standalone subcommand `ph-cli oidc-login --issuer --client-id [--client-secret] --scopes --nonce [--no-browser]` that prints the `id_token` to stdout (test harness for the flow); D2 then wires the same function behind `AuthAgent`.
 
@@ -716,31 +716,31 @@ pub async fn login(idp: &OidcIdpInfo, nonce: &str, open_browser: bool, timeout: 
 
 Browser launch is `std::process::Command::new("xdg-open")` (Linux) / `"open"` (macOS); no crate. Refresh tokens / `offline_access` / keyring: **not in D3**; `interactive=false` returns `OidcCliError::NonInteractiveUnsupported` until a follow-up issue adds it (spec permits: default `allow_offline_access = false`).
 
-- [ ] **Step 1 (failing tests):** `test_pkce_rfc7636_vector` (verifier `dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk` → challenge `E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM`); `test_pkce_verifier_length_and_charset`; `test_bind_loopback_is_127_0_0_1` (assert `local_addr().ip() == 127.0.0.1`, port != 0, redirect uri form); `test_callback_rejects_state_mismatch` (connect to the listener with `GET /callback?code=x&state=wrong` → `Err(StateMismatch)`, and listener is closed after); `test_callback_accepts_matching_state_once`; `test_exchange_code_posts_verifier_and_optional_secret` (local `axum`/`hyper` stub asserting form fields `grant_type=authorization_code`, `code`, `code_verifier`, `redirect_uri`, `client_id`, and `client_secret` only when `Some`); `test_login_no_browser_end_to_end_against_fake_idp` (in-process fake IdP: discovery doc, `/auth` that 302s to the redirect_uri with `code` and the given `state`, `/token` returning a fixed `id_token`; assert the `nonce` query parameter reached `/auth`).
-- [ ] **Step 2:** Run → FAIL. Implement. Never print or log `code`, `id_token`, or `verifier` (assert in the end-to-end test that a captured log buffer does not contain the token).
-- [ ] **Step 3:** `connect` UX: prints `Authentication with <issuer> required. Opening browser…` (or the URL with `--no-browser`), blocks until `startLink` returns, exits `0` on link up; non-zero exit codes per reason: `2` user declined, `3` timeout, `4` IdP unreachable, `5` visa service rejected token (misconfiguration), `6` policy denied, `7` device blob rejected. `auth-agent` registers and runs until SIGINT.
-- [ ] **Step 4:** `make && make test && make check`; commit `feat(ph-cli): OIDC relying-party flow, connect and auth-agent commands`; PR.
+- **Step 1 (failing tests):** `test_pkce_rfc7636_vector` (verifier `dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk` → challenge `E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM`); `test_pkce_verifier_length_and_charset`; `test_bind_loopback_is_127_0_0_1` (assert `local_addr().ip() == 127.0.0.1`, port != 0, redirect uri form); `test_callback_rejects_state_mismatch` (connect to the listener with `GET /callback?code=x&state=wrong` → `Err(StateMismatch)`, and listener is closed after); `test_callback_accepts_matching_state_once`; `test_exchange_code_posts_verifier_and_optional_secret` (local `axum`/`hyper` stub asserting form fields `grant_type=authorization_code`, `code`, `code_verifier`, `redirect_uri`, `client_id`, and `client_secret` only when `Some`); `test_login_no_browser_end_to_end_against_fake_idp` (in-process fake IdP: discovery doc, `/auth` that 302s to the redirect_uri with `code` and the given `state`, `/token` returning a fixed `id_token`; assert the `nonce` query parameter reached `/auth`).
+- **Step 2:** Run → FAIL. Implement. Never print or log `code`, `id_token`, or `verifier` (assert in the end-to-end test that a captured log buffer does not contain the token).
+- **Step 3:** `connect` UX: prints `Authentication with <issuer> required. Opening browser…` (or the URL with `--no-browser`), blocks until `startLink` returns, exits `0` on link up; non-zero exit codes per reason: `2` user declined, `3` timeout, `4` IdP unreachable, `5` visa service rejected token (misconfiguration), `6` policy denied, `7` device blob rejected. `auth-agent` registers and runs until SIGINT.
+- **Step 4:** `make && make test && make check`; commit `feat(ph-cli): OIDC relying-party flow, connect and auth-agent commands`; PR.
 
 **Acceptance:** RFC vector passes; listener is loopback-only and single-use; fake-IdP end-to-end passes with `--no-browser`; exit codes distinguish the seven failure classes.
 
-### Task D4: Delete BAS / `OAuthRsa` legacy
+### Task D4: Delete BAS / `OAuthRsa` legacy ([zipline#15](https://github.com/mkolehmainen/zipline/issues/15), merged)
 
 **Files:** Delete from `adapter/ph/src/auth.rs`: `HARD_CODED_BAS_TLS_CERT_PEM` (`:44-76`), `OAuthRsa` and its impl (`:186-192, 409-569`), `ZdpAuthCodeBlob`/`BLOB_TYPE_AC`/`AuthBlob::AuthCode`, `PreauthResp`/`AuthReq`; `link_state.rs` `do_https_authenticate` (`:1349-1393`) and the ASA/AAA/rsaoauth gates (`:1164-1181`) that only served it; `config.rs:170-176, 286-302, 468-472, 608` (`rsaoauth`, `bas_key`); `visa_mgmt.rs:96-113` AC arm; `tlv.rs` `ASA` stays (harmless) unless nothing emits it — then delete too. Keep the `ac @1` capnp arm (removing a union arm is a schema break; mark `# deprecated` in a later vsapi bump).
 
-- [ ] **Step 1:** `grep -rn 'danger_accept_invalid_certs\|HARD_CODED_BAS\|OAuthRsa\|bas_key\|rsaoauth\|BLOB_TYPE_AC' adapter libnode2` → list; delete; let the compiler guide.
-- [ ] **Step 2:** Update `README.md` / config docs that mention `bas_key`. `make && make test && make check`.
-- [ ] **Step 3:** Commit `chore: remove deprecated BAS/OAuthRsa client (issue #861)`; PR referencing zpr-core#861.
+- **Step 1:** `grep -rn 'danger_accept_invalid_certs\|HARD_CODED_BAS\|OAuthRsa\|bas_key\|rsaoauth\|BLOB_TYPE_AC' adapter libnode2` → list; delete; let the compiler guide.
+- **Step 2:** Update `README.md` / config docs that mention `bas_key`. `make && make test && make check`.
+- **Step 3:** Commit `chore: remove deprecated BAS/OAuthRsa client (issue #861)`; PR referencing zpr-core#861.
 
 **Acceptance:** zero occurrences of `danger_accept_invalid_certs` in `zpr-core`; all tests green.
 
-### Task D5: Fake-IdP integration test, CI pin, manual checklist
+### Task D5: Fake-IdP integration test, CI pin, manual checklist ([zipline#16](https://github.com/mkolehmainen/zipline/issues/16), merged)
 
 **Files:** Create `integration-test/lib/fake-idp.py` (stdlib `http.server`, ~120 lines: `/.well-known/openid-configuration`, `/auth` → 302 with `code`+`state`, `/token` → JSON with an RS256 `id_token` minted with a checked-in test key and the `nonce` echoed from `/auth`, `/jwks`; `--rotate` flag to switch `kid` for the rotation test), `integration-test/one-node-oidc-test.sh` (copy `one-node-test.sh`; adapter1 gets **no** `--bootstrap-key`, adapter2 gets both; `ph-cli connect 1 --no-browser` with `BROWSER=` unset and the printed URL fetched by `curl -L` inside the adapter's netns; asserts carrier on all TUNs and a `ping_test`; then `--rotate`, restart adapter1, assert login still succeeds after the VS refreshes), `integration-test/pregen/` (`oidc-test.zpl/.zplc` compiled with 0.17 `zplc`; `issuer = http://127.0.0.1:9000` is **not** `https` — so either the compiler rule gets an `--allow-insecure-issuer` test-only escape or the fake IdP serves TLS with a test CA added to the VS/adapter trust store. **Decision: serve TLS with a test CA** via `SSL_CERT_FILE`, keeping the compiler rule absolute), `.github/workflows/adapter.yml:39` (`VISA_SERVICE_RELEASE: v0.19.0-rc.1`, then `v0.19.0`), and a new job `oidc-integration-test` mirroring `basic-integration-test`; `docs/` or `README`: *Manual OIDC release checklist* (real Workspace happy path; consumer gmail must be rejected with the `hd` message; `client_secret` required-or-not for the Desktop client recorded as the outcome; `offline_access` path noted as not implemented).
 
-- [ ] **Step 1:** Fake IdP + a `bash` smoke test that `curl`s all four endpoints.
-- [ ] **Step 2:** The integration script, run locally with `VS_BIN` pointing at a `zpr-visaservice` build of C5.
-- [ ] **Step 3:** CI job + pin bump to `v0.19.0-rc.1`; PR; when green, cut visa service `v0.19.0` (final) and bump the pin in a one-line follow-up PR.
-- [ ] **Step 4:** Commit the checklist; close the umbrella when the checklist has been run once against real Google and the outcome recorded on #317.
+- **Step 1:** Fake IdP + a `bash` smoke test that `curl`s all four endpoints.
+- **Step 2:** The integration script, run locally with `VS_BIN` pointing at a `zpr-visaservice` build of C5.
+- **Step 3:** CI job + pin bump to `v0.19.0-rc.1`; PR; when green, cut visa service `v0.19.0` (final) and bump the pin in a one-line follow-up PR.
+- **Step 4:** Commit the checklist; close the umbrella when the checklist has been run once against real Google and the outcome recorded on #317.
 
 **Acceptance:** CI runs device-only, user-only, and both-blobs adapters through a fake IdP with no browser; key rotation and stale-cache paths exercised; pin at `v0.19.0`.
 

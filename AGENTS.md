@@ -19,7 +19,7 @@ Additional coding guidelines:
 ## INDEX
 
 - `docs/` -> technical knowledge loaded when relevant.
-- `docs/plans/` -> master plans for multi-issue features: ordering, cross-repository interface contracts, per-issue scope and acceptance criteria.
+- `docs/plans/` -> master plans for multi-issue features: ordering, cross-repository interface contracts, per-issue scope and acceptance criteria. Each opens with a `**Status:**` line; read it first, most of these plans are finished work.
 - `skills/` -> specialized, repeatable agent workflows.
 - `zpr-dev/` -> binary for configuring the ZPR development environment.
 
@@ -51,21 +51,26 @@ paths, so they can be opened directly.
 | Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
 | Changing packet formats, links, docking sessions, forwarding, or compression | `docs/ZDP.md` |
 | Changing routing, topology, or address assignment | `docs/ROUTING.md`, `docs/SYSTEM_OVERVIEW.md`, `docs/ZDP.md` |
-| Changing DNS resolution, the CoreDNS `zpr` plugin, machine hostnames, or a demo's `Corefile` | `docs/DNS.md`, then `docs/plans/2026-09-15-dns-integration.md` (service names) or `docs/plans/2026-09-17-machine-hostname-dns.md` (machine names) |
+| Changing DNS resolution, the CoreDNS `zpr` plugin, machine hostnames, or a demo's `Corefile` | `docs/DNS.md` |
 | Changing anything cryptographic, or touching the enforcement path | `docs/SECURITY_MODEL.md` |
 | Writing or reviewing a policy file | `docs/ZPL.md` |
 | Changing the topology schema, `Router`/`TopologyMgr`, or how a visa's next hop is chosen | `docs/ROUTING.md` |
-| Working any OIDC issue (`mkolehmainen/zipline#1` and its sub-issues) | `docs/OIDC.md`, then that issue's section of `docs/plans/2026-09-02-oidc-implementation-plan.md` |
-| Changing OIDC token validation, JWKS handling, or the `api = "oidc"` trusted service | `docs/OIDC.md`, `docs/SECURITY_MODEL.md` |
+| Changing OIDC token validation, JWKS handling, silent re-authentication, or the `api = "oidc"` trusted service | `docs/OIDC.md`, `docs/SECURITY_MODEL.md` |
 | Writing or reviewing Rust code | `skills/rust-coding-guidelines/SKILL.md` |
 
-Two rules that apply to every task above:
+Three rules that apply to every task above:
 
-- **Where a `docs/plans/` document covers the work, it wins over the spec it
-  implements.** `docs/OIDC.md` is the design; the implementation plan fixes ordering,
-  interface contracts and acceptance criteria against the code as it actually is, and
-  calls out each point where it supersedes the spec. Read the spec for intent and the
-  plan for what to do.
+- **An in-flight plan wins over the spec it implements; a completed plan does
+  not.** Every document in `docs/plans/` opens with a `**Status:**` line -- `IN
+  FLIGHT`, `COMPLETE (<date>)` or `SUPERSEDED by <plan>` -- and any new plan
+  carries one from its first commit. While a plan is in flight it fixes
+  ordering, interface contracts and acceptance criteria against the code as it
+  actually is, and wins wherever it and the spec disagree: read the spec for
+  intent and the plan for what to do. Once it is complete it is a historical
+  record -- its line references and "repo state this plan was written against"
+  are frozen at writing time, and the code plus the `docs/` spec are current.
+  Read a completed plan to learn *why* a decision was made, never to learn what
+  the code does.
 - **These documents record design intent, not what runs.** The RFCs describe the
   system as designed; each document in `docs/` has an `## Implementation status`
   section recording where the code diverges, and flags divergence inline where

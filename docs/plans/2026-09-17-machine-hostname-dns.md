@@ -1,6 +1,6 @@
 # Machine Hostnames in DNS — `device.hostname` over the visa service admin API
 
-**Status:** Draft
+**Status:** COMPLETE (2026-09-18) — umbrella [zipline#49](https://github.com/mkolehmainen/zipline/issues/49); tasks H0/S1/H1/H2/H3/H4 all merged, see *Issue map*. The current DNS reference is `docs/DNS.md`. Historical record: read it for *why*, not for what the code does now.
 **Date:** 2026-09-17
 **Repo state this plan was written against:** `zl-zpr-visaservice` @ `8cf3ab5` (`zipline`),
 `zl-zpr-coredns` @ `f4202c4` (`main`), `zl-zpr-demo` @ `8ef671f` (`zipline`),
@@ -247,18 +247,18 @@ in parallel with H0/S1/H1/H2 and only meets them in H4.
 
 | ID | Repo | Title | Blocked by |
 |---|---|---|---|
-| H0 | zl-zpr-visaservice | Test gate: a `file` trusted service's `device.*` attribute survives onto the actor record | — |
-| S1 | zl-zpr-visaservice | Bug: `try_update_actor` deletes another actor's live `service:<name>` entry on re-auth | — |
-| H1 | zl-zpr-visaservice | `device.hostname` claimed into a `host:<NAME>` index; per-value first-claim-wins, label validation, policy-service precedence | H0, S1 |
-| H2 | zl-zpr-visaservice | `GET /admin/hosts/{name}` under `resolve`; `hostname_conflicts` on `ActorDescriptor`; admin API doc | H1 |
-| H3 | zl-zpr-coredns | `zpr` plugin: host lookup after the service lookup per §5 | — |
-| H4 | zl-zpr-demo | `dns-demo`: named machines in `attrfile.json`, an ICMP6 `ping` service, `ping6 webhost.demo` from the client, and the alias/collision/precedence/invalid-name controls in `test-dns.sh` | H2, H3 |
+| H0 · [#50](https://github.com/mkolehmainen/zipline/issues/50) | zl-zpr-visaservice | Test gate: a `file` trusted service's `device.*` attribute survives onto the actor record | — |
+| S1 · [#51](https://github.com/mkolehmainen/zipline/issues/51) | zl-zpr-visaservice | Bug: `try_update_actor` deletes another actor's live `service:<name>` entry on re-auth | — |
+| H1 · [#53](https://github.com/mkolehmainen/zipline/issues/53) | zl-zpr-visaservice | `device.hostname` claimed into a `host:<NAME>` index; per-value first-claim-wins, label validation, policy-service precedence | H0, S1 |
+| H2 · [#54](https://github.com/mkolehmainen/zipline/issues/54) | zl-zpr-visaservice | `GET /admin/hosts/{name}` under `resolve`; `hostname_conflicts` on `ActorDescriptor`; admin API doc | H1 |
+| H3 · [#52](https://github.com/mkolehmainen/zipline/issues/52) | zl-zpr-coredns | `zpr` plugin: host lookup after the service lookup per §5 | — |
+| H4 · [#55](https://github.com/mkolehmainen/zipline/issues/55) | zl-zpr-demo | `dns-demo`: named machines in `attrfile.json`, an ICMP6 `ping` service, `ping6 webhost.demo` from the client, and the alias/collision/precedence/invalid-name controls in `test-dns.sh` | H2, H3 |
 
 ---
 
 ## Phase H0 — Test gate
 
-### Task H0: prove a `device.*` trusted-service attribute reaches the actor
+### Task H0: prove a `device.*` trusted-service attribute reaches the actor ([zipline#50](https://github.com/mkolehmainen/zipline/issues/50), merged)
 
 The whole design rests on one unproven step: that an attribute in the `device.` class
 domain, vended by a declared (non-default) trusted service and keyed on
@@ -270,17 +270,17 @@ and it is cheap to settle.
 **Files:** `vs/src/connection_control.rs` tests (the `CapturingTrustedService` /
 `FailingTrustedService` fixtures at `:1723` and `:1228` are the shape to copy).
 
-- [ ] Step 1: A test-only trusted service vending `device.hostname` with values
+- Step 1: A test-only trusted service vending `device.hostname` with values
   `["somename", "m-7f3a2b"]` for identity `("device.zpr.adapter.cn", "<cn>")`. Connect an
   adapter with that CN; assert the resulting actor carries `device.hostname` with both
   values, and that the attribute's source is the trusted service, not the peer.
-- [ ] Step 2: Assert the negative: the same attribute presented by the *peer* as an
+- Step 2: Assert the negative: the same attribute presented by the *peer* as an
   unauthenticated claim does not become an authenticated identity attribute. This is the
   constraint every later task depends on, so it is pinned here.
-- [ ] Step 3: A compiler-side test that `returns_attributes = ["h -> device.hostname{}"]`
+- Step 3: A compiler-side test that `returns_attributes = ["h -> device.hostname{}"]`
   compiles and `["h -> device.zpr.hostname"]` is rejected — locking in why the attribute is
   spelled the way it is (`zl-zpr-compiler/src/config/trusted_service.rs:139`).
-- [ ] Step 4: Build gate.
+- Step 4: Build gate.
 
 **Acceptance:** Steps 1–3 pass. If Step 1 fails — a `device.*` attribute from a declared
 trusted service does *not* reach the actor — record it under **Findings** and stop: H1
@@ -291,7 +291,7 @@ rejected approach B) and the plan needs revisiting before any of it is written.
 
 ## Phase S — Pre-existing bug
 
-### Task S1: `try_update_actor` deletes another actor's live service entry
+### Task S1: `try_update_actor` deletes another actor's live service entry ([zipline#51](https://github.com/mkolehmainen/zipline/issues/51), merged)
 
 `clean_up` is careful: before deleting `service:<name>` it checks the entry still points at
 the departing actor, with the comment *"The stale names may actually be valid names on new
@@ -312,16 +312,16 @@ live today independent of hostnames.
 
 **Files:** `vs/src/db/actor.rs:215-219`, plus tests.
 
-- [ ] Step 1 (test first): two actors, both with service `web` in their `zpr.services`
+- Step 1 (test first): two actors, both with service `web` in their `zpr.services`
   attribute; add A, add B (B now owns `service:web`), then `update_actor(A)`. Assert
   `get_zpr_addr_for_service("web")` still returns B's address. Fails before Step 2.
-- [ ] Step 2: Give the delete loop the same owner check `clean_up` uses; factor the shared
+- Step 2: Give the delete loop the same owner check `clean_up` uses; factor the shared
   "release these names if and only if I hold them" logic into one function both call, so the
   two paths cannot drift again (DRY, and H1 reuses it for hostnames).
-- [ ] Step 3: Assert the ordinary case still works: `update_actor(A)` where A holds
+- Step 3: Assert the ordinary case still works: `update_actor(A)` where A holds
   `service:web` re-points nothing and leaves the entry intact; a service dropped from A's
   attribute is released.
-- [ ] Step 4: Build gate.
+- Step 4: Build gate.
 
 **Acceptance:** Step 1's test fails on `zipline` and passes after Step 2; the existing
 `actor.rs` and `admin_service.rs` suites stay green.
@@ -330,7 +330,7 @@ live today independent of hostnames.
 
 ## Phase H — Visa service
 
-### Task H1: the hostname index and its claim rule
+### Task H1: the hostname index and its claim rule ([zipline#53](https://github.com/mkolehmainen/zipline/issues/53), merged)
 
 **Files:**
 - `vs/src/db/mod.rs:61` — `hset_nx` returns `bool` (contract 3); `vs/src/db/db_redis.rs:132`,
@@ -352,7 +352,7 @@ live today independent of hostnames.
 
 **Interfaces — Produces (exact):** contracts 2 and 3 above.
 
-- [ ] Step 1 (test first), in `vs/src/db/actor.rs` tests against `FakeDb`:
+- Step 1 (test first), in `vs/src/db/actor.rs` tests against `FakeDb`:
   - one actor, `device.hostname = ["somename","m-7f3a2b"]` → both names resolve to its
     address; `list_hostnames_for_actor` returns both.
   - second actor claims `somename` and `other` → `somename` still resolves to the first
@@ -367,19 +367,19 @@ live today independent of hostnames.
   - invalid values (`Some.Name`, `x`*64, empty, `_x`, `-x`, `x-`) are rejected, logged, not
     transformed; valid siblings in the same attribute still claim.
   - a value equal to a service name in the current policy is rejected.
-- [ ] Step 2: Implement contract 3 (`hset_nx` → `bool`) and the claim/release helper.
+- Step 2: Implement contract 3 (`hset_nx` → `bool`) and the claim/release helper.
   Validation lives in one function with a doc comment stating the label grammar.
-- [ ] Step 3: Wire the policy-service precedence check. The claim path needs the current
+- Step 3: Wire the policy-service precedence check. The claim path needs the current
   policy's service names; pass them in rather than reaching for global state from the DB
   layer, so the DB layer stays testable against `FakeDb` alone.
-- [ ] Step 4: Record rejected values on the actor record so H2 can report them without
+- Step 4: Record rejected values on the actor record so H2 can report them without
   re-deriving anything.
-- [ ] Step 5: Build gate.
+- Step 5: Build gate.
 
 **Acceptance:** every Step 1 assertion passes; the full `zl-zpr-visaservice` workspace suite
 is green; no policy, compiler or `zpr-common` change in the diff.
 
-### Task H2: admin API and operator visibility
+### Task H2: admin API and operator visibility ([zipline#54](https://github.com/mkolehmainen/zipline/issues/54), merged)
 
 **Files:**
 - `admin-api-types/src/admin_api_types.rs:97` — `ActorDescriptor.hostname_conflicts`;
@@ -394,16 +394,16 @@ is green; no policy, compiler or `zpr-common` change in the diff.
 
 **Interfaces — Produces (exact):** contract 4 above.
 
-- [ ] Step 1 (test first): insert a `resolve` key with `ReloadableApiKeys::insert_for_test`
+- Step 1 (test first): insert a `resolve` key with `ReloadableApiKeys::insert_for_test`
   (`admin_apikeys.rs:166`) following `test_flush_service_cache_read_key_forbidden`
   (`admin_service.rs:2767`). Assert `GET /admin/hosts/{name}` → 200 for a claimed name,
   404 for an unclaimed one, and that a `resolve` key still gets 403 on every `read`
   endpoint — the permission surface must not widen.
-- [ ] Step 2: Assert `GET /admin/actors/{addr}` shows the rejected value in
+- Step 2: Assert `GET /admin/actors/{addr}` shows the rejected value in
   `hostname_conflicts` for the losing actor and an empty vector for the winner.
-- [ ] Step 3: Implement the handler and the descriptor field.
-- [ ] Step 4: `vs-admin hosts get`, and the `admin-http-api.txt` update.
-- [ ] Step 5: Build gate.
+- Step 3: Implement the handler and the descriptor field.
+- Step 4: `vs-admin hosts get`, and the `admin-http-api.txt` update.
+- Step 5: Build gate.
 
 **Acceptance:** Step 1–2 assertions pass; `vs-admin` against a `read` key behaves exactly as
 before; a `resolve` key reaches exactly three endpoints.
@@ -412,7 +412,7 @@ before; a `resolve` key reaches exactly three endpoints.
 
 ## Phase H3 — CoreDNS plugin
 
-### Task H3: host lookup after the service lookup
+### Task H3: host lookup after the service lookup ([zipline#52](https://github.com/mkolehmainen/zipline/issues/52), merged)
 
 **Files:** `plugin/zpr/client.go` (a `lookupHost` beside `lookupService`, sharing the
 request/status/decode helper — the two differ only in path), `plugin/zpr/zpr.go:64-76`
@@ -420,7 +420,7 @@ request/status/decode helper — the two differ only in path), `plugin/zpr/zpr.g
 
 **Produces:** the table in contract 5, observable through `dig`.
 
-- [ ] Step 1 (test first): table cases against `net/http/httptest`, each asserting rcode,
+- Step 1 (test first): table cases against `net/http/httptest`, each asserting rcode,
   answer RRs, authority SOA, **and** which admin paths the fake saw:
   - `web.demo. AAAA`, services 200 → NOERROR + AAAA; the fake saw no `/admin/hosts/` call.
   - `somename.demo. AAAA`, services 404 + hosts 200 → NOERROR + AAAA.
@@ -431,13 +431,13 @@ request/status/decode helper — the two differ only in path), `plugin/zpr/zpr.g
   - services 404 + hosts 500 / 401 / non-JSON / unparseable `zpr_addr` → SERVFAIL.
   - `a.b.demo. AAAA` → NXDOMAIN with zero HTTP calls (unchanged).
   - `SOMENAME.demo. AAAA` → hosts path is `/admin/hosts/somename`.
-- [ ] Step 2: Refactor `lookupService` and the new `lookupHost` onto one shared
+- Step 2: Refactor `lookupService` and the new `lookupHost` onto one shared
   request/decode function taking the path segment. `ServeDNS` stays under ~80 lines.
-- [ ] Step 3: `Ready()` unchanged (`GET /admin/services` is still the readiness probe —
+- Step 3: `Ready()` unchanged (`GET /admin/services` is still the readiness probe —
   hosts need no separate probe and adding one would double startup traffic).
-- [ ] Step 4: README: contract 5's table and the one-flat-namespace rule, including that a
+- Step 4: README: contract 5's table and the one-flat-namespace rule, including that a
   service name wins.
-- [ ] Step 5: `go vet`, `go test ./...`, `gofmt -l` empty, `make build && bin/coredns -plugins | grep dns.zpr`.
+- Step 5: `go vet`, `go test ./...`, `gofmt -l` empty, `make build && bin/coredns -plugins | grep dns.zpr`.
 
 **Acceptance:** Step 1 green; no Corefile syntax change; a machine name resolves, an unknown
 name is NXDOMAIN, a failed service lookup is SERVFAIL and never falls through to hosts.
@@ -446,7 +446,7 @@ name is NXDOMAIN, a failed service lookup is SERVFAIL and never falls through to
 
 ## Phase H4 — Integration
 
-### Task H4: a named machine in `dns-demo`, end to end
+### Task H4: a named machine in `dns-demo`, end to end ([zipline#55](https://github.com/mkolehmainen/zipline/issues/55), merged)
 
 **Files:** `dns-demo/zpr-conf/admin/dns-demo.zpl` (declare the `machines` trusted service
 reference so the store is woven — see the deviation note already recorded in that file for
@@ -464,9 +464,9 @@ checking what the resolve key may reach. Every step below reuses those; no new h
 **Produces:** `test-dns.sh` proves machine-name resolution, aliases, and all three negative
 controls unattended.
 
-- [ ] Step 1: Name the web machine `webhost` (plus its unique id) and the client `alicebox`.
+- Step 1: Name the web machine `webhost` (plus its unique id) and the client `alicebox`.
   `commands/demo-vs-admin hosts get webhost` → `zpr_addr == "fd5a:5052:8888::80"`.
-- [ ] Step 2: From `client`: `cdig AAAA webhost.demo` returns `fd5a:5052:8888::80`, and
+- Step 2: From `client`: `cdig AAAA webhost.demo` returns `fd5a:5052:8888::80`, and
   `curl http://webhost.demo/` succeeds through `/etc/resolv.conf` (the existing test's
   `web.demo` check, restated for a machine name).
   Then `ping6 -c1 webhost.demo`, which needs policy of its own — ICMP6 is expressible but
@@ -481,17 +481,17 @@ controls unattended.
   (shape from `zl-zpr-visaservice/integration-test/pregen/zpt-test.zplc:24-27` and
   `zpt-test.zpl:4,16`). This is the goal statement executed, and it is also the step that
   demonstrates a hostname is a name and not an authorization.
-- [ ] Step 3: Alias check — the machine's unique-id value resolves to the same address as
+- Step 3: Alias check — the machine's unique-id value resolves to the same address as
   its friendly name.
-- [ ] Step 4: Collision control: give `client.demo` the hostname `webhost` too, restart it,
+- Step 4: Collision control: give `client.demo` the hostname `webhost` too, restart it,
   and assert (a) `hosts get webhost` still returns the web machine's address, (b)
   `demo-vs-admin actors get <client addr>` lists `webhost` under `hostname_conflicts`, (c)
   the VS log carries the rejection at `error!`.
-- [ ] Step 5: Precedence control: give a machine the hostname `web` (a declared service) and
+- Step 5: Precedence control: give a machine the hostname `web` (a declared service) and
   assert the claim is rejected and `web.demo` still resolves to the service's provider.
-- [ ] Step 6: Invalid-name control: a hostname of `Not_A_Label` is rejected and does not
+- Step 6: Invalid-name control: a hostname of `Not_A_Label` is rejected and does not
   resolve in any transformed form — specifically, `not-a-label.demo` is NXDOMAIN.
-- [ ] Step 7: `test-dns.sh` runs Steps 2–6 and exits non-zero on any failure, in the existing
+- Step 7: `test-dns.sh` runs Steps 2–6 and exits non-zero on any failure, in the existing
   SUCCESS/FAILED banner style. README documents the walk-through.
 
 **Acceptance:** from a clean checkout,

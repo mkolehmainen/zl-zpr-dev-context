@@ -1051,8 +1051,25 @@ section where they differ**, per the `docs/plans/` rule in `AGENTS.md`.
 - **Fake-IdP refresh support** — the harness serves `offline_access` and
   `grant_type=refresh_token` with an advancing `iat`, a fixed `auth_time` and
   no `nonce` claim (OIDC Core §12.2's SHOULD NOT, which is what Google does),
-  plus `--revoke-refresh` (zipline#47). This covers the relying-party half of
-  renewal only; the loop itself does not close — see *Not yet*.
+  plus `--revoke-refresh` (zipline#47).
+- **Node→adapter credential request — the renewal loop closes** — R7's
+  end-to-end test proved the two halves never met: the renewal tick, the
+  tracked `auth_expires`, the stashed renewal identity and the visa-service
+  connection all live on the **node's** `NodeToAdapter` link, while the
+  `AuthAgent` `ph-cli` registers lives on the **adapter's** `AdapterToNode`
+  link, so the node reached its deadline with no agent to ask. R8
+  (zipline#66) added the missing hop: ZDP `RenewAuthenticationRequest = 142`
+  / `RenewAuthenticationResponse = 143` (`adapter/ph/src/zdp.rs`). The node
+  sends one on the renewal deadline with a fresh challenge; the adapter
+  answers from its registered `AuthAgent` through the R6 bridge with
+  `interactive = false`, or `ResponseCode::AuthUnavailable` when there is no
+  agent or no advertised IdP, so the node records *why* renewal was
+  impossible rather than seeing a dropped packet; the node verifies the
+  echoed challenge and completes with `reauthorize` against the issuer
+  stashed at login (`RenewalIdentity`). One attempt is in flight at a time
+  (`renewal_in_flight`, cleared on success and on failure, and bounded so a
+  hung agent cannot pin it past expiry), and the link stays Active
+  throughout.
 
 **Superseded:**
 
@@ -1072,17 +1089,17 @@ section where they differ**, per the `docs/plans/` rule in `AGENTS.md`.
   forks, and a netns run needs root, so it is pending the operator's
   environment (`zl-zpr-core` 02b730d records what was run locally for the
   interplay test — fixture compile, `bash -n`, the fake-IdP smoke test, and
-  the C1-revert `zpdump` RED). `one-node-oidc-renewal-test.sh` (zipline#47) is
-  in the same position.
-- **The silent-renewal loop does not close end to end.** The renewal tick,
-  the tracked `auth_expires` and the visa-service connection all live on the
-  **node's** `NodeToAdapter` link, while the `AuthAgent` that `ph-cli`
-  registers lives on the **adapter's** `AdapterToNode` link — so the node
-  reaches its renewal deadline with no agent to ask and logs "authentication
-  expires soon but no AuthAgent is available to renew it". Closing the loop
-  needs a node-to-adapter credential request that today has no ZDP message.
-  Everything either side of that hop is implemented and unit-tested; see
-  zipline#47 for the analysis and the e2e that pins it.
+  the C1-revert `zpdump` RED). `one-node-oidc-renewal-test.sh` is in the same
+  position: R8 removed the `if: false` that gated its job, and it was not run
+  in the environment that implemented R8 (no passwordless sudo there), so the
+  renewal loop is proven by unit tests and by inspection, not by an observed
+  end-to-end run. Its in-script banner still claims the test cannot pass —
+  stale since zipline#66.
+- **The renewal ZDP messages are not in the RFC.**
+  `RenewAuthenticationRequest = 142` and `RenewAuthenticationResponse = 143`
+  are implemented and unit-tested but carry a `TODO: add to RFC 6`
+  (`adapter/ph/src/zdp.rs:42-43`), so RFC 6 does not yet describe a message
+  pair that is on the wire.
 - Real-Google validation is a manual release checklist
   (`zl-zpr-core/integration-test/OIDC-RELEASE-CHECKLIST.md`), not automated —
   the fake IdP cannot prove the `hd`-absent rejection against Google's actual

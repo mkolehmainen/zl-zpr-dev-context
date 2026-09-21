@@ -1,6 +1,6 @@
 # Build Sets Plan — reproducible, compatibility-gated builds of the whole ZPR binary set
 
-**Status:** Draft
+**Status:** IN FLIGHT (as of 2026-09-21) — umbrella [zipline#57](https://github.com/mkolehmainen/zipline/issues/57); B1–B4 merged, B5 ([#62](https://github.com/mkolehmainen/zipline/issues/62)) and B6 ([#63](https://github.com/mkolehmainen/zipline/issues/63)) open. See *Issue map*.
 **Date:** 2026-09-17
 **Repo state this plan was written against:** `zl-zpr-dev-context` @ `8bfd061`, `zl-zpr-core` @ `dd43b4b`, `zl-zpr-visaservice` @ `2cf9912`, `zl-zpr-compiler` @ `f63302c` (package version `0.18.0`), `zl-zpr-coredns` @ `f4202c4`, `zl-zpr-demo` @ `8ef671f`, `zl-zpr-common` @ `5fbbff8` (tag `v0.27.0`; consumers pin `v0.26.0`).
 
@@ -255,18 +255,18 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 | ID | Repo | Title | Blocked by |
 |---|---|---|---|
-| B1 | zl-zpr-dev-context | `spec-003-build.md`; build-set and emitted-manifest schemas; ref resolution; `zpr-dev build --dry-run` | — |
-| B2 | zl-zpr-dev-context | The three compatibility gates, with unit tests | B1 |
-| B3 | zl-zpr-dev-context | Worktrees, per-repo recipes, `dist/`, emitted manifest, tarball | B1 |
-| B4 | zl-zpr-dev-context | `unit` tier, including `pregen` with the set's `zplc` | B3 |
-| B5 | zl-zpr-dev-context | `netns` and `docker` tiers | B4 |
-| B6 | zl-zpr-dev-context | `docs/BUILD.md` section, `zpr-dev/README.md`, retarget the `AGENTS.md` reading row, first committed build set | B5 |
+| B1 · [#58](https://github.com/mkolehmainen/zipline/issues/58) | zl-zpr-dev-context | `spec-003-build.md`; build-set and emitted-manifest schemas; ref resolution; `zpr-dev build --dry-run` | — |
+| B2 · [#59](https://github.com/mkolehmainen/zipline/issues/59) | zl-zpr-dev-context | The three compatibility gates, with unit tests | B1 |
+| B3 · [#60](https://github.com/mkolehmainen/zipline/issues/60) | zl-zpr-dev-context | Worktrees, per-repo recipes, `dist/`, emitted manifest, tarball | B1 |
+| B4 · [#61](https://github.com/mkolehmainen/zipline/issues/61) | zl-zpr-dev-context | `unit` tier, including `pregen` with the set's `zplc` | B3 |
+| B5 · [#62](https://github.com/mkolehmainen/zipline/issues/62) | zl-zpr-dev-context | `netns` and `docker` tiers | B4 |
+| B6 · [#63](https://github.com/mkolehmainen/zipline/issues/63) | zl-zpr-dev-context | `docs/BUILD.md` section, `zpr-dev/README.md`, retarget the `AGENTS.md` reading row, first committed build set | B5 |
 
 ---
 
 ## Phase B — `zpr-dev build`
 
-### Task B1: Specification, schemas, ref resolution, `--dry-run`
+### Task B1: Specification, schemas, ref resolution, `--dry-run` ([zipline#58](https://github.com/mkolehmainen/zipline/issues/58), merged)
 
 **Files (new):**
 - `zpr-dev/docs/specs/spec-003-build.md` — written first and in the style of `spec-001`: scope and out-of-scope, the two schemas, the three gates as normative rules, build order, tiers, CLI, exit codes, testing. This document is the auditable description of the gates; the code follows it.
@@ -292,7 +292,7 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 ---
 
-### Task B2: The three compatibility gates
+### Task B2: The three compatibility gates ([zipline#59](https://github.com/mkolehmainen/zipline/issues/59), merged)
 
 **Files:**
 - `zpr-dev/src/build/gates.rs` (new) — pin extraction, the three gates, the accumulating report.
@@ -311,7 +311,7 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 ---
 
-### Task B3: Worktrees, recipes, `dist/`, emitted manifest
+### Task B3: Worktrees, recipes, `dist/`, emitted manifest ([zipline#60](https://github.com/mkolehmainen/zipline/issues/60), merged)
 
 **Files:**
 - `zpr-dev/src/build/recipes.rs` (new) — the five recipes of contract 4 and the staging lists.
@@ -332,7 +332,7 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 ---
 
-### Task B4: The `unit` tier
+### Task B4: The `unit` tier ([zipline#61](https://github.com/mkolehmainen/zipline/issues/61), merged)
 
 **Files:** `zpr-dev/src/build/tiers.rs` (new), `zpr-dev/src/build/mod.rs`.
 
@@ -347,7 +347,7 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 ---
 
-### Task B5: The `netns` and `docker` tiers
+### Task B5: The `netns` and `docker` tiers ([zipline#62](https://github.com/mkolehmainen/zipline/issues/62), open)
 
 **Files:** `zpr-dev/src/build/tiers.rs`.
 
@@ -364,7 +364,7 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 ---
 
-### Task B6: Documentation and the first committed build set
+### Task B6: Documentation and the first committed build set ([zipline#63](https://github.com/mkolehmainen/zipline/issues/63), open)
 
 **Files:**
 - `docs/BUILD.md` — new "Compatible build sets" section: what a set is, the two manifests, the three gates, the tiers, how to cut a new set. While in this file, fix what has gone stale: the `zpr` example tag (`v0.25.1` → `v0.26.0`) and the `zpr-utils` URLs, which now point at `mkolehmainen` in `zl-zpr-core` and `zl-zpr-common`, not `org-zpr`.

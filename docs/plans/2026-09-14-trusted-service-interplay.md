@@ -1,11 +1,6 @@
 # Trusted Service Interplay
 
-> **Status: COMPLETE (2026-09-14).** All five issues landed: C1
-> (zipline#23, compiler PR #4), V1 (zipline#24, vs PR #9), V2 (zipline#25,
-> vs PR #10), V3 (zipline#26, vs PR #12), I1 (zipline#27 — the e2e fixture in
-> `zl-zpr-core` and the documentation edits in this repository). The V1
-> outcome, including the join-matching answer, is recorded under Finding 3
-> below.
+**Status:** COMPLETE (2026-09-15) — umbrella [zipline#22](https://github.com/mkolehmainen/zipline/issues/22); tasks C1/V1/V2/V3/I1 all merged, see *Issue map*. The V1 outcome, including the join-matching answer, is recorded under *Finding 3* below. Historical record: read it for *why*, not for what the code does now.
 
 
 ## Background
@@ -279,17 +274,17 @@ are gated on `V1` confirming Finding 3. `I1` needs both repos fixed.
 
 | ID | Repo | Title | Blocked by |
 |---|---|---|---|
-| C1 | zl-zpr-compiler | Never prune a trusted service that vends identity attributes | — |
-| V1 | zl-zpr-visaservice | Failing test: a decorating file store displaces the authenticator's `user.zpr.authority` | — |
-| V2 | zl-zpr-visaservice | `derive_user_authority`: the authenticating service keeps the authority | V1 |
-| V3 | zl-zpr-visaservice | Connect and refresh paths pass the existing authority to `derive_user_authority` | V2 |
-| I1 | zl-zpr-dev-context | End-to-end fixture and docs for the oidc + file interplay | C1, V3 |
+| C1 · [#23](https://github.com/mkolehmainen/zipline/issues/23) | zl-zpr-compiler | Never prune a trusted service that vends identity attributes | — |
+| V1 · [#24](https://github.com/mkolehmainen/zipline/issues/24) | zl-zpr-visaservice | Failing test: a decorating file store displaces the authenticator's `user.zpr.authority` | — |
+| V2 · [#25](https://github.com/mkolehmainen/zipline/issues/25) | zl-zpr-visaservice | `derive_user_authority`: the authenticating service keeps the authority | V1 |
+| V3 · [#26](https://github.com/mkolehmainen/zipline/issues/26) | zl-zpr-visaservice | Connect and refresh paths pass the existing authority to `derive_user_authority` | V2 |
+| I1 · [#27](https://github.com/mkolehmainen/zipline/issues/27) | zl-zpr-dev-context | End-to-end fixture and docs for the oidc + file interplay | C1, V3 |
 
 ---
 
 ## Phase C — Compiler (`zl-zpr-compiler`)
 
-### Task C1: Never prune a trusted service that vends identity attributes
+### Task C1: Never prune a trusted service that vends identity attributes ([zipline#23](https://github.com/mkolehmainen/zipline/issues/23), merged)
 
 **Scope.** A trusted service declaring a non-empty `identity_attributes` is a query key for
 every attribute store in the policy — a `file` store's JSON is keyed by identity attribute
@@ -340,7 +335,7 @@ time.
 
 ## Phase V — Visa service (`zl-zpr-visaservice`)
 
-### Task V1: Failing test — a decorating file store displaces the authenticator
+### Task V1: Failing test — a decorating file store displaces the authenticator ([zipline#24](https://github.com/mkolehmainen/zipline/issues/24), merged)
 
 **This task is the gate for V2 and V3.** It changes no production code.
 
@@ -362,7 +357,7 @@ time.
 **If these pass unchanged against today's code, stop.** Finding 3 is wrong; close V2 and
 V3, and record the correction in this document.
 
-### Task V2: `derive_user_authority` — the authenticating service keeps the authority
+### Task V2: `derive_user_authority` — the authenticating service keeps the authority ([zipline#25](https://github.com/mkolehmainen/zipline/issues/25), merged)
 
 - [x] Change the signature in `vs/src/trusted_services/mod.rs:81`:
 
@@ -385,7 +380,7 @@ let the authority lapse mid-session. Cover both arms with tests.
 - [x] Extend the doc comment to state the ownership rule and why: a service that decorates
       an already-identified actor is not the authority for that identity.
 
-### Task V3: Pass the existing authority at both call sites
+### Task V3: Pass the existing authority at both call sites ([zipline#26](https://github.com/mkolehmainen/zipline/issues/26), merged)
 
 - [x] `vs/src/connection_control.rs:735` — read the current authority out of
       `authd_claims` into an **owned** `Option<String>` before the call; the loop body
@@ -413,7 +408,7 @@ derivation proceeds exactly as today.
 
 ## Phase I — Integration and documentation
 
-### Task I1: End-to-end fixture and docs
+### Task I1: End-to-end fixture and docs ([zipline#27](https://github.com/mkolehmainen/zipline/issues/27), merged)
 
 - [x] Integration test exercising the Background's configuration against the fake IdP
       (the `D5` harness from the OIDC plan): connect with a Google token, confirm the

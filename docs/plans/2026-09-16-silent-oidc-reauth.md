@@ -1,7 +1,9 @@
 # Silent OIDC Re-authentication
 
-> **Status: FILED AND BUILT (2026-09-17).** Umbrella
-> [zipline#40](https://github.com/mkolehmainen/zipline/issues/40), seven tasks
+**Status:** COMPLETE (2026-09-18) — umbrella [zipline#40](https://github.com/mkolehmainen/zipline/issues/40); R1–R7 merged, and R8 ([#66](https://github.com/mkolehmainen/zipline/issues/66)) — the node→adapter credential request R7 proved was missing — merged 2026-09-18, closing the loop. Recorded on #66: its acceptance script `one-node-oidc-renewal-test.sh` was not run in the implementing environment (no passwordless sudo there). The current OIDC reference is `docs/OIDC.md`. Historical record: read it for *why*, not for what the code does now.
+
+> **How it was filed.** Umbrella
+> [zipline#40](https://github.com/mkolehmainen/zipline/issues/40), eight tasks
 > across `zl-zpr-compiler`, `zl-zpr-visaservice` and `zl-zpr-core`:
 > R1 [#41](https://github.com/mkolehmainen/zipline/issues/41),
 > R2 [#42](https://github.com/mkolehmainen/zipline/issues/42),
@@ -9,10 +11,9 @@
 > R4 [#44](https://github.com/mkolehmainen/zipline/issues/44),
 > R5 [#45](https://github.com/mkolehmainen/zipline/issues/45),
 > R6 [#46](https://github.com/mkolehmainen/zipline/issues/46),
-> R7 [#47](https://github.com/mkolehmainen/zipline/issues/47). R1–R6 are merged
-> and closed; see *Issue map* below.
+> R7 [#47](https://github.com/mkolehmainen/zipline/issues/47), plus R8 [#66](https://github.com/mkolehmainen/zipline/issues/66) spun off from R7; see *Issue map* below.
 >
-> **The loop does not close yet.** R7's end-to-end test found that the renewal
+> **The gap R7 found — closed by R8.** R7's end-to-end test found that the renewal
 > tick, the tracked `auth_expires` and the visa-service connection all live on
 > the **node's** `NodeToAdapter` link, while the `AuthAgent` `ph-cli` registers
 > lives on the **adapter's** `AdapterToNode` link — so the node reaches its
@@ -21,7 +22,8 @@
 > production paths never produce together. Closing it needs a node-to-adapter
 > credential request, for which no ZDP message exists; the plan's "no schema
 > change is needed anywhere" claim covered the VSAPI and missed this hop.
-> Tracked on [#47](https://github.com/mkolehmainen/zipline/issues/47).
+> R8 ([#66](https://github.com/mkolehmainen/zipline/issues/66)) added the `RenewAuthenticationRequest`/`Response` ZDP
+> message pair and wired both ends.
 
 **Supersedes:** OIDC-X3 in `docs/plans/2026-09-02-oidc-implementation-plan.md`
 (*"Refresh tokens / `offline_access` / OS keyring in `ph-cli auth-agent`"*), and
@@ -231,24 +233,25 @@ binding. Additions specific to this work:
 
 ## Issue map
 
-Work lands in three repositories. Suggested EPIC in `mkolehmainen/zipline` with
-seven sub-issues.
+Work landed in three repositories under one EPIC in `mkolehmainen/zipline`.
+R8 was spun off from R7 once the e2e proved the missing hop.
 
 | ID | Repo | Scope | Depends on |
 |---|---|---|---|
-| R1 | `zl-zpr-compiler` | `allow_offline_access` validation rules + fixtures, minor bump | — |
-| R2 | `zl-zpr-visaservice` | Lifetime rework: track `iat`, dual-clock `min`, close the `iat` fallback | — |
-| R3 | `zl-zpr-visaservice` | Implement `reauthorize` with session-bound validation | R2 |
-| R4 | `zl-zpr-visaservice` | Authentication-expiry sweep + real `revokeAuthentication` | R2 |
-| R5 | `zl-zpr-core` | Node: track `auth_expires`, schedule renewal, call `reauthorize`, honour revocation | R3, R4 |
-| R6 | `zl-zpr-core` | `ph-cli auth-agent`: offline access, in-memory refresh token, non-interactive grant | R1 (for the policy shape) |
-| R7 | `zl-zpr-core` + `zl-zpr-dev-context` | Fake-IdP renewal e2e + documentation | R5, R6 |
+| R1 · [#41](https://github.com/mkolehmainen/zipline/issues/41) | `zl-zpr-compiler` | `allow_offline_access` validation rules + fixtures, minor bump | — |
+| R2 · [#42](https://github.com/mkolehmainen/zipline/issues/42) | `zl-zpr-visaservice` | Lifetime rework: track `iat`, dual-clock `min`, close the `iat` fallback | — |
+| R3 · [#43](https://github.com/mkolehmainen/zipline/issues/43) | `zl-zpr-visaservice` | Implement `reauthorize` with session-bound validation | R2 |
+| R4 · [#44](https://github.com/mkolehmainen/zipline/issues/44) | `zl-zpr-visaservice` | Authentication-expiry sweep + real `revokeAuthentication` | R2 |
+| R5 · [#45](https://github.com/mkolehmainen/zipline/issues/45) | `zl-zpr-core` | Node: track `auth_expires`, schedule renewal, call `reauthorize`, honour revocation | R3, R4 |
+| R6 · [#46](https://github.com/mkolehmainen/zipline/issues/46) | `zl-zpr-core` | `ph-cli auth-agent`: offline access, in-memory refresh token, non-interactive grant | R1 (for the policy shape) |
+| R7 · [#47](https://github.com/mkolehmainen/zipline/issues/47) | `zl-zpr-core` + `zl-zpr-dev-context` | Fake-IdP renewal e2e + documentation | R5, R6 |
+| R8 · [#66](https://github.com/mkolehmainen/zipline/issues/66) | `zl-zpr-core` | Node→adapter credential request: `RenewAuthenticationRequest`/`Response` ZDP pair, node send path, adapter answer from its `AuthAgent` | R7 |
 
-Order: R1 ∥ R2 → R3 ∥ R4 → R5 ∥ R6 → R7.
+Order: R1 ∥ R2 → R3 ∥ R4 → R5 ∥ R6 → R7 → R8.
 
 ---
 
-## R1 — Compiler validation (`zl-zpr-compiler`)
+## R1 — Compiler validation (`zl-zpr-compiler`) ([zipline#41](https://github.com/mkolehmainen/zipline/issues/41), merged)
 
 `src/config/trusted_service.rs` already requires `expiration_seconds > 0` for
 `api = "oidc"` (`:344`) via `parse_expiration_seconds` (`:86`). Add, in the same
@@ -266,7 +269,7 @@ one `test-oidc-offline.zplc` that compiles and `zpdump`s with
 `max_auth_age_seconds = 43200`. Compiler minor bumped; the VS's
 `POLICY_MIN_COMPILER_MINOR` raised to match in R2.
 
-## R2 — Lifetime rework (`zl-zpr-visaservice`)
+## R2 — Lifetime rework (`zl-zpr-visaservice`) ([zipline#42](https://github.com/mkolehmainen/zipline/issues/42), merged)
 
 - `oidc/validate.rs`: add `iat` to `ValidatedToken`. Split the `auth_time`
   resolution so the `iat` fallback (`:186`) is available only when the provider
@@ -285,7 +288,7 @@ wins when it is sooner, (c) missing `auth_time` + offline access is rejected,
 (e) `max_auth_age_seconds = 0` leaves the window unbounded. A `zpt` assertion
 pinning `user.zpr.authority`'s expiry to the computed `min`.
 
-## R3 — `reauthorize` (`zl-zpr-visaservice`)
+## R3 — `reauthorize` (`zl-zpr-visaservice`) ([zipline#43](https://github.com/mkolehmainen/zipline/issues/43), merged)
 
 Implement `vsapi_worker.rs:1384`. Reuse the existing connect-path machinery
 rather than duplicating it: pin one `PolicySnapshot`
@@ -313,7 +316,7 @@ rejects a mismatched nonce (no regression); a test that a renewed actor's
 `user.*` attributes keep the same values and a later expiry; a test that
 `authorize_connection` denial on reauth surfaces `PolicyDenied`.
 
-## R4 — Expiry sweep and revocation (`zl-zpr-visaservice`)
+## R4 — Expiry sweep and revocation (`zl-zpr-visaservice`) ([zipline#44](https://github.com/mkolehmainen/zipline/issues/44), merged)
 
 - Implement `VssCmd::RevokeAuthsByZprAddr` at `vss_worker.rs:163`, mirroring
   `vss_do_revoke_visas`. Drop the `#[allow(dead_code)]` on
@@ -330,7 +333,7 @@ one sweep pass and absent afterwards; a test that an actor inside its window is
 untouched; a test that a VSS outage during a sweep leaves the actor for the next
 pass rather than half-removing it.
 
-## R5 — Node (`zl-zpr-core`, `adapter/ph`)
+## R5 — Node (`zl-zpr-core`, `adapter/ph`) ([zipline#45](https://github.com/mkolehmainen/zipline/issues/45), merged)
 
 - `LinkData` (`link_state.rs:258`) gains `auth_expires: Option<SystemTime>`,
   populated from `Connection` in `visa_mgmt.rs:57` — the value currently dropped —
@@ -371,7 +374,7 @@ once and attempts no renewal; a test that a dropped agent client clears the
 `link_state.rs:466` can assert directly); a test that `RevokeAuth` for a docked
 address removes its visas and for an unknown address is a no-op ack.
 
-## R6 — `ph-cli auth-agent` (`zl-zpr-core`, `adapter/cli`)
+## R6 — `ph-cli auth-agent` (`zl-zpr-core`, `adapter/cli`) ([zipline#46](https://github.com/mkolehmainen/zipline/issues/46), merged)
 
 - Authorization request: when `idp.allow_offline_access`, add the standard
   `offline_access` scope **and** `access_type=offline` with `prompt=consent`
@@ -406,7 +409,7 @@ token never contacts the browser or the authorization endpoint; a test that
 a test that the browser fallback triggers on a headless environment and that the
 printed URL carries the S256 challenge but no verifier.
 
-## R7 — Integration and documentation
+## R7 — Integration and documentation ([zipline#47](https://github.com/mkolehmainen/zipline/issues/47), merged)
 
 - Extend the fake-IdP e2e (the OIDC-D5 harness) with a renewal scenario: connect
   interactively, drive the clock past the renewal lead, assert a `reauthorize`

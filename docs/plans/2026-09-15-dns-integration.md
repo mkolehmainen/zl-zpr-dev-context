@@ -1,6 +1,6 @@
 # DNS Integration Plan — CoreDNS over the visa service admin API
 
-**Status:** Draft
+**Status:** COMPLETE (2026-09-15) — umbrella [zipline#34](https://github.com/mkolehmainen/zipline/issues/34); tasks P1/V1/D1/I1 all merged, see *Issue map*. The current DNS reference is `docs/DNS.md`. Historical record: read it for *why*, not for what the code does now.
 **Date:** 2026-09-15
 **Repo state this plan was written against:** `zl-zpr-visaservice` @ `9c9dfa0` (admin API "current as of 2026-08-10"), `zl-zpr-dev-context` @ `0d7aed0`, `zl-zpr-common` tag `v0.26.0`.
 
@@ -177,16 +177,16 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
 
 | ID | Repo | Title | Blocked by |
 |---|---|---|---|
-| P1 | zl-zpr-demo | New `dns-demo`: containerized node + vs + web + client (no OCI), policy declaring `zpr-dns` and `vs-admin`; VS shows up as a service provider | — |
-| V1 | zl-zpr-visaservice | `resolve` API-key permission scoped to `GET /admin/services*`; `vsapikey resolve`; doc | — |
-| D1 | zl-zpr-coredns (new) | CoreDNS `zpr` plugin: AAAA from `GET /admin/services/{name}`, Corefile syntax, `make build` producing `bin/coredns` | — |
-| I1 | zl-zpr-demo | `dns-demo`: add the `dns` container; `dig web.demo` from the client resolves; negative controls scripted | P1, V1, D1 |
+| P1 · [#35](https://github.com/mkolehmainen/zipline/issues/35) | zl-zpr-demo | New `dns-demo`: containerized node + vs + web + client (no OCI), policy declaring `zpr-dns` and `vs-admin`; VS shows up as a service provider | — |
+| V1 · [#36](https://github.com/mkolehmainen/zipline/issues/36) | zl-zpr-visaservice | `resolve` API-key permission scoped to `GET /admin/services*`; `vsapikey resolve`; doc | — |
+| D1 · [#37](https://github.com/mkolehmainen/zipline/issues/37) | zl-zpr-coredns (new) | CoreDNS `zpr` plugin: AAAA from `GET /admin/services/{name}`, Corefile syntax, `make build` producing `bin/coredns` | — |
+| I1 · [#38](https://github.com/mkolehmainen/zipline/issues/38) | zl-zpr-demo | `dns-demo`: add the `dns` container; `dig web.demo` from the client resolves; negative controls scripted | P1, V1, D1 |
 
 ---
 
 ## Phase P — New demo skeleton (`zl-zpr-demo/dns-demo`)
 
-### Task P1: `dns-demo` without the resolver, proving the policy shape
+### Task P1: `dns-demo` without the resolver, proving the policy shape ([zipline#35](https://github.com/mkolehmainen/zipline/issues/35), merged)
 
 **Model to copy:** `zl-zpr-demo/multinode-demo/` — `Dockerfile` (ubuntu:24.04 + valkey + `COPY bin/ /app/bin/`), `Makefile` (builds `ph`, `vs`, `vs-admin`, `vsapikey`, `zplc`, `zpdump` from `ZPR_ROOT` into `bin/`), `docker-compose.yml` (one image, static IPv4 on a private network, `NET_ADMIN` + `/dev/net/tun`, per-container `/conf` and `/logs` mounts), `local-compute/deploy-docker.sh` (render `@@TOKEN@@` templates → mint API key with `vsapikey create --init` → `zplc` → `compose up` → `launch()` each process under tmux), `local-compute/entrypoint-*.sh` (tun device + static ZPR address + the app), `zpr-conf/{admin,confs,include}` layout, `commands/` wrappers.
 
@@ -204,10 +204,10 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
 
 **Produces:** `make && local-compute/deploy-docker.sh` brings up node, vs, web, client; `client` can `curl http://[fd5a:5052:8888::80]`; the policy already contains `zpr-dns` and `vs-admin`.
 
-- [ ] Step 1: Copy and prune per the lists above. Every `@@TOKEN@@` in templates resolves from compose's static IPs only; `render()` keeps its unresolved-token check.
-- [ ] Step 2: Write `dns-demo.zpl` and the `.zplc` template per contract 4. `zplc` compiles; `zpdump` shows `web`, `zpr-dns`, `vs-admin` with the expected endpoints and provider attributes, and shows `zpr-dns` as an allowed *subject* against `vs-admin`. If the compiler rejects a service as a subject, record it under **Findings** and stop: the design needs a device-class subject instead (e.g. `Define resolver as a device with ...` keyed on the `dns.demo` CN).
-- [ ] Step 3: Deploy. `commands/demo-vs-admin services` lists `vs-admin` and `web`; `demo-vs-admin services get vs-admin` shows `zpr_addr == "fd5a:5052::1"`; `services get zpr-dns` → 404 (no provider yet), not 500. If `vs-admin` is absent, the VS adapter does not present a `services` attribute for itself — record under **Findings**, escalate; V1 and D1 are unaffected, I1 is blocked.
-- [ ] Step 4: `client` → `curl http://[fd5a:5052:8888::80]` succeeds (proves the skeleton independent of DNS).
+- Step 1: Copy and prune per the lists above. Every `@@TOKEN@@` in templates resolves from compose's static IPs only; `render()` keeps its unresolved-token check.
+- Step 2: Write `dns-demo.zpl` and the `.zplc` template per contract 4. `zplc` compiles; `zpdump` shows `web`, `zpr-dns`, `vs-admin` with the expected endpoints and provider attributes, and shows `zpr-dns` as an allowed *subject* against `vs-admin`. If the compiler rejects a service as a subject, record it under **Findings** and stop: the design needs a device-class subject instead (e.g. `Define resolver as a device with ...` keyed on the `dns.demo` CN).
+- Step 3: Deploy. `commands/demo-vs-admin services` lists `vs-admin` and `web`; `demo-vs-admin services get vs-admin` shows `zpr_addr == "fd5a:5052::1"`; `services get zpr-dns` → 404 (no provider yet), not 500. If `vs-admin` is absent, the VS adapter does not present a `services` attribute for itself — record under **Findings**, escalate; V1 and D1 are unaffected, I1 is blocked.
+- Step 4: `client` → `curl http://[fd5a:5052:8888::80]` succeeds (proves the skeleton independent of DNS).
 
 **Acceptance:** Steps 2–4 pass from a clean `make` on a machine with only docker and the Rust toolchain; no `tofu` anywhere in `dns-demo/`.
 
@@ -215,7 +215,7 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
 
 ## Phase V — Visa service (`zl-zpr-visaservice`)
 
-### Task V1: `resolve` permission
+### Task V1: `resolve` permission ([zipline#36](https://github.com/mkolehmainen/zipline/issues/36), merged)
 
 **Files:**
 - `vs/src/admin_apikeys.rs:15-20` (`Permission` enum), `:50-58` (`can_read`/`can_write`)
@@ -227,12 +227,12 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
 
 **Interfaces — Produces (exact):** contract 2 above.
 
-- [ ] Step 1 (test first): in `admin_service.rs` tests, insert a `resolve` key via `ReloadableApiKeys::insert_for_test` (`admin_apikeys.rs:150`), following the shape of `test_flush_service_cache_read_key_forbidden` (`admin_service.rs:2733`). Assert: `GET /admin/services` → 200, `GET /admin/services/{name}` → 200/404, and each of `GET /admin/visas`, `GET /admin/actors`, `GET /admin/policies/curr`, `GET /admin/network`, `GET /admin/stats` → 403, `DELETE /admin/services/{id}/cache` → 403. Tests fail to compile until Step 2.
-- [ ] Step 2: Add `Permission::Resolve` and `can_resolve()`; switch the two handlers. `can_read()` semantics unchanged so every other handler is untouched.
-- [ ] Step 3: `vsapikey` accepts `resolve`; error text lists all three.
-- [ ] Step 4: Add a keys-file parse test: a TOML record with `permission = "resolve"` deserializes; an existing `read` fixture still parses.
-- [ ] Step 5: Update `admin-http-api.txt` "API KEY": three permission levels; note which two endpoints accept `resolve`. Bump the "Current as of" date.
-- [ ] Step 6: `cargo build && cargo fmt -- --check && cargo test`.
+- Step 1 (test first): in `admin_service.rs` tests, insert a `resolve` key via `ReloadableApiKeys::insert_for_test` (`admin_apikeys.rs:150`), following the shape of `test_flush_service_cache_read_key_forbidden` (`admin_service.rs:2733`). Assert: `GET /admin/services` → 200, `GET /admin/services/{name}` → 200/404, and each of `GET /admin/visas`, `GET /admin/actors`, `GET /admin/policies/curr`, `GET /admin/network`, `GET /admin/stats` → 403, `DELETE /admin/services/{id}/cache` → 403. Tests fail to compile until Step 2.
+- Step 2: Add `Permission::Resolve` and `can_resolve()`; switch the two handlers. `can_read()` semantics unchanged so every other handler is untouched.
+- Step 3: `vsapikey` accepts `resolve`; error text lists all three.
+- Step 4: Add a keys-file parse test: a TOML record with `permission = "resolve"` deserializes; an existing `read` fixture still parses.
+- Step 5: Update `admin-http-api.txt` "API KEY": three permission levels; note which two endpoints accept `resolve`. Bump the "Current as of" date.
+- Step 6: `cargo build && cargo fmt -- --check && cargo test`.
 
 **Acceptance:** all Step 1 assertions pass; `vsapikey ... resolve` writes a record that `vs` loads; `vs-admin` against a `read` key behaves exactly as before.
 
@@ -240,7 +240,7 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
 
 ## Phase D — CoreDNS plugin (`zl-zpr-coredns`, new Go repository)
 
-### Task D1: Plugin, Corefile syntax, build
+### Task D1: Plugin, Corefile syntax, build ([zipline#37](https://github.com/mkolehmainen/zipline/issues/37), merged)
 
 **Files (new):**
 - `plugin/zpr/setup.go` — Corefile parsing per contract 3; reads the key file once at setup; builds one `http.Client` with the pinned CA, `MinVersion: tls.VersionTLS12`, `ServerName` from `tls_servername`, `Timeout` from `timeout`.
@@ -253,7 +253,7 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
 
 **Produces:** `bin/coredns` whose `coredns -plugins` lists `dns.zpr`.
 
-- [ ] Step 1 (test first): `zpr_test.go` cases, each asserting rcode, answer RRs and authority SOA presence:
+- Step 1 (test first): `zpr_test.go` cases, each asserting rcode, answer RRs and authority SOA presence:
   - `web.zpr. AAAA`, fake returns 200 `{zpr_addr:"fd5a:5052:adda:1::7"}` → NOERROR, one AAAA, TTL == configured.
   - `web.zpr. A`, 200 → NOERROR, zero answers, SOA in authority.
   - `nope.zpr. AAAA`, 404 → NXDOMAIN, SOA in authority with MINIMUM == negative_ttl.
@@ -262,10 +262,10 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
   - `web.zpr. AAAA`, 500 / 401 / connection refused / non-JSON body → SERVFAIL.
   - `zpr. SOA` and `zpr. NS` → synthesized records.
   - `example.com. AAAA` → passed to next plugin (`plugin.NextOrFailure`).
-- [ ] Step 2: Implement `client.go` and `zpr.go` until Step 1 passes. Keep `ServeDNS` under ~80 lines; response construction goes in one helper per rcode.
-- [ ] Step 3: `setup.go` with parse tests: missing `api_key_file` or `tls_ca` is a setup error; defaults match contract 3; `zpr` twice in one block is an error.
-- [ ] Step 4: `Makefile`; `make build && bin/coredns -plugins | grep dns.zpr`.
-- [ ] Step 5: Manual smoke against a locally running `vs` (from `zl-zpr-visaservice`, `cargo run --bin vs`) with a `read` key if V1 has not landed: `dig @127.0.0.1 -p 1053 AAAA <some-service>.zpr`.
+- Step 2: Implement `client.go` and `zpr.go` until Step 1 passes. Keep `ServeDNS` under ~80 lines; response construction goes in one helper per rcode.
+- Step 3: `setup.go` with parse tests: missing `api_key_file` or `tls_ca` is a setup error; defaults match contract 3; `zpr` twice in one block is an error.
+- Step 4: `Makefile`; `make build && bin/coredns -plugins | grep dns.zpr`.
+- Step 5: Manual smoke against a locally running `vs` (from `zl-zpr-visaservice`, `cargo run --bin vs`) with a `read` key if V1 has not landed: `dig @127.0.0.1 -p 1053 AAAA <some-service>.zpr`.
 
 **Acceptance:** Step 1 and Step 3 tests green; Step 4 builds reproducibly from the pinned CoreDNS tag; a service present in the VS resolves, an absent one is NXDOMAIN, a stopped VS is SERVFAIL.
 
@@ -273,17 +273,17 @@ P1, V1 and D1 are independent and start in parallel. **P1 first if only one pers
 
 ## Phase I — Integration (`zl-zpr-demo/dns-demo`)
 
-### Task I1: Add the `dns` container and prove the flow
+### Task I1: Add the `dns` container and prove the flow ([zipline#38](https://github.com/mkolehmainen/zipline/issues/38), merged)
 
 **Files:** `dns-demo/Makefile` (new `coredns` target: `cd $(ZPR_ROOT)/zpr-coredns && make build && cp bin/coredns $(BIN)/`, mirroring how `multinode-demo` builds the Go `zpr-dashboard`), `dns-demo/docker-compose.yml` (service `dns`, 172.30.1.14), `local-compute/entrypoint-dns.sh` (tun + `fd5a:5052:8888::53` + `exec /app/bin/coredns -conf /conf/Corefile`), `local-compute/deploy-docker.sh` (render `adapter-dns-conf.toml`, mint a **second** key `vsapikey create resolve dns` into `conf/dns/vs-resolve.key`, copy the admin cert to `conf/dns/`, `launch dns dns-adapter "/app/bin/ph adapter -c adapter-dns-conf.toml"`), `zpr-conf/confs/Corefile` (contract 3 with `endpoint https://[fd5a:5052::1]:8182`, `tls_servername vs.zpr`, zone `demo.`), `local-compute/test-dns.sh`, `README.md`.
 
 **Produces:** the deploy script brings up node, vs, web, client, dns; `test-dns.sh` proves resolution and the negative controls unattended.
 
-- [ ] Step 1: Wire the container, entrypoint, adapter config, key and Corefile. `commands/demo-vs-admin services get zpr-dns` → `zpr_addr == "fd5a:5052:8888::53"`.
-- [ ] Step 2: From `client`: `dig @fd5a:5052:8888::53 AAAA web.demo` returns `fd5a:5052:8888::80`; `curl http://web.demo` works once the client's `/etc/resolv.conf` points at the resolver (entrypoint-client.sh writes `nameserver fd5a:5052:8888::53`).
-- [ ] Step 3: `commands/demo-stop-ph web`; within `ttl + negative_ttl` seconds the same query is NXDOMAIN. `demo-restart-ph web`; it resolves again.
-- [ ] Step 4: Negative controls: (a) reinstall a policy without `Allow zpr-dns to access vs-admin.` → `dig` is SERVFAIL and `demo-vs-admin visas denies` shows the resolver's deny to `fd5a:5052::1` port 8182; (b) `docker exec dns curl -H "X-API-Key: $(cat /conf/vs-resolve.key)" https://[fd5a:5052::1]:8182/admin/visas --cacert /conf/include/admin-tls-cert.pem` → 403; (c) same URL with `/admin/services/web` → 200.
-- [ ] Step 5: `local-compute/test-dns.sh` runs Steps 2–4 and exits non-zero on any failure, following the SUCCESS/FAILED banner style of `zl-zpr-visaservice/integration-test/zpt-test.sh`. README documents the walk-through.
+- Step 1: Wire the container, entrypoint, adapter config, key and Corefile. `commands/demo-vs-admin services get zpr-dns` → `zpr_addr == "fd5a:5052:8888::53"`.
+- Step 2: From `client`: `dig @fd5a:5052:8888::53 AAAA web.demo` returns `fd5a:5052:8888::80`; `curl http://web.demo` works once the client's `/etc/resolv.conf` points at the resolver (entrypoint-client.sh writes `nameserver fd5a:5052:8888::53`).
+- Step 3: `commands/demo-stop-ph web`; within `ttl + negative_ttl` seconds the same query is NXDOMAIN. `demo-restart-ph web`; it resolves again.
+- Step 4: Negative controls: (a) reinstall a policy without `Allow zpr-dns to access vs-admin.` → `dig` is SERVFAIL and `demo-vs-admin visas denies` shows the resolver's deny to `fd5a:5052::1` port 8182; (b) `docker exec dns curl -H "X-API-Key: $(cat /conf/vs-resolve.key)" https://[fd5a:5052::1]:8182/admin/visas --cacert /conf/include/admin-tls-cert.pem` → 403; (c) same URL with `/admin/services/web` → 200.
+- Step 5: `local-compute/test-dns.sh` runs Steps 2–4 and exits non-zero on any failure, following the SUCCESS/FAILED banner style of `zl-zpr-visaservice/integration-test/zpt-test.sh`. README documents the walk-through.
 
 **Acceptance:** from a clean checkout, `make ZPR_ROOT=... && local-compute/deploy-docker.sh && local-compute/test-dns.sh` exits 0.
 
