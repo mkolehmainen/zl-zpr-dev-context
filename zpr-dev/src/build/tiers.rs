@@ -415,6 +415,264 @@ pub fn run_unit(plans: &[RepoPlan], logs: &Path, quiet: bool) -> TierOutcome {
     outcome
 }
 
+// ---------------------------------------------------------------------------
+// The netns tier (issue62 step 3)
+// ---------------------------------------------------------------------------
+
+/// The seven integration scripts the netns tier runs, in order. An explicit
+/// list, never a glob: `integration-test/unused_or_outdated/` stays out, and
+/// adding a script to the set's gate is a reviewed change (master plan B5).
+const NETNS_SCRIPTS: &[&str] = &[
+    "one-node-test.sh",
+    "one-node-v6-test.sh",
+    "one-node-oidc-test.sh",
+    "capture-test.sh",
+    "oidc-file-interplay-test.sh",
+    "fake-idp-smoke-test.sh",
+    "a2a-pubkey-test.sh",
+];
+
+/// A build that must succeed before its script runs — the worktree-local
+/// `enable-security-testing` build of `ph` for `a2a-pubkey-test.sh`. Kept
+/// separate from the script so its failure fails that one script while the
+/// rest of the tier still runs (master plan B5).
+#[derive(Debug)]
+pub struct PrepStep {
+    /// Labels the log file (`logs/netns-<name>.log`) and the failure entry.
+    pub name: &'static str,
+    pub program: &'static str,
+    pub args: Vec<String>,
+    /// Working directory — the `zl-zpr-core` worktree, not `integration-test/`.
+    pub dir: PathBuf,
+}
+
+/// One planned script: its name (relative to the plan's `dir`), the
+/// environment overrides it runs under, and an optional prep build.
+#[derive(Debug)]
+pub struct NetnsScript {
+    pub script: &'static str,
+    /// `KEY=value` pairs set on the child only — never the tool's own env.
+    pub env: Vec<(String, String)>,
+    pub prep: Option<PrepStep>,
+}
+
+/// The netns tier's plan: where the scripts live and what to run. Pure
+/// planning — nothing here executes a command.
+#[derive(Debug)]
+pub struct NetnsPlan {
+    /// `<zl-zpr-core worktree>/integration-test`.
+    pub dir: PathBuf,
+    pub scripts: Vec<NetnsScript>,
+}
+
+/// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
+/// the seven blessed scripts in order, each with the `*_BIN` overrides the
+/// scripts already honour pointed at `dist/` and the system valkey — nothing
+/// is copied into `integration-test/`. `a2a-pubkey-test.sh` alone runs the
+/// worktree-local `enable-security-testing` `ph` (a debug build that must
+/// never reach `dist/` — see [`dist_ph_is_clean`]). `verbose` exports
+/// `ZPR_TEST_VERBOSE=1`; `DEBUG_TARGETS` is left at the scripts' default.
+pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: bool) -> NetnsPlan {
+    let display = |path: PathBuf| path.display().to_string();
+    let scripts = NETNS_SCRIPTS
+        .iter()
+        .map(|script| {
+            let a2a = *script == "a2a-pubkey-test.sh";
+            // The security-testing ph is a debug-profile build in the
+            // worktree's own target/, pointed at for this one script only.
+            let ph_bin = if a2a {
+                display(core_worktree.join("target/debug/ph"))
+            } else {
+                display(dist.join("ph"))
+            };
+            let mut env: Vec<(String, String)> = vec![
+                ("PH_BIN".to_string(), ph_bin),
+                ("PH_DEBUG_BIN".to_string(), display(dist.join("ph-cli"))),
+                ("VS_BIN".to_string(), display(dist.join("vs"))),
+                ("VS_ADMIN_BIN".to_string(), display(dist.join("vs-admin"))),
+                (
+                    "VALKEY_SERVER_BIN".to_string(),
+                    valkey.display().to_string(),
+                ),
+            ];
+            if verbose {
+                env.push(("ZPR_TEST_VERBOSE".to_string(), "1".to_string()));
+            }
+            NetnsScript {
+                script,
+                env,
+                prep: a2a.then(|| PrepStep {
+                    name: "security-ph",
+                    program: "cargo",
+                    args: ["build", "-p", "ph", "--features", "enable-security-testing"]
+                        .iter()
+                        .map(|arg| arg.to_string())
+                        .collect(),
+                    dir: core_worktree.to_path_buf(),
+                }),
+            }
+        })
+        .collect();
+    NetnsPlan {
+        dir: core_worktree.join("integration-test"),
+        scripts,
+    }
+}
+
+/// Runs a netns plan: each script in order in the plan's directory, under
+/// its env overrides, logging as `logs/netns-<script>.log` in `run_unit`'s
+/// shape. A failing script — or a failing prep build — fails the tier and
+/// the sweep **keeps going**, so one run reports every broken script
+/// (master plan B5: continue after a failing script; record each).
+pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
+    let mut outcome = TierOutcome {
+        passed: true,
+        repos: BTreeMap::new(),
+    };
+    for script in &plan.scripts {
+        // The prep build first: a2a's security-testing ph. Its failure
+        // fails this script alone; the rest of the tier still runs.
+        if let Some(prep) = &script.prep {
+            if let Err(error) = run_env_command(
+                "netns",
+                prep.name,
+                prep.program,
+                &prep.args,
+                &[],
+                &prep.dir,
+                logs,
+                quiet,
+            ) {
+                if !quiet {
+                    println!("{}: FAILED at prep `{}`", script.script, prep.name);
+                }
+                outcome.passed = false;
+                outcome.repos.insert(
+                    script.script.to_string(),
+                    format!("failed at prep `{}`: {error}", prep.name),
+                );
+                continue;
+            }
+        }
+        let program = plan.dir.join(script.script).display().to_string();
+        match run_env_command(
+            "netns",
+            script.script,
+            &program,
+            &[] as &[&str],
+            &script.env,
+            &plan.dir,
+            logs,
+            quiet,
+        ) {
+            Ok(()) => {
+                if !quiet {
+                    println!("{}: passed", script.script);
+                }
+                outcome
+                    .repos
+                    .insert(script.script.to_string(), "passed".to_string());
+            }
+            Err(error) => {
+                if !quiet {
+                    println!("{}: FAILED", script.script);
+                }
+                outcome.passed = false;
+                outcome
+                    .repos
+                    .insert(script.script.to_string(), format!("failed: {error}"));
+            }
+        }
+    }
+    outcome
+}
+
+/// The runtime half of the dist/ guard (master plan B5): the staged `ph`
+/// must not be an `enable-security-testing` build. A security-testing `ph`
+/// advertises `--security-testing-mangle-forwarded-pings` in `node --help`
+/// (the same detection `a2a-pubkey-test.sh` uses); a clean one does not.
+/// A missing `dist/ph` passes — there is nothing to guard, and the staging
+/// verification reports the absence separately.
+pub fn dist_ph_is_clean(dist: &Path) -> Result<()> {
+    let ph = dist.join("ph");
+    if !ph.is_file() {
+        return Ok(());
+    }
+    let output = std::process::Command::new(&ph)
+        .args(["node", "--help"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("cannot run {} node --help: {e}", ph.display()))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if text.contains("--security-testing-mangle-forwarded-pings") {
+        bail!(
+            "{} is an enable-security-testing build; that ph is for \
+             a2a-pubkey-test.sh only and must never be staged into dist/",
+            ph.display()
+        );
+    }
+    Ok(())
+}
+
+/// [`recipes::run_command`] with per-child environment overrides: same
+/// working-directory, log shape (`logs/<label>-<name>.log`), failure echo
+/// and error wording. The env touches the child only, never this process.
+#[allow(clippy::too_many_arguments)]
+fn run_env_command(
+    label: &str,
+    name: &str,
+    program: &str,
+    args: &[impl AsRef<std::ffi::OsStr>],
+    env: &[(String, String)],
+    dir: &Path,
+    logs: &Path,
+    quiet: bool,
+) -> Result<()> {
+    use std::io::Write as _;
+
+    let log_path = logs.join(format!("{label}-{name}.log"));
+    let mut command = std::process::Command::new(program);
+    command.args(args).current_dir(dir);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().map_err(|e| {
+        anyhow::anyhow!("cannot run {program} for {label} in {}: {e}", dir.display())
+    })?;
+
+    // One log per step, stdout then stderr — the same record run_command
+    // writes, so netns logs read like build logs.
+    let mut log = std::fs::File::create(&log_path)
+        .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", log_path.display()))?;
+    log.write_all(&output.stdout)?;
+    log.write_all(&output.stderr)?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+    if !quiet {
+        let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines.len().saturating_sub(40);
+        eprintln!(
+            "--- last {} lines of {} ---",
+            lines.len() - start,
+            log_path.display()
+        );
+        for line in &lines[start..] {
+            eprintln!("{line}");
+        }
+    }
+    bail!(
+        "{label}: step `{name}` failed ({}); full output in {}",
+        output.status,
+        log_path.display()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,6 +883,235 @@ mod tests {
         // A passing gate runs either way.
         assert_eq!(check_gate("docker", TierGate::Run, true).unwrap(), None);
         assert_eq!(check_gate("docker", TierGate::Run, false).unwrap(), None);
+    }
+
+    // -- the netns tier's plan (issue62 step 3) ---------------------------------
+
+    /// One env lookup in a planned script.
+    fn env_of<'a>(script: &'a NetnsScript, key: &str) -> Option<&'a str> {
+        script
+            .env
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// The plan runs exactly the seven blessed scripts, in order — an
+    /// explicit list, not a glob: `unused_or_outdated/` and any new script
+    /// stay out until reviewed in (master plan B5).
+    #[test]
+    fn netns_plan_lists_the_seven_scripts_in_order() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+        );
+        let names: Vec<&str> = plan.scripts.iter().map(|script| script.script).collect();
+        assert_eq!(
+            names,
+            [
+                "one-node-test.sh",
+                "one-node-v6-test.sh",
+                "one-node-oidc-test.sh",
+                "capture-test.sh",
+                "oidc-file-interplay-test.sh",
+                "fake-idp-smoke-test.sh",
+                "a2a-pubkey-test.sh",
+            ]
+        );
+        assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));
+    }
+
+    /// Every script gets the five `*_BIN` overrides pointing at `dist/` and
+    /// the system valkey — nothing is ever copied into `integration-test/`
+    /// (master plan B5 constraint).
+    #[test]
+    fn netns_plan_points_the_bin_overrides_at_dist() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+        );
+        // Every script except a2a runs the dist/ ph.
+        let one_node = &plan.scripts[0];
+        assert_eq!(env_of(one_node, "PH_BIN"), Some("/b/dist/ph"));
+        assert_eq!(env_of(one_node, "PH_DEBUG_BIN"), Some("/b/dist/ph-cli"));
+        assert_eq!(env_of(one_node, "VS_BIN"), Some("/b/dist/vs"));
+        assert_eq!(env_of(one_node, "VS_ADMIN_BIN"), Some("/b/dist/vs-admin"));
+        assert_eq!(
+            env_of(one_node, "VALKEY_SERVER_BIN"),
+            Some("/usr/bin/valkey-server")
+        );
+        // Not verbose: ZPR_TEST_VERBOSE is not set at all.
+        assert_eq!(env_of(one_node, "ZPR_TEST_VERBOSE"), None);
+    }
+
+    /// `--verbose` exports `ZPR_TEST_VERBOSE=1` to every script; the default
+    /// leaves it unset (the scripts' own default is quiet).
+    #[test]
+    fn netns_plan_sets_test_verbose_only_under_verbose() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            true,
+        );
+        for script in &plan.scripts {
+            assert_eq!(
+                env_of(script, "ZPR_TEST_VERBOSE"),
+                Some("1"),
+                "{} missing ZPR_TEST_VERBOSE under --verbose",
+                script.script
+            );
+        }
+    }
+
+    /// `a2a-pubkey-test.sh` alone gets a prep step — the worktree-local
+    /// `enable-security-testing` build of `ph` — and its `PH_BIN` points at
+    /// that build's debug binary, not at `dist/` (master plan B5: that
+    /// binary must never reach `dist/`).
+    #[test]
+    fn netns_plan_gives_a2a_its_own_security_testing_ph() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+        );
+        for script in &plan.scripts {
+            if script.script == "a2a-pubkey-test.sh" {
+                let prep = script.prep.as_ref().expect("a2a needs a prep build");
+                assert_eq!(prep.program, "cargo");
+                assert_eq!(
+                    prep.args,
+                    ["build", "-p", "ph", "--features", "enable-security-testing"]
+                );
+                assert_eq!(prep.dir, Path::new("/wt/zl-zpr-core"));
+                assert_eq!(
+                    env_of(script, "PH_BIN"),
+                    Some("/wt/zl-zpr-core/target/debug/ph")
+                );
+            } else {
+                assert!(script.prep.is_none(), "{} must not prep", script.script);
+                assert_eq!(env_of(script, "PH_BIN"), Some("/b/dist/ph"));
+            }
+        }
+    }
+
+    /// The staging table can never source the security-testing `ph`: it is
+    /// a debug-profile build, and every staged source is a release path.
+    /// This is the static half of the dist/ guard; the runtime half is
+    /// `dist_ph_is_clean` below.
+    #[test]
+    fn no_staged_source_is_a_debug_build() {
+        for recipe in recipes::RECIPES {
+            for staged in recipe.staged {
+                assert!(
+                    !staged.source.contains("debug"),
+                    "{}: staged source {} is a debug path — the security-testing \
+                     ph build must never be stageable",
+                    recipe.repo,
+                    staged.source
+                );
+            }
+        }
+    }
+
+    /// The runtime guard: a `dist/ph` that advertises the security-testing
+    /// flag fails the check; one that does not passes; a missing `ph` passes
+    /// (nothing to guard).
+    #[test]
+    fn dist_ph_clean_check_rejects_a_security_testing_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path();
+
+        // No ph staged: nothing to guard.
+        assert!(dist_ph_is_clean(dist).is_ok());
+
+        // A clean ph: `node --help` does not mention the mangle flag.
+        write_fake_ph(dist, "usage: ph node [--config PATH]\n");
+        assert!(dist_ph_is_clean(dist).is_ok());
+
+        // A security-testing ph: the check names the problem.
+        write_fake_ph(
+            dist,
+            "usage: ph node [--security-testing-mangle-forwarded-pings]\n",
+        );
+        let error = dist_ph_is_clean(dist).unwrap_err().to_string();
+        assert!(error.contains("enable-security-testing"), "{error}");
+    }
+
+    /// A fake `dist/ph` that prints `help_text` for any invocation.
+    fn write_fake_ph(dist: &Path, help_text: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dist.join("ph");
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s' '{help_text}'\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The netns runner: continues after a failing script, records each
+    /// script by name, and a prep-build failure fails that one script while
+    /// the rest of the tier still runs.
+    #[test]
+    fn run_netns_continues_after_failure_and_prep_failure_hits_one_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+
+        // Three fixture scripts: pass, fail, pass-with-failing-prep.
+        for (name, body) in [
+            ("ok.sh", "#!/bin/sh\necho fine\n"),
+            ("bad.sh", "#!/bin/sh\necho broken; exit 3\n"),
+            ("prepped.sh", "#!/bin/sh\necho never runs\n"),
+        ] {
+            use std::os::unix::fs::PermissionsExt as _;
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let plan = NetnsPlan {
+            dir: dir.clone(),
+            scripts: vec![
+                NetnsScript {
+                    script: "ok.sh",
+                    env: vec![],
+                    prep: None,
+                },
+                NetnsScript {
+                    script: "bad.sh",
+                    env: vec![],
+                    prep: None,
+                },
+                NetnsScript {
+                    script: "prepped.sh",
+                    env: vec![],
+                    prep: Some(PrepStep {
+                        name: "security-ph",
+                        program: "sh",
+                        args: vec!["-c".to_string(), "exit 1".to_string()],
+                        dir: tmp.path().to_path_buf(),
+                    }),
+                },
+            ],
+        };
+        let outcome = run_netns(&plan, &logs, true);
+        assert!(!outcome.passed);
+        assert_eq!(outcome.repos["ok.sh"], "passed");
+        let bad = &outcome.repos["bad.sh"];
+        assert!(bad.starts_with("failed"), "{bad}");
+        assert!(bad.contains("netns-bad.sh.log"), "log not named: {bad}");
+        // The prep failure fails prepped.sh without running it...
+        let prepped = &outcome.repos["prepped.sh"];
+        assert!(prepped.starts_with("failed"), "{prepped}");
+        assert!(prepped.contains("security-ph"), "{prepped}");
+        // ...and the earlier pass proves the sweep visited every script.
+        let ok_log = std::fs::read_to_string(logs.join("netns-ok.sh.log")).unwrap();
+        assert!(ok_log.contains("fine"), "{ok_log}");
     }
 
     // -- the unit tier's plan (issue steps 1-2) --------------------------------
