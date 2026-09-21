@@ -1,6 +1,6 @@
 # Build Sets Plan — reproducible, compatibility-gated builds of the whole ZPR binary set
 
-**Status:** IN FLIGHT (as of 2026-09-21) — umbrella [zipline#57](https://github.com/mkolehmainen/zipline/issues/57); B1–B5 merged, B6 ([#63](https://github.com/mkolehmainen/zipline/issues/63)) open. See *Issue map*.
+**Status:** COMPLETE (2026-09-21) — umbrella [zipline#57](https://github.com/mkolehmainen/zipline/issues/57); B1–B6 all landed. Gate 1's transitive-pin blind spot is follow-up work: [zipline#69](https://github.com/mkolehmainen/zipline/issues/69) (see *Finding 4*).
 **Date:** 2026-09-17
 **Repo state this plan was written against:** `zl-zpr-dev-context` @ `8bfd061`, `zl-zpr-core` @ `dd43b4b`, `zl-zpr-visaservice` @ `2cf9912`, `zl-zpr-compiler` @ `f63302c` (package version `0.18.0`), `zl-zpr-coredns` @ `f4202c4`, `zl-zpr-demo` @ `8ef671f`, `zl-zpr-common` @ `5fbbff8` (tag `v0.27.0`; consumers pin `v0.26.0`).
 
@@ -281,12 +281,12 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 **Produces (exact):** contracts 1, 2 and 6 above.
 
-- [ ] Step 1: Write `spec-003-build.md`. Review it before writing code — the gates are the security-relevant part and their wording is the artifact.
-- [ ] Step 2 (test first): unit tests for the build-set schema — a valid file; an unknown top-level key tolerated; `version: 2` rejected; a repository name absent from `workspace.yaml` rejected naming it; an `allow_pin_drift` entry without a `reason` rejected; `--manifest` and `--tip` together rejected as a usage error (exit 2).
-- [ ] Step 3: Implement `BuildSet` parsing and default-manifest selection (newest file in `build-sets/`, with a clear error when the directory is absent or empty).
-- [ ] Step 4 (test first, then implement): ref resolution. A tag, a branch, a short sha and a full sha each resolve to a 40-character sha; an unknown ref errors naming repository and ref; `--tip` resolves `origin/<default_branch>`; a missing or non-Git repository directory errors. Tests use the existing `Fixture` in `zpr-dev/tests/common/mod.rs`, which already creates throwaway origins and clones.
-- [ ] Step 5: `--dry-run` output: resolved shas, the planned build order, the planned tier list with prerequisite probe results, and the target `dist/` path. Nothing on disk changes; no `git fetch`.
-- [ ] Step 6: `cargo test && make check`.
+- [x] Step 1: Write `spec-003-build.md`. Review it before writing code — the gates are the security-relevant part and their wording is the artifact.
+- [x] Step 2 (test first): unit tests for the build-set schema — a valid file; an unknown top-level key tolerated; `version: 2` rejected; a repository name absent from `workspace.yaml` rejected naming it; an `allow_pin_drift` entry without a `reason` rejected; `--manifest` and `--tip` together rejected as a usage error (exit 2).
+- [x] Step 3: Implement `BuildSet` parsing and default-manifest selection (newest file in `build-sets/`, with a clear error when the directory is absent or empty).
+- [x] Step 4 (test first, then implement): ref resolution. A tag, a branch, a short sha and a full sha each resolve to a 40-character sha; an unknown ref errors naming repository and ref; `--tip` resolves `origin/<default_branch>`; a missing or non-Git repository directory errors. Tests use the existing `Fixture` in `zpr-dev/tests/common/mod.rs`, which already creates throwaway origins and clones.
+- [x] Step 5: `--dry-run` output: resolved shas, the planned build order, the planned tier list with prerequisite probe results, and the target `dist/` path. Nothing on disk changes; no `git fetch`.
+- [x] Step 6: `cargo test && make check`.
 
 **Acceptance:** `zpr-dev build --tip --dry-run` on this workspace prints a resolved sha for each of the five repositories and creates nothing; `zpr-dev status` afterwards is byte-identical to before; every Step 2 and Step 4 case is covered by a test.
 
@@ -300,12 +300,12 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 **Produces (exact):** contract 3 above, including the three message formats.
 
-- [ ] Step 1 (test first): pin extraction from `Cargo.toml` text — `git` + `tag`; `git` + `rev`; `git` + `branch`; a `[workspace.dependencies]` table; a member declaring `{ workspace = true }` resolved against the workspace root and attributed to it (this is how `zl-zpr-core/adapter/ph` gets `zpr`, and missing it would make the gate blind to a whole member); a plain registry dependency ignored; a `path` dependency ignored; a non-ZPR git URL (`emilazy/capnproto-rust`) captured because it is `rev`-pinned; a URL differing only by host/owner treated as a *different* source. Fixtures are the real snippets from `zl-zpr-core/Cargo.toml`, `adapter/ph/Cargo.toml`, `zl-zpr-visaservice/Cargo.toml`, `zl-zpr-compiler/Cargo.toml` and `zl-zpr-common/Cargo.toml`.
-- [ ] Step 2 (test first): gate 1. An agreeing set passes; a disagreeing set fails listing each tag with every file and line that pins it; a crate at one tag from two URLs fails; an `allow_pin_drift` entry suppresses exactly that crate and echoes its reason; `--allow-pin-drift` turns every finding into a warning and the command still exits 0.
-- [ ] Step 3 (test first): gate 2. Pinned `v0.26.0` with `v0.27.0` present in the checkout warns and exits 0; pinned at the newest tag is silent; no local checkout emits `INFO` and does not fail. Tag ordering is by semantic version, not creation date, and the test includes `v0.9.1` against `v0.15.0` to prove it.
-- [ ] Step 4 (test first): gate 3. `0.18.0` against `(0,18,0)` passes; `0.18.4` against `(0,18,0)` passes; `0.18.0` against `(0,18,4)` fails; `0.19.0` and `1.18.0` fail; a `config.rs` missing a constant, and a `Cargo.toml` missing `[package].version`, each fail naming the file. The oracle is `libeval/src/pio.rs`'s `check_version`; the test comment cites it so the two can be compared by eye in review.
-- [ ] Step 5: Implement. Findings accumulate into one report printed in `validate` style (`[OK]` / `[WARN]` / `[ERROR]` lines) and exit 1 if any error survives.
-- [ ] Step 6: `cargo test && make check`.
+- [x] Step 1 (test first): pin extraction from `Cargo.toml` text — `git` + `tag`; `git` + `rev`; `git` + `branch`; a `[workspace.dependencies]` table; a member declaring `{ workspace = true }` resolved against the workspace root and attributed to it (this is how `zl-zpr-core/adapter/ph` gets `zpr`, and missing it would make the gate blind to a whole member); a plain registry dependency ignored; a `path` dependency ignored; a non-ZPR git URL (`emilazy/capnproto-rust`) captured because it is `rev`-pinned; a URL differing only by host/owner treated as a *different* source. Fixtures are the real snippets from `zl-zpr-core/Cargo.toml`, `adapter/ph/Cargo.toml`, `zl-zpr-visaservice/Cargo.toml`, `zl-zpr-compiler/Cargo.toml` and `zl-zpr-common/Cargo.toml`.
+- [x] Step 2 (test first): gate 1. An agreeing set passes; a disagreeing set fails listing each tag with every file and line that pins it; a crate at one tag from two URLs fails; an `allow_pin_drift` entry suppresses exactly that crate and echoes its reason; `--allow-pin-drift` turns every finding into a warning and the command still exits 0.
+- [x] Step 3 (test first): gate 2. Pinned `v0.26.0` with `v0.27.0` present in the checkout warns and exits 0; pinned at the newest tag is silent; no local checkout emits `INFO` and does not fail. Tag ordering is by semantic version, not creation date, and the test includes `v0.9.1` against `v0.15.0` to prove it.
+- [x] Step 4 (test first): gate 3. `0.18.0` against `(0,18,0)` passes; `0.18.4` against `(0,18,0)` passes; `0.18.0` against `(0,18,4)` fails; `0.19.0` and `1.18.0` fail; a `config.rs` missing a constant, and a `Cargo.toml` missing `[package].version`, each fail naming the file. The oracle is `libeval/src/pio.rs`'s `check_version`; the test comment cites it so the two can be compared by eye in review.
+- [x] Step 5: Implement. Findings accumulate into one report printed in `validate` style (`[OK]` / `[WARN]` / `[ERROR]` lines) and exit 1 if any error survives.
+- [x] Step 6: `cargo test && make check`.
 
 **Acceptance:** run against this workspace, the gates report the two real findings — the `rcu` disagreement (error) and `zpr` pinned at `v0.26.0` behind `v0.27.0` (warning) — and nothing else; adding the `rcu` entry to `allow_pin_drift` leaves only the warning and exit 0. Forcing a mismatch by hand (compiler `version = "0.19.0"`) produces the gate 3 message with both file paths.
 
@@ -328,13 +328,13 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 **Produces (exact):** contracts 2 and 4 above.
 
-- [ ] Step 1 (test first): worktree lifecycle on a `Fixture` repository — a worktree appears at the requested sha; the source checkout's branch, `HEAD` and dirty files are unchanged afterwards; removal leaves no entry in `git worktree list`; an existing build directory from a previous run is reused or refused with a clear message rather than half-overwritten.
-- [ ] Step 2: Implement the recipes, each shelling out with the worktree as the working directory, output tee'd to `logs/<repo>-<step>.log`, and the last 40 lines echoed on a non-zero exit. `zl-zpr-visaservice` stages from its own `build-release/`.
-- [ ] Step 3: Stage `dist/`, then verify the expected ten names exist and are executable — a recipe that silently produces nothing must not pass.
-- [ ] Step 4 (test first): the emitted manifest. Emit, re-read as a build set, and assert the resolution is identical (round-trip); assert the `resolved:` block is ignored on re-read; assert it is written even when a later step fails.
-- [ ] Step 5: `sha256` per binary, host toolchain versions (`rustc --version`, `cargo --version`, `go version`, `capnp --version`), and the tarball `zpr-set-<name>-linux-<arch>.tar.gz` unless `--no-tarball`.
-- [ ] Step 6: Prune worktrees on success unless `--keep`; leave them on failure and say so, because they are what a person needs in order to debug. `dist/` always survives.
-- [ ] Step 7: `cargo test && make check`.
+- [x] Step 1 (test first): worktree lifecycle on a `Fixture` repository — a worktree appears at the requested sha; the source checkout's branch, `HEAD` and dirty files are unchanged afterwards; removal leaves no entry in `git worktree list`; an existing build directory from a previous run is reused or refused with a clear message rather than half-overwritten.
+- [x] Step 2: Implement the recipes, each shelling out with the worktree as the working directory, output tee'd to `logs/<repo>-<step>.log`, and the last 40 lines echoed on a non-zero exit. `zl-zpr-visaservice` stages from its own `build-release/`.
+- [x] Step 3: Stage `dist/`, then verify the expected ten names exist and are executable — a recipe that silently produces nothing must not pass.
+- [x] Step 4 (test first): the emitted manifest. Emit, re-read as a build set, and assert the resolution is identical (round-trip); assert the `resolved:` block is ignored on re-read; assert it is written even when a later step fails.
+- [x] Step 5: `sha256` per binary, host toolchain versions (`rustc --version`, `cargo --version`, `go version`, `capnp --version`), and the tarball `zpr-set-<name>-linux-<arch>.tar.gz` unless `--no-tarball`.
+- [x] Step 6: Prune worktrees on success unless `--keep`; leave them on failure and say so, because they are what a person needs in order to debug. `dist/` always survives.
+- [x] Step 7: `cargo test && make check`.
 
 **Acceptance:** `zpr-dev build --tip --test none` produces a `dist/` with all ten binaries and an emitted manifest; `zpr-dev build --manifest dist/zpr-set-<name>.yaml --test none --dry-run` reports the identical five shas; `git -C <repo> status` in every source checkout is unchanged from before the run.
 
@@ -346,10 +346,10 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 **Produces (exact):** the `unit` row of contract 5 and the `tiers:` block of contract 2.
 
-- [ ] Step 1: Run `make test` per built repository, in build order, logging as in B3. For `zl-zpr-visaservice`, run `make pregen ZPLC=<dist>/zplc` first and fail the tier if `pregen` fails — a `zplc` that cannot compile the visa service's own fixtures is exactly the incompatibility this plan exists to catch.
-- [ ] Step 2: Record per-repository pass/fail into the emitted manifest's `tiers.unit`, and keep going after a failure so one run reports every broken repository rather than the first.
-- [ ] Step 3 (test first): tier selection and reporting logic — `--test none`, `default`, `unit`, a comma-separated list, an unknown name (exit 2) — exercised without executing any command.
-- [ ] Step 4: `cargo test && make check`.
+- [x] Step 1: Run `make test` per built repository, in build order, logging as in B3. For `zl-zpr-visaservice`, run `make pregen ZPLC=<dist>/zplc` first and fail the tier if `pregen` fails — a `zplc` that cannot compile the visa service's own fixtures is exactly the incompatibility this plan exists to catch.
+- [x] Step 2: Record per-repository pass/fail into the emitted manifest's `tiers.unit`, and keep going after a failure so one run reports every broken repository rather than the first.
+- [x] Step 3 (test first): tier selection and reporting logic — `--test none`, `default`, `unit`, a comma-separated list, an unknown name (exit 2) — exercised without executing any command.
+- [x] Step 4: `cargo test && make check`.
 
 **Acceptance:** `zpr-dev build --tip` on this workspace runs `pregen` with the set's `zplc`, then every repository's `make test`, and reports each; the emitted manifest's `tiers.unit.status` matches what was printed. A deliberately broken fixture (`zplc` from a mismatched compiler) fails the tier with `pregen` named as the failing step.
 
@@ -361,18 +361,18 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 **Produces (exact):** the `netns` and `docker` rows of contract 5.
 
-- [ ] Step 1: Prerequisite probes — Linux, `sudo -n true`, `valkey-server` on `PATH` or `VALKEY_SERVER_BIN`, `python3`, `docker`, `docker compose version`. Each probe's failure text is the `skipped` reason, and is what `--test all` turns into an error.
-- [ ] Step 2: `netns` — run the seven scripts of contract 5 in order with `PH_BIN`, `PH_DEBUG_BIN`, `VS_BIN`, `VS_ADMIN_BIN`, `VALKEY_SERVER_BIN` exported at `dist/` and the system valkey. Continue after a failing script; record each. No copying into `integration-test/`.
-- [ ] Step 3: `a2a-pubkey-test.sh` gets its own `cargo build -p ph --features enable-security-testing` in the `zl-zpr-core` worktree, and `PH_BIN` pointed at that binary for that script only. Add a check that this binary never lands in `dist/`.
-- [ ] Step 4: `docker` — copy `dist/`'s ten binaries into the `zl-zpr-demo` worktree's `dns-demo/bin/` (skipping that repository's `make` entirely), run `local-compute/deploy-docker.sh`, then `local-compute/test-dns.sh`, then `docker compose down -v` unconditionally, reporting a teardown failure separately from a test failure.
-- [ ] Step 5: Record both tiers in the emitted manifest, `skipped` reasons included.
-- [ ] Step 6: `cargo test && make check`.
+- [x] Step 1: Prerequisite probes — Linux, `sudo -n true`, `valkey-server` on `PATH` or `VALKEY_SERVER_BIN`, `python3`, `docker`, `docker compose version`. Each probe's failure text is the `skipped` reason, and is what `--test all` turns into an error.
+- [x] Step 2: `netns` — run the seven scripts of contract 5 in order with `PH_BIN`, `PH_DEBUG_BIN`, `VS_BIN`, `VS_ADMIN_BIN`, `VALKEY_SERVER_BIN` exported at `dist/` and the system valkey. Continue after a failing script; record each. No copying into `integration-test/`.
+- [x] Step 3: `a2a-pubkey-test.sh` gets its own `cargo build -p ph --features enable-security-testing` in the `zl-zpr-core` worktree, and `PH_BIN` pointed at that binary for that script only. Add a check that this binary never lands in `dist/`.
+- [x] Step 4: `docker` — copy `dist/`'s ten binaries into the `zl-zpr-demo` worktree's `dns-demo/bin/` (skipping that repository's `make` entirely), run `local-compute/deploy-docker.sh`, then `local-compute/test-dns.sh`, then `docker compose down -v` unconditionally, reporting a teardown failure separately from a test failure.
+- [x] Step 5: Record both tiers in the emitted manifest, `skipped` reasons included.
+- [x] Step 6: `cargo test && make check`.
 
 **Acceptance:** `zpr-dev build --tip --test all` on this host runs all seven netns scripts and the DNS test against `dist/` and reports each; on a host without Docker, `--test docker` exits 1 saying why, while a plain `zpr-dev build --tip` reports `docker: skipped, docker not found` and exits 0.
 
 ---
 
-### Task B6: Documentation and the first committed build set ([zipline#63](https://github.com/mkolehmainen/zipline/issues/63), open)
+### Task B6: Documentation and the first committed build set ([zipline#63](https://github.com/mkolehmainen/zipline/issues/63), done)
 
 **Files:**
 - `docs/BUILD.md` — new "Compatible build sets" section: what a set is, the two manifests, the three gates, the tiers, how to cut a new set. While in this file, fix what has gone stale: the `zpr` example tag (`v0.25.1` → `v0.26.0`) and the `zpr-utils` URLs, which now point at `mkolehmainen` in `zl-zpr-core` and `zl-zpr-common`, not `org-zpr`.
@@ -380,10 +380,10 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 - `zpr-dev/README.md` — the `build` section, the `build-sets/` layout, and the "It is not a build system and does not replace Git" line, whose first clause stops being true.
 - `build-sets/2026-09-17.yaml` (new) — generated by a `--tip` run, reviewed, committed. The build directory needs no `.gitignore` entry: `<workspace>/.zpr-build/` sits beside the checkouts, inside none of them.
 
-- [ ] Step 1: Write the `docs/BUILD.md` section and fix the stale facts.
-- [ ] Step 2: `zpr-dev sync`, then confirm `zpr-dev validate` is clean (a documentation reference that does not resolve is an error there).
-- [ ] Step 3: Run `zpr-dev build --tip --test all`, review the emitted manifest, commit it as `build-sets/2026-09-17.yaml`.
-- [ ] Step 4: Rebuild from the committed set and diff the `resolved.pins` and `resolved.versions` blocks against the original run.
+- [x] Step 1: Write the `docs/BUILD.md` section and fix the stale facts.
+- [x] Step 2: `zpr-dev sync`, then confirm `zpr-dev validate` is clean (a documentation reference that does not resolve is an error there).
+- [x] Step 3: Run `zpr-dev build --tip --test all`, review the emitted manifest, commit it as `build-sets/2026-09-17.yaml`.
+- [x] Step 4: Rebuild from the committed set and diff the `resolved.pins` and `resolved.versions` blocks against the original run.
 
 **Acceptance:** a person who has read only `docs/BUILD.md` can cut a set and reproduce it; `zpr-dev validate` is clean; the committed set rebuilds to the same shas and the same pin set.
 

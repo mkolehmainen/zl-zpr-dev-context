@@ -266,32 +266,26 @@ cd zpr-dev && cargo build && cargo test
 Shared Rust crates are consumed **from Git by tag**, not by local path:
 
 ```toml
-zpr       = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.25.1", ... }
-zpr-ext   = { git = "https://github.com/org-zpr/zpr-utils.git",       tag = "zpr-ext-v0.5.3" }
-cbpf-rs   = { git = "https://github.com/org-zpr/zpr-utils.git",       tag = "cbpf-rs-v0.2.0" }
+zpr       = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.28.0", ... }
+zpr-ext   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "zpr-ext-v0.5.3" }
+cbpf-rs   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "cbpf-rs-v0.2.0" }
 ```
 
-> **Which URLs point where is split, on purpose.** (As of `zipline#17`; its
-> four PRs are open and unmerged at the time of writing, so on an unrebased
-> `zipline` you may still see the all-`org-zpr` arrangement.) `zpr` (the `zl-zpr-common`
-> crate) is consumed from `mkolehmainen/zl-zpr-common` in `zl-zpr-compiler`,
-> `zl-zpr-visaservice` and `zl-zpr-core`, and `zl-zpr-common` pulls its
-> submodules and `rcu` from the forks too, so a tag you cut in `zl-zpr-common`
-> does reach its consumers.
+> **Every ZPR-family URL now points at `mkolehmainen`.** `zipline#17` repointed
+> the `zpr` crate and `zl-zpr-common`'s submodules; `zipline#18` finished the
+> job for everything sourced from `zpr-utils` — `cbpf-rs`, `zpr-ext`,
+> `zpr-utils`, and `cslab`/`rcu` in `zl-zpr-core/adapter/ph` — by repointing
+> and re-tagging `zl-zpr-utils` first, so its crates cross-pin each other
+> inside the fork and cargo sees one source per crate. One residue outlived
+> #18: `zl-zpr-common` pinned `rcu` by the repo-wide tag `zpr-utils-v0.1.0`
+> rather than `rcu`'s own tag line, so it never followed `rcu`'s releases;
+> `zl-zpr-common` `v0.28.0` re-pins it to `rcu-v0.1.2` (same source, and for
+> `rcu/src/` an identical tree). The full history is in
+> `docs/plans/2026-09-17-build-sets.md`, *Finding 1*.
 >
-> Everything sourced from **`zpr-utils` still points at `org-zpr`** — `cbpf-rs`,
-> `zpr-ext`, `zpr-utils`, and `cslab`/`rcu` in `zl-zpr-core/adapter/ph`. That is
-> deliberate: the crates in that repository cross-pin each other by URL
-> (`rcu-v0.1.1` pins `cslab` at `org-zpr/zpr-utils`), so repointing only the
-> consumer gives cargo two `cslab` crates from the same commit but different
-> sources, and `RcuBox<RcuCslabReader<T>>` loses its inherent methods. Moving
-> them needs `zl-zpr-utils` repointed and re-tagged first; both manifests carry
-> a comment, and `mkolehmainen/zipline#18` tracks it.
->
-> The practical consequence: **the `zl-zpr-utils` checkout in the workspace is
-> not what any build consumes.** It is there so #18 can be done, since the fork
-> is the only pushable copy. A local edit or tag in it changes nothing until
-> consumers are repointed.
+> Gate 1 of `zpr-dev build` (see "Compatible build sets" below) now checks
+> this class of drift on every set: the same crate at two tags, or at one tag
+> from two URLs, is an error before anything compiles.
 
 Two consequences worth knowing:
 
@@ -318,13 +312,126 @@ Two consequences worth knowing:
    the repository you started in.
 
 2. **Version bumps are explicit.** Updating shared types means tagging
-   `zl-zpr-common` and bumping the tag in each consumer. Consumers can legitimately
-   sit on different tags for a while, as `zl-zpr-core` and `zl-zpr-visaservice`
-   frequently do.
+   `zl-zpr-common` and bumping the tag in each consumer. Bump **every**
+   consumer in the same round: `zpr-dev build`'s gate 1 (below) treats
+   consumers pinning different tags of the same crate as an error, so a set
+   cannot be cut while a bump is half-applied.
 
 `zl-zpr-core` also patches `capnp` and friends to a fork
 (`emilazy/capnproto-rust`) via `[patch.crates-io]`; keep that patch section in
 sync when bumping Cap'n Proto.
+
+---
+
+## Compatible build sets
+
+A **build set** is the answer to "these binaries go together": one YAML file
+naming a ref — tag, branch, or sha — per binary-producing repository, which
+`zpr-dev build` proves coherent, builds, tests, and turns into a manifest that
+rebuilds the same set later. The full specification is
+`zl-zpr-dev-context/zpr-dev/docs/specs/spec-003-build.md`; this section is the
+working knowledge.
+
+### The two manifests
+
+- **Input manifest** — `zl-zpr-dev-context/build-sets/<name>.yaml`, committed
+  and reviewed. Names the five binary-producing repositories
+  (`zl-zpr-compiler`, `zl-zpr-visaservice`, `zl-zpr-core`, `zl-zpr-coredns`,
+  `zl-zpr-demo`) with one ref each. `zl-zpr-common`, `zl-zpr-policy` and
+  `zl-zpr-vsapi` are deliberately absent: cargo consumes them from Git by tag,
+  so the set's `zl-zpr-common` version is *derived* from what the consumers
+  agree on. An optional `allow_pin_drift:` list tolerates a named crate's pin
+  disagreement; every entry must carry a non-empty `reason` — the reviewed
+  record of a divergence someone has decided to live with.
+- **Emitted manifest** — `dist/zpr-set-<name>.yaml`, written by every run
+  whose gates pass (even when a build step or test tier later fails — the most
+  interesting set to reproduce is the one that broke). Same schema with every
+  ref resolved to a 40-character sha, plus a diagnostic `resolved:` block
+  (pins, versions, host toolchain, per-binary sha256, tier results) that a
+  later read ignores. Feeding it back as `--manifest` rebuilds the same set:
+  a sha resolves to itself.
+
+Refs resolve against the **local checkouts, with no fetch** — `zpr-dev`
+treats a fetch as a mutation. A tag pushed but never fetched fails as an
+unknown ref; fetch first (e.g. `zpr-dev update --all`).
+
+### The three gates
+
+Gates run **before compilation** — a set whose pins disagree must fail in
+seconds, not after fifteen minutes of cargo. Findings accumulate into one
+`zpr-dev validate`-style report (`[OK]`/`[WARN]`/`[ERROR]`); any error exits 1.
+
+1. **Shared-dep agreement (error).** Every ZPR-family or `rev`-pinned git
+   dependency in every manifest of the set — plus `zl-zpr-common`'s own
+   manifest, at the revision the consumers pin — must resolve to a single
+   `(crate, url, tag-or-rev)`. Two tags for one crate, or one tag from two
+   URLs, is an error naming every pinning file and line. An
+   `allow_pin_drift` entry suppresses one crate's finding and echoes its
+   reason; `--allow-pin-drift` downgrades all findings to warnings for a
+   one-off.
+2. **Freshness (warning, never an error).** A pin sitting behind the newest
+   tag in its repository's checkout warns, ordered by semantic version. A set
+   may legitimately sit behind; the warning makes that a decision, not an
+   accident.
+3. **Compiler / visa-service version (error).** `zplc`'s package version must
+   satisfy the visa service's `POLICY_MIN_COMPILER_*` (major ==, minor ==,
+   patch >=). A set that fails this builds perfectly and then loads no policy
+   at runtime, so it is checked statically here and dynamically again by the
+   `unit` tier's `pregen`.
+
+**What gate 1 does *not* check.** It reads the root `Cargo.toml` and literal
+workspace members of the repositories it scans — **manifests only, never
+`Cargo.lock`** — so a pin carried *transitively* by a git dependency is
+invisible. Concretely: `zpr-utils-v0.2.2`'s own manifest pins `zpr v0.8.1`,
+so `zl-zpr-core/Cargo.lock` holds two `zpr` crates while gate 1 truthfully
+reports the *manifest* pins consistent. `allow_pin_drift` cannot express this
+either — there is no finding to suppress. A green gate 1 is agreement among
+the manifests it read, not a single-version guarantee for the compiled
+binaries; [zipline#69](https://github.com/mkolehmainen/zipline/issues/69)
+tracks the blind spot and whether to widen the gate.
+
+### The test tiers
+
+| Tier | What runs | Prerequisites | Probe-gated |
+|---|---|---|---|
+| `unit` | `make test` per built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | no |
+| `netns` | the seven `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, passwordless `sudo`, `valkey-server`, `python3` | yes |
+| `docker` | `dns-demo` deploy + `test-dns.sh` + `docker compose down -v` | `docker`, `docker compose` | yes |
+
+`--test` selects: `none`, `default` (the flag absent means the same), `all`,
+or a comma-separated list. `default` selects every tier above with the
+probe-gated ones allowed to skip: a tier whose prerequisites are missing is
+**skipped with the reason recorded** — in the output and in the emitted
+manifest, so a green run never overstates coverage. The same failure on an
+explicitly requested tier (named in a list, or via `--test all`) is an error:
+the machine cannot run what was asked.
+
+### Cutting a new set
+
+1. Fetch everything the set will pin: `zpr-dev update --all` (resolution
+   itself never fetches).
+2. `zpr-dev build --tip --test all` — `--tip` ignores refs and resolves
+   `origin/<default_branch>` everywhere (`zipline`; `main` for
+   `zl-zpr-coredns`). On a machine that cannot run a tier, drop it from the
+   list and let the skip be recorded instead.
+3. Review `dist/zpr-set-<name>.yaml`: the resolved shas, the `pins:` block,
+   the tier results including recorded skips.
+4. Copy it into `build-sets/<date>.yaml` and commit it. There is no separate
+   authoring step; the emitted manifest *is* the set.
+5. Reproduce before relying on it: `zpr-dev build --manifest
+   build-sets/<date>.yaml` must resolve to the same shas and recompute the
+   same `pins:` block.
+
+Quick checks along the way: `zpr-dev build --tip --gates-only` runs just the
+gates against the live checkouts (read-only, seconds), and `--dry-run` prints
+the resolved shas, build order, tier probes and target `dist/` without
+creating anything.
+
+Build directory: `<workspace>/.zpr-build/<name>` (`--build-dir` overrides);
+sources come from detached worktrees, so the live checkouts are never
+touched. A directory left by a previous run is refused; `--force` removes and
+recreates it. Exit codes are `zpr-dev`'s usual contract: 0 success or
+warnings, 1 gate/build/test failure, 2 usage or configuration error.
 
 ---
 
