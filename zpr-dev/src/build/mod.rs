@@ -440,6 +440,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     let mut docker_skip: Option<String> = None;
     let mut valkey: Option<PathBuf> = None;
     let mut sudo_refresher: Option<tiers::SudoRefresher> = None;
+    let mut netns_sudo: Option<tiers::SudoProvenance> = None;
     if selection.contains("netns") || selection.contains("docker") {
         let probes = tiers::Probes::gather(args.prompt_for_sudo);
         // --prompt-for-sudo without a terminal on stdin is refused up front
@@ -455,6 +456,15 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
             return Ok(std::process::ExitCode::from(1));
         }
         valkey = probes.valkey_server.clone();
+        // What the manifest will record for a netns tier that runs
+        // (zipline#70 Step 6): primed credentials and a NOPASSWD host are
+        // different provenances and are never conflated. None when sudo
+        // does not work at all — the tier then skips or errors anyway.
+        netns_sudo = match probes.sudo_prime {
+            Some(tiers::PrimeOutcome::Primed) => Some(tiers::SudoProvenance::Primed),
+            _ if probes.passwordless_sudo => Some(tiers::SudoProvenance::Nopasswd),
+            _ => None,
+        };
         // The refresher starts at the prime and only when one actually ran
         // (zipline#70 Step 4): on a NOPASSWD host there is no credential to
         // keep alive. It is handed to execute_build, which stops it when
@@ -502,6 +512,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         valkey,
         verbose: ctx.verbose,
         sudo_refresher: std::cell::Cell::new(sudo_refresher),
+        netns_sudo,
     })?;
     if !ctx.quiet {
         println!("dist: {}", build_dir.join("dist").display());
@@ -1086,6 +1097,11 @@ pub struct Tier {
     /// Repository → `passed`, `failed at ...`, or `skipped: ...`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, String>,
+    /// netns only: how sudo was satisfied — `nopasswd` or `primed`
+    /// (zipline#70 Step 6). Absent for skipped tiers and for every other
+    /// tier; the two provenances are never conflated (issue constraint).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sudo: Option<tiers::SudoProvenance>,
 }
 
 impl Tier {
@@ -1097,7 +1113,16 @@ impl Tier {
             status: if outcome.passed { "passed" } else { "failed" }.to_string(),
             reason: None,
             repos: outcome.repos.clone(),
+            sudo: None,
         }
+    }
+
+    /// Attaches the netns tier's sudo provenance (zipline#70 Step 6).
+    /// Builder-style so the docker/unit call sites stay untouched — only
+    /// the netns run path claims one.
+    pub fn with_sudo(mut self, sudo: tiers::SudoProvenance) -> Tier {
+        self.sudo = Some(sudo);
+        self
     }
 
     /// The manifest record of a tier that did not run, with why: a failed
@@ -1109,6 +1134,7 @@ impl Tier {
             status: "skipped".to_string(),
             reason: Some(reason.to_string()),
             repos: BTreeMap::new(),
+            sudo: None,
         }
     }
 }
@@ -1191,6 +1217,9 @@ struct BuildInputs<'a> {
     /// path leaks the thread. A `Cell` because `BuildInputs` is shared by
     /// reference and the tier must take ownership to stop it.
     sudo_refresher: std::cell::Cell<Option<tiers::SudoRefresher>>,
+    /// The netns tier's sudo provenance for the manifest — `nopasswd` or
+    /// `primed`, `None` when sudo does not work at all (zipline#70 Step 6).
+    netns_sudo: Option<tiers::SudoProvenance>,
 }
 
 /// Worktrees, gates, recipes, staging, verification, the emitted manifest and
@@ -1368,7 +1397,16 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                 let plan = tiers::netns_plan(&core, &dist, &valkey, inputs.verbose);
                 let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
                 tier_failed = tier_failed || !outcome.passed;
-                tier_results.insert("netns".to_string(), Tier::from_outcome(&outcome));
+                // A tier that ran carries how its sudo was satisfied —
+                // nopasswd host or primed credentials (zipline#70 Step 6).
+                // The gate guarantees sudo worked, so a missing provenance
+                // here is a caller bug worth surfacing in the manifest as
+                // an absent field rather than a guessed one.
+                let mut tier = Tier::from_outcome(&outcome);
+                if let Some(sudo) = inputs.netns_sudo {
+                    tier = tier.with_sudo(sudo);
+                }
+                tier_results.insert("netns".to_string(), tier);
             }
         }
         // The netns tier has returned (ran, skipped, passed or failed):
@@ -2063,6 +2101,7 @@ allow_pin_drift:
             status: "passed".to_string(),
             reason: None,
             repos: BTreeMap::new(),
+            sudo: None,
         };
         let yaml = serde_yaml_ng::to_string(&tier).unwrap();
         assert!(!yaml.contains("repos"), "{yaml}");
@@ -2262,6 +2301,7 @@ allow_pin_drift:
             valkey: None,
             verbose: false,
             sudo_refresher: std::cell::Cell::new(None),
+            netns_sudo: None,
         }
     }
 
@@ -2706,6 +2746,34 @@ allow_pin_drift:
         assert!(text.contains("docker:"), "{text}");
         assert!(text.contains("status: skipped"), "{text}");
         assert!(text.contains("reason: docker not found"), "{text}");
+    }
+
+    /// The netns tier's manifest entry records its sudo provenance
+    /// (zipline#70 Step 6, approved Q1): `sudo: nopasswd` for a run on a
+    /// passwordless host, `sudo: primed` for one on primed credentials —
+    /// never conflated, and absent entirely on a skipped tier.
+    #[test]
+    fn tier_records_sudo_provenance_distinctly() {
+        let outcome = tiers::TierOutcome {
+            passed: true,
+            repos: BTreeMap::new(),
+        };
+
+        let nopasswd = Tier::from_outcome(&outcome).with_sudo(tiers::SudoProvenance::Nopasswd);
+        let yaml = serde_yaml_ng::to_string(&nopasswd).unwrap();
+        assert!(yaml.contains("sudo: nopasswd"), "{yaml}");
+        assert!(!yaml.contains("primed"), "{yaml}");
+
+        let primed = Tier::from_outcome(&outcome).with_sudo(tiers::SudoProvenance::Primed);
+        let yaml = serde_yaml_ng::to_string(&primed).unwrap();
+        assert!(yaml.contains("sudo: primed"), "{yaml}");
+        assert!(!yaml.contains("nopasswd"), "{yaml}");
+
+        // No provenance claimed: the field is absent, not defaulted — a
+        // skipped tier and the docker tier must never carry one.
+        let unclaimed = Tier::skipped("missing: passwordless sudo");
+        let yaml = serde_yaml_ng::to_string(&unclaimed).unwrap();
+        assert!(!yaml.contains("sudo:"), "{yaml}");
     }
 
     /// A tier whose repository is not in the set is skipped naming it: the

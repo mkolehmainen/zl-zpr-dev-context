@@ -355,6 +355,19 @@ pub fn prime_sudo(runner: &dyn SudoRunner, stdin_is_tty: bool) -> PrimeOutcome {
     }
 }
 
+/// How the netns tier's sudo was satisfied, recorded in the emitted
+/// manifest (zipline#70 Step 6; approved Q1): a run on primed credentials
+/// is not the same provenance as one on a NOPASSWD host, and the manifest
+/// is the audit record. Serializes lowercase: `nopasswd` / `primed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SudoProvenance {
+    /// `sudo -n true` succeeded on its own: a NOPASSWD (or cached) host.
+    Nopasswd,
+    /// `--prompt-for-sudo` prompted and primed the credential cache.
+    Primed,
+}
+
 /// Keeps a primed sudo credential alive across a run that outlives sudo's
 /// timestamp timeout (15 minutes by default; a compile plus seven netns
 /// scripts routinely does — zipline#70 Step 4): a thread running
