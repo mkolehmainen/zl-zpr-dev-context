@@ -263,6 +263,11 @@ fn context_rewrites(context_dir: &Path) -> Result<Vec<(String, String)>> {
 /// A single left-to-right scan, rather than a `replace` per rewrite: replacing
 /// `docs/A.md.old` first and then `docs/A.md` would otherwise rewrite the
 /// substring inside the path it had just produced.
+///
+/// Only the *leading* directory of a reference is rewritten: the rest of the
+/// path is copied verbatim, because a path component may repeat a top-level
+/// directory name (`zpr-dev/docs/specs/...`) and only the first one is
+/// context-relative.
 fn rewrite_doc_references(body: &str, rewrites: &[(String, String)]) -> String {
     // ponytail: O(body * rewrites) scan; build a prefix trie if the context
     // checkout ever grows enough top-level directories to show up in a profile.
@@ -272,7 +277,14 @@ fn rewrite_doc_references(body: &str, rewrites: &[(String, String)]) -> String {
         for (relative, absolute) in rewrites {
             if let Some(tail) = rest.strip_prefix(relative.as_str()) {
                 out.push_str(absolute);
-                rest = tail;
+                // The remainder of the path the reference names. Whitespace
+                // and a backtick end it; both delimit a reference in these
+                // documents, and neither appears in a path we generate.
+                let end = tail
+                    .find(|c: char| c.is_whitespace() || c == '`')
+                    .unwrap_or(tail.len());
+                out.push_str(&tail[..end]);
+                rest = &tail[end..];
                 continue 'scan;
             }
         }
@@ -458,6 +470,27 @@ repositories:
         assert_eq!(
             out,
             tmp.path().join("docs/arch/DESIGN.md").display().to_string()
+        );
+    }
+
+    /// A reference below one top-level directory may name another as a path
+    /// component (`zpr-dev/docs/specs/...`). Only the leading directory is a
+    /// context-relative reference; the rest is part of the path it produced.
+    #[test]
+    fn rewrites_only_the_leading_directory_of_a_nested_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("zpr-dev/docs/specs")).unwrap();
+        let rewrites = context_rewrites(tmp.path()).unwrap();
+        let out = rewrite_doc_references("see `zpr-dev/docs/specs/spec-003-build.md`", &rewrites);
+        assert_eq!(
+            out,
+            format!(
+                "see `{}`",
+                tmp.path()
+                    .join("zpr-dev/docs/specs/spec-003-build.md")
+                    .display()
+            )
         );
     }
 

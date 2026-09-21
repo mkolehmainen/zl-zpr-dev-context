@@ -45,7 +45,7 @@ paths, so they can be opened directly.
 | New to ZPR, or unsure how the pieces fit | `docs/SYSTEM_OVERVIEW.md`, `docs/TERMINOLOGY.md` |
 | Unsure which repository owns something | `docs/REPOSITORIES.md` |
 | Building, testing, or changing a cross-repository dependency | `docs/BUILD.md` |
-| Building a compatible set of binaries, or working any build-set issue (`mkolehmainen/zipline#57` and its sub-issues) | `docs/BUILD.md`, then that issue's section of `docs/plans/2026-09-17-build-sets.md` |
+| Building a compatible set of binaries, or working a build-set issue | `docs/BUILD.md` ("Compatible build sets"), `zpr-dev/docs/specs/spec-003-build.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
