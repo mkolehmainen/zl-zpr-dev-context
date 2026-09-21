@@ -523,20 +523,28 @@ risk weighed above. OS-keyring persistence stays deferred; it is additive (a
 storage trait behind a flag) and needs no redesign. The intended limit is that
 restarting the agent means an interactive login.
 
-**Caveat — the "user's session, not the root daemon" mitigation does not hold
-yet.** While `ph` needs root for the tun interface and the control socket is
-not reachable unprivileged in every deployment
-([zipline#39](https://github.com/mkolehmainen/zipline/issues/39)), `ph-cli`
-runs under `sudo` and the refresh token sits in a root-owned process for
-hours. The marginal risk is small — root already owns the tun device and could
-harvest an `id_token` at any interactive login — but the spec's mitigation is
-void until that lands, and `docs/SECURITY_MODEL.md` records it as such rather
-than inheriting the claim. The renewal itself is unaffected: a refresh grant is
-a back-channel HTTPS POST with no browser, no desktop and no loopback
-listener, so root is fine for it. Only the *interactive* leg is touched, and
-there the documented form is `sudo ph-cli auth-agent <id> --no-browser` with
-the printed URL pasted into the user's own browser — once per session ceiling
-instead of once per `expiration_seconds`.
+**Caveat — the "user's session, not the root daemon" mitigation holds,
+conditionally.** `ph` needs root for the tun interface, but the control
+socket is handed off after bind (`adapter/ph/src/socket_access.rs`,
+`adapter/admin-api/src/socket_owner.rs`), so which uid holds the refresh
+token depends only on how `ph` was started. `ph` started via
+`sudo`/`pkexec` chowns the socket to the invoking user at
+`/var/run/zpr/<uid>/control.sock` (0600); `ph` started by systemd on a host
+with a `zpr` group leaves the shared socket group `zpr` (0660). In both
+deployments `ph-cli auth-agent` runs unprivileged and the token lives in the
+user's own session — the mitigation holds. The residual case is a `ph` with
+no recorded owner on a host with no `zpr` group: there the socket stays
+root-only, `ph-cli` runs under `sudo`, and the refresh token sits in a
+root-owned process for hours. The marginal risk there is small — root
+already owns the tun device and could harvest an `id_token` at any
+interactive login — and `docs/SECURITY_MODEL.md` records it as a present
+conditional fact rather than inheriting the claim. The renewal itself is
+unaffected in every deployment: a refresh grant is a back-channel HTTPS POST
+with no browser, no desktop and no loopback listener, so root is fine for
+it. Only the *interactive* leg is touched, and only in the residual case,
+where the documented form is `sudo ph-cli auth-agent <id> --no-browser` with
+the printed URL pasted into the user's own browser — once per session
+ceiling instead of once per `expiration_seconds`.
 
 **When user authentication expires and renewal does not happen:** log and
 disconnect. This is implemented, not aspirational. A periodic
