@@ -282,6 +282,8 @@ pub trait SudoRunner {
     /// `sudo -v` with inherited stdio: prompt once on the operator's own
     /// terminal and cache the credential.
     fn prime(&self) -> bool;
+    /// `sudo -n -v`: extend the cached credential without prompting.
+    fn refresh(&self) -> bool;
 }
 
 /// The live [`SudoRunner`]: real sudo on the real host.
@@ -300,6 +302,9 @@ impl SudoRunner for LiveSudo {
             .status()
             .map(|status| status.success())
             .unwrap_or(false)
+    }
+    fn refresh(&self) -> bool {
+        command_succeeds("sudo", &["-n", "-v"])
     }
 }
 
@@ -347,6 +352,92 @@ pub fn prime_sudo(runner: &dyn SudoRunner, stdin_is_tty: bool) -> PrimeOutcome {
         PrimeOutcome::Primed
     } else {
         PrimeOutcome::CacheDisabled
+    }
+}
+
+/// Keeps a primed sudo credential alive across a run that outlives sudo's
+/// timestamp timeout (15 minutes by default; a compile plus seven netns
+/// scripts routinely does — zipline#70 Step 4): a thread running
+/// `sudo -n -v` on `interval`, from [`SudoRefresher::start`] until
+/// [`SudoRefresher::stop`] or drop. Dropping stops it too, so an early `?`
+/// between the prime and the netns tier cannot leak the thread.
+///
+/// The interval is injected so tests never sleep wall-clock time;
+/// production passes [`SUDO_REFRESH_INTERVAL`].
+pub struct SudoRefresher {
+    // ponytail: an AtomicBool polled once per interval, not a real
+    // cancellation token — stop() can wait up to one full interval for the
+    // thread to notice. Fine at 60s against a 15-minute timeout; replace
+    // with a channel/condvar if the interval ever needs to be long.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// How often the refresher runs `sudo -n -v`: comfortably inside sudo's
+/// default 15-minute timestamp timeout, cheap enough to not matter.
+pub const SUDO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl SudoRefresher {
+    /// Spawns the refresher thread. Call only after a prime actually ran
+    /// (`PrimeOutcome::Primed`): on a NOPASSWD host there is no credential
+    /// to keep alive, and on a failed prime there is nothing to refresh.
+    pub fn start(
+        runner: std::sync::Arc<dyn SudoRunner + Send + Sync>,
+        interval: std::time::Duration,
+    ) -> SudoRefresher {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                // A failed refresh is not fatal here: the tier's own sudo
+                // calls will surface the failure where it can be seen, in
+                // the per-script log; killing the run from a background
+                // thread would be worse than the failure it predicts.
+                let _ = runner.refresh();
+                // Sleep in short slices so stop() is honoured promptly even
+                // against the production 60s interval.
+                let slice = std::time::Duration::from_millis(200).min(interval.max(
+                    // A zero interval (tests) must still yield, or this
+                    // loop starves the stopping thread.
+                    std::time::Duration::from_millis(1),
+                ));
+                let mut slept = std::time::Duration::ZERO;
+                while slept < interval && !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(slice);
+                    slept += slice;
+                }
+                if interval.is_zero() {
+                    std::thread::yield_now();
+                }
+            }
+        });
+        SudoRefresher {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stops the thread and joins it: after `stop` returns, no further
+    /// `sudo -n -v` will run. Called when the netns tier finishes; drop
+    /// covers every early-exit path.
+    pub fn stop(mut self) {
+        self.stop_and_join();
+    }
+
+    /// The shared stop-and-join, so `stop()` and `Drop` cannot diverge.
+    fn stop_and_join(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            // A panicked refresher thread has nothing to propagate: the
+            // refresh result is already ignored by design.
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for SudoRefresher {
+    fn drop(&mut self) {
+        self.stop_and_join();
     }
 }
 
@@ -1257,6 +1348,9 @@ mod tests {
             self.prime_calls.set(self.prime_calls.get() + 1);
             self.prime_answer
         }
+        fn refresh(&self) -> bool {
+            true
+        }
     }
 
     /// A host where `sudo -n true` already succeeds skips the prompt
@@ -1311,6 +1405,79 @@ mod tests {
         let outcome = prime_sudo(&sudo, true);
         assert!(matches!(outcome, PrimeOutcome::PrimeFailed));
         assert_eq!(sudo.prime_calls.get(), 1);
+    }
+
+    /// A thread-safe counting [`SudoRunner`] for the refresher tests: the
+    /// scripted `FakeSudo` above is single-threaded by design, and the
+    /// refresher runs on its own thread.
+    #[derive(Default)]
+    struct CountingSudo {
+        refresh_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SudoRunner for CountingSudo {
+        fn probe(&self) -> bool {
+            true
+        }
+        fn prime(&self) -> bool {
+            true
+        }
+        fn refresh(&self) -> bool {
+            self.refresh_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        }
+    }
+
+    /// The refresher's start/stop bookkeeping (issue Step 4): it refreshes
+    /// on its interval while alive, and `stop` joins the thread so no
+    /// refresh can run afterwards. The interval is injected (zero here) so
+    /// the test never sleeps wall-clock time.
+    #[test]
+    fn sudo_refresher_refreshes_until_stopped() {
+        let sudo = std::sync::Arc::new(CountingSudo::default());
+        let refresher = SudoRefresher::start(sudo.clone(), std::time::Duration::ZERO);
+
+        // Bounded wait for the thread to demonstrably run, without a
+        // wall-clock sleep: yield until at least two refreshes landed.
+        let mut spins = 0u32;
+        while sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            std::thread::yield_now();
+            spins += 1;
+            assert!(spins < 10_000_000, "refresher thread never refreshed");
+        }
+
+        refresher.stop();
+        // stop() joined the thread: the count is now frozen.
+        let frozen = sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..100 {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst),
+            frozen,
+            "a refresh ran after stop() returned"
+        );
+    }
+
+    /// Dropping the refresher stops it too — the RAII path an early `?` in
+    /// the build takes (issue Step 4: stopped even on tier failure).
+    #[test]
+    fn sudo_refresher_stops_on_drop() {
+        let sudo = std::sync::Arc::new(CountingSudo::default());
+        {
+            let _refresher = SudoRefresher::start(sudo.clone(), std::time::Duration::ZERO);
+        }
+        // The guard is gone, so the thread is joined and the count frozen.
+        let frozen = sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..100 {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst),
+            frozen,
+            "a refresh ran after the guard was dropped"
+        );
     }
 
     /// `sudo -v` succeeded but nothing cached (`timestamp_timeout=0`): the

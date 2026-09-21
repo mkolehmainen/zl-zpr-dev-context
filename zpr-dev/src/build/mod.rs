@@ -439,6 +439,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     let mut netns_skip: Option<String> = None;
     let mut docker_skip: Option<String> = None;
     let mut valkey: Option<PathBuf> = None;
+    let mut sudo_refresher: Option<tiers::SudoRefresher> = None;
     if selection.contains("netns") || selection.contains("docker") {
         let probes = tiers::Probes::gather(args.prompt_for_sudo);
         // --prompt-for-sudo without a terminal on stdin is refused up front
@@ -454,6 +455,16 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
             return Ok(std::process::ExitCode::from(1));
         }
         valkey = probes.valkey_server.clone();
+        // The refresher starts at the prime and only when one actually ran
+        // (zipline#70 Step 4): on a NOPASSWD host there is no credential to
+        // keep alive. It is handed to execute_build, which stops it when
+        // the netns tier returns; Drop covers every earlier exit.
+        if probes.sudo_prime == Some(tiers::PrimeOutcome::Primed) && selection.contains("netns") {
+            sudo_refresher = Some(tiers::SudoRefresher::start(
+                std::sync::Arc::new(tiers::LiveSudo),
+                tiers::SUDO_REFRESH_INTERVAL,
+            ));
+        }
         for (tier, gate, skip) in [
             ("netns", tiers::netns_gate(&probes), &mut netns_skip),
             ("docker", tiers::docker_gate(&probes), &mut docker_skip),
@@ -490,6 +501,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         docker_skip,
         valkey,
         verbose: ctx.verbose,
+        sudo_refresher: std::cell::Cell::new(sudo_refresher),
     })?;
     if !ctx.quiet {
         println!("dist: {}", build_dir.join("dist").display());
@@ -1173,6 +1185,12 @@ struct BuildInputs<'a> {
     valkey: Option<PathBuf>,
     /// `--verbose`: the netns scripts get `ZPR_TEST_VERBOSE=1`.
     verbose: bool,
+    /// The credential refresher, present when `--prompt-for-sudo` actually
+    /// primed (zipline#70 Step 4). The netns tier takes and stops it when
+    /// it returns; `SudoRefresher`'s Drop covers every earlier exit, so no
+    /// path leaks the thread. A `Cell` because `BuildInputs` is shared by
+    /// reference and the tier must take ownership to stop it.
+    sudo_refresher: std::cell::Cell<Option<tiers::SudoRefresher>>,
 }
 
 /// Worktrees, gates, recipes, staging, verification, the emitted manifest and
@@ -1320,6 +1338,10 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
             .iter()
             .find(|(recipe, _)| recipe.repo == "zl-zpr-core")
             .map(|(_, dest)| dest.clone());
+        // Taken unconditionally: whether the tier runs or skips, the
+        // refresher has no work after this block (zipline#70 Step 4).
+        // Stopping via take-then-drop keeps the one stop path.
+        let refresher = inputs.sudo_refresher.take();
         match (&inputs.netns_skip, core, &inputs.valkey) {
             (Some(reason), _, _) => {
                 if !inputs.quiet {
@@ -1348,6 +1370,12 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                 tier_failed = tier_failed || !outcome.passed;
                 tier_results.insert("netns".to_string(), Tier::from_outcome(&outcome));
             }
+        }
+        // The netns tier has returned (ran, skipped, passed or failed):
+        // the credential has no further consumer, so stop refreshing it
+        // now rather than at end of scope (zipline#70 Step 4).
+        if let Some(refresher) = refresher {
+            refresher.stop();
         }
     }
 
@@ -2233,6 +2261,7 @@ allow_pin_drift:
             docker_skip: None,
             valkey: None,
             verbose: false,
+            sudo_refresher: std::cell::Cell::new(None),
         }
     }
 
