@@ -426,6 +426,34 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     };
     let context_sha = crate::git::head_short(&ctx.context).unwrap_or_default();
 
+    // The end-to-end tiers' prerequisite probes (task B5), resolved before
+    // any building: an explicitly requested tier that cannot run is a
+    // gate-style finding — this machine cannot run what was asked — so it
+    // exits 1 before fifteen minutes of cargo, not after (approved Q1 on
+    // zipline#62). A default-selected tier's failure becomes its skip reason.
+    let mut netns_skip: Option<String> = None;
+    let mut docker_skip: Option<String> = None;
+    let mut valkey: Option<PathBuf> = None;
+    if selection.contains("netns") || selection.contains("docker") {
+        let probes = tiers::Probes::gather();
+        valkey = probes.valkey_server.clone();
+        for (tier, gate, skip) in [
+            ("netns", tiers::netns_gate(&probes), &mut netns_skip),
+            ("docker", tiers::docker_gate(&probes), &mut docker_skip),
+        ] {
+            if !selection.contains(tier) {
+                continue;
+            }
+            match tiers::check_gate(tier, gate, selection.is_explicit(tier)) {
+                Ok(reason) => *skip = reason,
+                Err(error) => {
+                    eprintln!("error: {error:#}");
+                    return Ok(std::process::ExitCode::from(1));
+                }
+            }
+        }
+    }
+
     let ok = execute_build(&BuildInputs {
         set: &set,
         resolved: &resolved,
@@ -441,6 +469,10 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         manifest_path,
         context_sha,
         selection: &selection,
+        netns_skip,
+        docker_skip,
+        valkey,
+        verbose: ctx.verbose,
     })?;
     if !ctx.quiet {
         println!("dist: {}", build_dir.join("dist").display());
@@ -1003,6 +1035,18 @@ impl Tier {
             repos: outcome.repos.clone(),
         }
     }
+
+    /// The manifest record of a tier that did not run, with why: a failed
+    /// prerequisite probe, or a repository the set does not include. Always
+    /// recorded — a skipped tier must be visible in the manifest and never
+    /// presented as coverage (spec-003 §6; master plan B5 constraint).
+    pub fn skipped(reason: &str) -> Tier {
+        Tier {
+            status: "skipped".to_string(),
+            reason: Some(reason.to_string()),
+            repos: BTreeMap::new(),
+        }
+    }
 }
 
 /// Builds the emitted manifest for a resolution (spec-003 §3): the input set's
@@ -1065,6 +1109,18 @@ struct BuildInputs<'a> {
     context_sha: String,
     /// Which test tiers to run after a successful build (task B4).
     selection: &'a tiers::Selection,
+    /// When set, the netns tier's prerequisite probe failed and the tier is
+    /// recorded `skipped` with this reason (task B5; approved Q1 on
+    /// zipline#62 — an *explicit* probe failure errors in `run()` before
+    /// this struct is built, so a reason here is always a plain skip).
+    netns_skip: Option<String>,
+    /// Same, for the docker tier.
+    docker_skip: Option<String>,
+    /// Where the netns probe found `valkey-server`; `None` whenever the
+    /// netns tier is skipped or unselected.
+    valkey: Option<PathBuf>,
+    /// `--verbose`: the netns scripts get `ZPR_TEST_VERBOSE=1`.
+    verbose: bool,
 }
 
 /// Worktrees, gates, recipes, staging, verification, the emitted manifest and
@@ -1186,12 +1242,12 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         }
     }
 
-    // -- the test tiers (task B4), against the worktrees and dist/ ------------
+    // -- the test tiers (tasks B4-B5), against the worktrees and dist/ --------
     // Only after a fully verified build: a tier run against a half-built set
-    // would test binaries that will never ship. The unit tier is `make test`
-    // per built repository in build order, with `make pregen ZPLC=<dist>/zplc`
-    // first in the visa service so its fixtures come from the set's own
-    // compiler (spec-003 §6).
+    // would test binaries that will never ship. Tier order is fixed: unit
+    // (fast, per-repository `make test`), then netns, then docker — the two
+    // end-to-end tiers of task B5, both run against `dist/`. A probe-skipped
+    // tier is recorded `skipped: <reason>` and never presented as coverage.
     let mut tier_results: BTreeMap<String, Tier> = BTreeMap::new();
     let mut tier_failed = false;
     if failure.is_none() && inputs.selection.contains("unit") {
@@ -1202,6 +1258,89 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         let outcome = tiers::run_unit(&plans, &logs, inputs.quiet);
         tier_failed = !outcome.passed;
         tier_results.insert("unit".to_string(), Tier::from_outcome(&outcome));
+    }
+
+    // The netns tier: the seven integration scripts in the zl-zpr-core
+    // worktree, against dist/. Skipped with the reason when the probe
+    // failed, or when the set has no zl-zpr-core worktree to run in.
+    if failure.is_none() && inputs.selection.contains("netns") {
+        let core = worktrees
+            .iter()
+            .find(|(recipe, _)| recipe.repo == "zl-zpr-core")
+            .map(|(_, dest)| dest.clone());
+        match (&inputs.netns_skip, core, &inputs.valkey) {
+            (Some(reason), _, _) => {
+                if !inputs.quiet {
+                    println!("netns tier: skipped ({reason})");
+                }
+                tier_results.insert("netns".to_string(), Tier::skipped(reason));
+            }
+            (None, None, _) => {
+                let reason = "zl-zpr-core is not in this set";
+                if !inputs.quiet {
+                    println!("netns tier: skipped ({reason})");
+                }
+                tier_results.insert("netns".to_string(), Tier::skipped(reason));
+            }
+            (None, Some(core), valkey) => {
+                if !inputs.quiet {
+                    println!("netns tier:");
+                }
+                // The probe passed, so valkey was found; the fallback name
+                // only defends against an inconsistent caller.
+                let valkey = valkey
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("valkey-server"));
+                let plan = tiers::netns_plan(&core, &dist, &valkey, inputs.verbose);
+                let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
+                tier_failed = tier_failed || !outcome.passed;
+                tier_results.insert("netns".to_string(), Tier::from_outcome(&outcome));
+            }
+        }
+    }
+
+    // The docker tier: dist/ staged into the demo worktree's dns-demo/bin/,
+    // deploy, DNS test, unconditional teardown. Same skip rules.
+    if failure.is_none() && inputs.selection.contains("docker") {
+        let demo = worktrees
+            .iter()
+            .find(|(recipe, _)| recipe.repo == "zl-zpr-demo")
+            .map(|(_, dest)| dest.clone());
+        match (&inputs.docker_skip, demo) {
+            (Some(reason), _) => {
+                if !inputs.quiet {
+                    println!("docker tier: skipped ({reason})");
+                }
+                tier_results.insert("docker".to_string(), Tier::skipped(reason));
+            }
+            (None, None) => {
+                let reason = "zl-zpr-demo is not in this set";
+                if !inputs.quiet {
+                    println!("docker tier: skipped ({reason})");
+                }
+                tier_results.insert("docker".to_string(), Tier::skipped(reason));
+            }
+            (None, Some(demo)) => {
+                if !inputs.quiet {
+                    println!("docker tier:");
+                }
+                let plan = tiers::docker_plan(&demo, &dist);
+                let outcome = tiers::run_docker(&plan, &logs, inputs.quiet);
+                tier_failed = tier_failed || !outcome.passed;
+                tier_results.insert("docker".to_string(), Tier::from_outcome(&outcome));
+            }
+        }
+    }
+
+    // The dist/ guard (task B5): after any tier ran, the staged `ph` must
+    // not be the enable-security-testing build that a2a-pubkey-test.sh
+    // compiles into the worktree — that binary must never ship. A build
+    // failure skips the check: dist/ is already known incomplete.
+    if failure.is_none() {
+        if let Err(error) = tiers::dist_ph_is_clean(&dist) {
+            eprintln!("error: {error:#}");
+            failure = Some(error.to_string());
+        }
     }
 
     // -- the emitted manifest, written even on build or tier failure ---------
@@ -2038,6 +2177,10 @@ allow_pin_drift:
             manifest_path: "test-set.yaml".to_string(),
             context_sha: "deadbee".to_string(),
             selection,
+            netns_skip: None,
+            docker_skip: None,
+            valkey: None,
+            verbose: false,
         }
     }
 
@@ -2440,5 +2583,75 @@ allow_pin_drift:
         let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
         assert!(!text.contains("tiers:"), "{text}");
         assert!(!build_dir.join("src").join("zl-zpr-core").exists());
+    }
+
+    // -- the netns and docker tiers in the manifest (task B5, zipline#62) -------
+
+    /// A probe-skipped tier serializes as `status: skipped` with the probe's
+    /// reason and no repos breakdown — visible in the manifest, never
+    /// presented as coverage (master plan B5 constraint).
+    #[test]
+    fn tier_skipped_serializes_status_and_reason() {
+        let tier = Tier::skipped("docker not found");
+        let yaml = serde_yaml_ng::to_string(&tier).unwrap();
+        assert!(yaml.contains("status: skipped"), "{yaml}");
+        assert!(yaml.contains("reason: docker not found"), "{yaml}");
+        assert!(!yaml.contains("repos:"), "{yaml}");
+    }
+
+    /// A selected tier whose probe failed (default selection, approved Q1 on
+    /// zipline#62) is recorded `skipped` with the reason in the emitted
+    /// manifest, and the skip does not fail the run.
+    #[test]
+    fn execute_build_records_a_probe_skipped_tier() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("docker")).unwrap();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.docker_skip = Some("docker not found".to_string());
+        let ok = execute_build(&in_).unwrap();
+        assert!(ok, "a probe skip must not fail the run");
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("docker:"), "{text}");
+        assert!(text.contains("status: skipped"), "{text}");
+        assert!(text.contains("reason: docker not found"), "{text}");
+    }
+
+    /// A tier whose repository is not in the set is skipped naming it: the
+    /// docker tier without a `zl-zpr-demo` worktree has nothing to deploy,
+    /// and that absence must be stated, never silent (spec-003 §6).
+    #[test]
+    fn execute_build_skips_a_tier_whose_repository_is_not_in_the_set() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        // The fixture set holds only zl-zpr-core: no zl-zpr-demo worktree.
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("docker")).unwrap();
+        let in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        let ok = execute_build(&in_).unwrap();
+        assert!(ok, "a repository-absent skip must not fail the run");
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("docker:"), "{text}");
+        assert!(text.contains("status: skipped"), "{text}");
+        assert!(text.contains("zl-zpr-demo"), "{text}");
     }
 }
