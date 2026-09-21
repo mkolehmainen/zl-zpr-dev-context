@@ -222,19 +222,30 @@ a user-held keypair bound to `sub` at first login — is recorded as deferred in
 `docs/plans/2026-09-16-silent-oidc-reauth.md` (X3c) and is the thing to
 revisit if this relaxation fails a later review.
 
-**Running as root: a mitigation that does not hold yet.** The refresh token
+**Running as root: the mitigation holds, conditionally.** The refresh token
 that makes renewal possible is held in memory by `ph-cli auth-agent` for the
 life of that process — never on disk, never logged, never returned over the
 RPC. `docs/OIDC.md` argues this is acceptable partly because the token "lives
-in the *user's* session rather than the root daemon". **That argument is void
-while `ph-cli` requires `sudo`.** `ph` needs root for the tun interface, and
-until [zipline#39](https://github.com/mkolehmainen/zipline/issues/39) lands
-the control socket is not reachable unprivileged in every deployment, so the
-refresh token sits in a root-owned process for hours. The marginal risk is
-small — root already owns the tun device and could harvest an `id_token` at
-any interactive login, so what is added is persistence, not access — but it
-is recorded here rather than inherited, and deployments that will not accept
-persistence leave `allow_offline_access = false`.
+in the *user's* session rather than the root daemon". Whether that holds
+depends only on how `ph` was started, because the control socket is handed
+off after bind (`adapter/ph/src/socket_access.rs`,
+`adapter/admin-api/src/socket_owner.rs`):
+
+- `ph` started via `sudo`/`pkexec`: the socket is chowned to the invoking
+  user at `/var/run/zpr/<uid>/control.sock` (mode 0600), `ph-cli auth-agent`
+  runs unprivileged, and the refresh token lives in a process owned by the
+  invoking user's uid. **The mitigation holds.**
+- `ph` started by systemd on a host with a `zpr` group: the shared socket is
+  group `zpr` (mode 0660), group members run `ph-cli` unprivileged, and the
+  token lives under the member's uid. **The mitigation holds.**
+- Residual case — no recorded owner and no `zpr` group (systemd or direct
+  root login on an unpackaged host): the socket stays root-only, `ph-cli`
+  runs under `sudo`, and the refresh token sits in a root-owned process for
+  hours. The marginal risk is small — root already owns the tun device and
+  could harvest an `id_token` at any interactive login, so what is added is
+  persistence, not access — but it is recorded here rather than inherited,
+  and deployments that will not accept persistence leave
+  `allow_offline_access = false`.
 
 ---
 
