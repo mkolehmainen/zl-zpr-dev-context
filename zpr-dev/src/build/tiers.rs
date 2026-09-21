@@ -673,6 +673,176 @@ fn run_env_command(
     );
 }
 
+// ---------------------------------------------------------------------------
+// The docker tier (issue62 step 4)
+// ---------------------------------------------------------------------------
+
+/// One docker-tier command: deploy, test, or teardown.
+#[derive(Debug)]
+pub struct DockerStep {
+    /// Labels the log file (`logs/docker-<name>.log`) and the outcome entry.
+    pub name: &'static str,
+    pub program: String,
+    pub args: Vec<String>,
+    pub dir: PathBuf,
+}
+
+/// The docker tier's plan: stage `dist/` into the demo's `dns-demo/bin/`,
+/// deploy, test, tear down. Pure planning — nothing here executes.
+#[derive(Debug)]
+pub struct DockerPlan {
+    /// Where the built set's binaries are.
+    pub dist: PathBuf,
+    /// `<zl-zpr-demo worktree>/dns-demo/bin` — the copy target.
+    pub bin: PathBuf,
+    pub deploy: DockerStep,
+    pub test: DockerStep,
+    pub teardown: DockerStep,
+}
+
+/// Builds the docker plan against the `zl-zpr-demo` worktree and `dist/`:
+/// stage `dist/`'s binaries into `dns-demo/bin/` — skipping the demo's own
+/// `make` entirely, so the DNS test exercises the set's binaries rather
+/// than a fresh build — then `local-compute/deploy-docker.sh`,
+/// `local-compute/test-dns.sh`, and `docker compose down -v`
+/// unconditionally (master plan B5).
+pub fn docker_plan(demo_worktree: &Path, dist: &Path) -> DockerPlan {
+    let demo = demo_worktree.join("dns-demo");
+    let compose_file = demo.join("docker-compose.yml").display().to_string();
+    DockerPlan {
+        dist: dist.to_path_buf(),
+        bin: demo.join("bin"),
+        deploy: DockerStep {
+            name: "deploy",
+            program: demo
+                .join("local-compute/deploy-docker.sh")
+                .display()
+                .to_string(),
+            args: vec![],
+            dir: demo.clone(),
+        },
+        test: DockerStep {
+            name: "test",
+            program: demo.join("local-compute/test-dns.sh").display().to_string(),
+            args: vec![],
+            dir: demo.clone(),
+        },
+        teardown: DockerStep {
+            name: "teardown",
+            program: "docker".to_string(),
+            args: ["compose", "-f", &compose_file, "down", "-v"]
+                .iter()
+                .map(|arg| arg.to_string())
+                .collect(),
+            dir: demo,
+        },
+    }
+}
+
+/// Copies every staged name the recipe table produces from `dist/` into the
+/// demo's `bin/`, executably — the two sets of names are identical, which is
+/// what makes the DNS test exercise the set (master plan B5). A missing
+/// binary is an error naming it: the demo must not run against a half-staged
+/// `bin/`.
+pub fn stage_dist_into_demo(dist: &Path, bin: &Path) -> Result<()> {
+    std::fs::create_dir_all(bin)
+        .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", bin.display()))?;
+    for recipe in recipes::RECIPES {
+        for staged in recipe.staged {
+            let source = dist.join(staged.name);
+            if !source.is_file() {
+                bail!(
+                    "dist/ is missing {} (expected at {}); cannot stage the demo",
+                    staged.name,
+                    source.display()
+                );
+            }
+            // fs::copy preserves the mode, so an executable stays executable.
+            std::fs::copy(&source, bin.join(staged.name)).map_err(|e| {
+                anyhow::anyhow!("cannot stage {} into {}: {e}", staged.name, bin.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs a docker plan: stage, deploy, test — each failure skipping the rest
+/// — then teardown **unconditionally**, recorded separately from a test
+/// failure (master plan B5). Compose down is safe when nothing is up, so
+/// even a stage failure tears down: a previous run's leftovers must not
+/// survive. Steps log as `logs/docker-<step>.log` in `run_unit`'s shape.
+pub fn run_docker(plan: &DockerPlan, logs: &Path, quiet: bool) -> TierOutcome {
+    let mut outcome = TierOutcome {
+        passed: true,
+        repos: BTreeMap::new(),
+    };
+    let mut record = |outcome: &mut TierOutcome, name: &str, result: Result<()>| -> bool {
+        match result {
+            Ok(()) => {
+                if !quiet {
+                    println!("{name}: passed");
+                }
+                outcome.repos.insert(name.to_string(), "passed".to_string());
+                true
+            }
+            Err(error) => {
+                if !quiet {
+                    println!("{name}: FAILED");
+                }
+                outcome.passed = false;
+                outcome
+                    .repos
+                    .insert(name.to_string(), format!("failed: {error}"));
+                false
+            }
+        }
+    };
+    let run_step = |step: &DockerStep, quiet: bool| -> Result<()> {
+        run_env_command(
+            "docker",
+            step.name,
+            &step.program,
+            &step.args,
+            &[],
+            &step.dir,
+            logs,
+            quiet,
+        )
+    };
+
+    // stage -> deploy -> test, each failure skipping what follows: the demo
+    // must not deploy half-staged, and a failed deploy leaves nothing to
+    // test. A skip is recorded with its reason, never silently absent.
+    let staged = record(
+        &mut outcome,
+        "stage",
+        stage_dist_into_demo(&plan.dist, &plan.bin),
+    );
+    let deployed = if staged {
+        record(&mut outcome, "deploy", run_step(&plan.deploy, quiet))
+    } else {
+        outcome
+            .repos
+            .insert("deploy".to_string(), "skipped: staging failed".to_string());
+        false
+    };
+    if deployed {
+        record(&mut outcome, "test", run_step(&plan.test, quiet));
+    } else {
+        let reason = if staged {
+            "skipped: deploy failed"
+        } else {
+            "skipped: staging failed"
+        };
+        outcome.repos.insert("test".to_string(), reason.to_string());
+    }
+
+    // Teardown, in every path — pass, fail, or half-start — and recorded
+    // separately: a stuck volume is a different problem than a red test.
+    record(&mut outcome, "teardown", run_step(&plan.teardown, quiet));
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1112,6 +1282,219 @@ mod tests {
         // ...and the earlier pass proves the sweep visited every script.
         let ok_log = std::fs::read_to_string(logs.join("netns-ok.sh.log")).unwrap();
         assert!(ok_log.contains("fine"), "{ok_log}");
+    }
+
+    // -- the docker tier's plan (issue62 step 4) --------------------------------
+
+    /// The plan stages `dist/` into the demo worktree's `dns-demo/bin/`,
+    /// then deploys, tests, and tears down with `docker compose down -v` —
+    /// never the demo's own `make`, so the DNS test exercises the set's
+    /// binaries rather than a fresh build (master plan B5).
+    #[test]
+    fn docker_plan_stages_deploys_tests_and_tears_down() {
+        let plan = docker_plan(Path::new("/wt/zl-zpr-demo"), Path::new("/b/dist"));
+        assert_eq!(plan.dist, Path::new("/b/dist"));
+        assert_eq!(plan.bin, Path::new("/wt/zl-zpr-demo/dns-demo/bin"));
+
+        assert_eq!(plan.deploy.name, "deploy");
+        assert!(
+            plan.deploy
+                .program
+                .ends_with("local-compute/deploy-docker.sh"),
+            "{}",
+            plan.deploy.program
+        );
+        assert_eq!(plan.test.name, "test");
+        assert!(
+            plan.test.program.ends_with("local-compute/test-dns.sh"),
+            "{}",
+            plan.test.program
+        );
+        // Teardown is compose down -v against the demo's compose file.
+        assert_eq!(plan.teardown.name, "teardown");
+        assert_eq!(plan.teardown.program, "docker");
+        assert_eq!(
+            plan.teardown.args,
+            [
+                "compose",
+                "-f",
+                "/wt/zl-zpr-demo/dns-demo/docker-compose.yml",
+                "down",
+                "-v"
+            ]
+        );
+    }
+
+    /// Staging copies exactly the recipe table's staged names — the ten
+    /// binaries of contract 4 — into `bin/`, executably, and a missing one
+    /// is an error naming it (the set must not half-stage).
+    #[test]
+    fn stage_dist_into_demo_copies_the_staged_names() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let names: Vec<&str> = recipes::RECIPES
+            .iter()
+            .flat_map(|recipe| recipe.staged.iter().map(|staged| staged.name))
+            .collect();
+        for name in &names {
+            let path = dist.join(name);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let bin = tmp.path().join("demo/dns-demo/bin");
+
+        stage_dist_into_demo(&dist, &bin).unwrap();
+        for name in &names {
+            let staged = bin.join(name);
+            assert!(staged.is_file(), "{name} not staged");
+            let mode = std::fs::metadata(&staged).unwrap().permissions().mode();
+            assert!(mode & 0o111 != 0, "{name} staged non-executable");
+        }
+
+        // A missing binary is an error naming it.
+        std::fs::remove_file(dist.join("coredns")).unwrap();
+        let error = stage_dist_into_demo(&dist, &bin).unwrap_err().to_string();
+        assert!(error.contains("coredns"), "{error}");
+    }
+
+    /// A fixture docker plan over shell scripts, with a marker file the
+    /// teardown step touches so its execution is observable.
+    fn fixture_docker_plan(tmp: &Path, test_body: &str, teardown_body: &str) -> DockerPlan {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dist = tmp.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        for recipe in recipes::RECIPES {
+            for staged in recipe.staged {
+                let path = dist.join(staged.name);
+                std::fs::write(&path, "#!/bin/sh\n").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let write_script = |name: &str, body: &str| -> String {
+            let path = tmp.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path.display().to_string()
+        };
+        DockerPlan {
+            dist,
+            bin: tmp.join("demo/dns-demo/bin"),
+            deploy: DockerStep {
+                name: "deploy",
+                program: write_script("deploy.sh", "#!/bin/sh\necho deployed\n"),
+                args: vec![],
+                dir: tmp.to_path_buf(),
+            },
+            test: DockerStep {
+                name: "test",
+                program: write_script("test.sh", test_body),
+                args: vec![],
+                dir: tmp.to_path_buf(),
+            },
+            teardown: DockerStep {
+                name: "teardown",
+                program: write_script("teardown.sh", teardown_body),
+                args: vec![],
+                dir: tmp.to_path_buf(),
+            },
+        }
+    }
+
+    /// Teardown runs even when the test step fails, and the two are recorded
+    /// separately: the tier fails on the test, the teardown entry still says
+    /// `passed` (master plan B5: report a teardown failure separately).
+    #[test]
+    fn run_docker_tears_down_unconditionally_after_a_test_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let marker = tmp.path().join("torn-down");
+        let plan = fixture_docker_plan(
+            tmp.path(),
+            "#!/bin/sh\necho SECTION 3 broke; exit 1\n",
+            &format!("#!/bin/sh\ntouch {}\n", marker.display()),
+        );
+
+        let outcome = run_docker(&plan, &logs, true);
+        assert!(!outcome.passed);
+        assert_eq!(outcome.repos["stage"], "passed");
+        assert_eq!(outcome.repos["deploy"], "passed");
+        assert!(
+            outcome.repos["test"].starts_with("failed"),
+            "{:?}",
+            outcome.repos
+        );
+        assert_eq!(outcome.repos["teardown"], "passed");
+        assert!(
+            marker.exists(),
+            "teardown did not run after the test failed"
+        );
+    }
+
+    /// A teardown failure is its own recorded failure — a passing test with
+    /// a failing teardown still fails the tier, attributed to teardown.
+    #[test]
+    fn run_docker_records_a_teardown_failure_separately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let plan = fixture_docker_plan(
+            tmp.path(),
+            "#!/bin/sh\necho all good\n",
+            "#!/bin/sh\necho stuck volume; exit 1\n",
+        );
+
+        let outcome = run_docker(&plan, &logs, true);
+        assert!(!outcome.passed, "a teardown failure must fail the tier");
+        assert_eq!(outcome.repos["test"], "passed");
+        assert!(
+            outcome.repos["teardown"].starts_with("failed"),
+            "{:?}",
+            outcome.repos
+        );
+    }
+
+    /// A staging failure skips deploy and test — nothing to run against —
+    /// but the teardown still runs (compose down is safe when nothing is
+    /// up, and a previous run's leftovers must not survive).
+    #[test]
+    fn run_docker_skips_deploy_and_test_after_a_stage_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let marker = tmp.path().join("torn-down");
+        let mut plan = fixture_docker_plan(
+            tmp.path(),
+            "#!/bin/sh\necho unreachable\n",
+            &format!("#!/bin/sh\ntouch {}\n", marker.display()),
+        );
+        // Break staging: remove one staged binary from dist/.
+        std::fs::remove_file(plan.dist.join("ph")).unwrap();
+        plan.bin = tmp.path().join("demo2/dns-demo/bin");
+
+        let outcome = run_docker(&plan, &logs, true);
+        assert!(!outcome.passed);
+        assert!(
+            outcome.repos["stage"].starts_with("failed"),
+            "{:?}",
+            outcome.repos
+        );
+        assert!(
+            outcome.repos["deploy"].starts_with("skipped"),
+            "{:?}",
+            outcome.repos
+        );
+        assert!(
+            outcome.repos["test"].starts_with("skipped"),
+            "{:?}",
+            outcome.repos
+        );
+        assert!(
+            marker.exists(),
+            "teardown must run even after a stage failure"
+        );
     }
 
     // -- the unit tier's plan (issue steps 1-2) --------------------------------
