@@ -7,10 +7,14 @@ development workspace: it clones the repositories listed in
 generated `<repo>/AGENTS.md` and `<repo>/CLAUDE.md` that any coding agent
 picks up automatically.
 
-It is not a build system and does not replace Git. It shells out to the
-installed `git` and never touches uncommitted work.
+It shells out to the installed `git` and never touches uncommitted work. It is
+not a general-purpose build system — each repository's own `Makefile` stays
+authoritative — but `zpr-dev build` does build, gate, and test the whole ZPR
+binary set from a manifest (see below).
 
-Specification: [`docs/specs/spec-001-zpr-dev.md`](docs/specs/spec-001-zpr-dev.md).
+Specification: [`docs/specs/spec-001-zpr-dev.md`](docs/specs/spec-001-zpr-dev.md);
+`zpr-dev build` is specified in
+[`docs/specs/spec-003-build.md`](docs/specs/spec-003-build.md).
 Install and bootstrap ordering: [`../README.md`](../README.md).
 
 ---
@@ -32,6 +36,7 @@ repository it clones. See the root README for the full sequence.
 ~/src/zl_zpr/                    workspace root — a plain directory, not a repository
 ├── zl-zpr-dev-context/          the context checkout
 │   ├── AGENTS.md             shared agent instructions
+│   ├── build-sets/           committed build-set manifests (see `zpr-dev build`)
 │   ├── docs/                 shared technical documentation
 │   ├── skills/               shared agent skills
 │   └── workspace.yaml        the repository manifest
@@ -229,6 +234,53 @@ generated files that differ from their rendered content, and a declared
 
 Generated-file drift is a warning by design — a hand-edited generated file and
 a merely stale one are indistinguishable on disk.
+
+### `zpr-dev build`
+
+Build, gate, and test the whole ZPR binary set — `vs`, `vs-admin`, `vsapikey`,
+`zpt`, `zpr-dashboard`, `zplc`, `zpdump`, `ph`, `ph-cli`, `coredns` — from a
+**build set**: a manifest naming a tag, branch, or commit per binary-producing
+repository. Specification: [`docs/specs/spec-003-build.md`](docs/specs/spec-003-build.md);
+working knowledge, including how to cut and reproduce a set: `docs/BUILD.md`,
+"Compatible build sets".
+
+```bash
+zpr-dev build                                # newest set in build-sets/
+zpr-dev build --manifest build-sets/2026-09-21.yaml
+zpr-dev build --tip --test all               # tip of every default branch
+zpr-dev build --tip --gates-only             # just the gates, read-only, seconds
+```
+
+```text
+--manifest <path>   build set to build; default: newest file in build-sets/
+--tip               ignore every ref; use origin/<default_branch> everywhere
+--test <list>       none | default | all | comma-separated from: unit, netns, docker
+--repo <name>       build only this repository and its prerequisites
+--build-dir <path>  default <workspace>/.zpr-build/<name>
+--keep              keep worktrees after a successful run
+--gates-only        run only the compatibility gates against the live checkouts
+--allow-pin-drift   gate 1 disagreements warn instead of failing
+--no-tarball        skip the dist tarball
+```
+
+Input manifests live in `<context>/build-sets/`, one YAML file per set;
+`--manifest` defaults to the newest by file name (set names are dates). In
+order, a run: resolves every ref to a commit sha against the local checkouts
+(**no fetch** — fetch first with `zpr-dev update --all`); runs the three
+compatibility gates (shared-dep pin agreement, freshness, `zplc`↔`vs` version)
+and stops before compiling anything if a gate errors; builds each repository
+in a detached worktree, staging binaries into `dist/`; runs the selected test
+tiers against those exact binaries; and writes `dist/zpr-set-<name>.yaml`, an
+emitted manifest that pins every sha and records pins, versions, toolchain,
+binary digests, and tier results — including recorded skips. Re-running with
+`--manifest dist/zpr-set-<name>.yaml` (or a copy committed under
+`build-sets/`) rebuilds the same set.
+
+The live checkouts are never modified: sources come from `git worktree add
+--detach`, and nothing fetches, switches branches, or writes inside a source
+repository. A build directory left by a previous run is refused; `--force`
+removes and recreates it. Exit codes follow the usual contract, with `1`
+covering gate, build, and test failures.
 
 ---
 
