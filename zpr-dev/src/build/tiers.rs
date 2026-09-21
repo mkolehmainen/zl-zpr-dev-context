@@ -776,7 +776,7 @@ pub fn run_docker(plan: &DockerPlan, logs: &Path, quiet: bool) -> TierOutcome {
         passed: true,
         repos: BTreeMap::new(),
     };
-    let mut record = |outcome: &mut TierOutcome, name: &str, result: Result<()>| -> bool {
+    let record = |outcome: &mut TierOutcome, name: &str, result: Result<()>| -> bool {
         match result {
             Ok(()) => {
                 if !quiet {
