@@ -11,32 +11,40 @@ use anyhow::{Result, bail};
 
 use super::recipes;
 
-/// The tiers this tool implements today, in run order. Approved decision on
-/// zipline#61 (Q1): `default` — and no `--test` flag at all — means every
-/// implemented tier, so `docker` joins this list when B5 lands and nothing
-/// about the flag changes.
-const IMPLEMENTED: &[&str] = &["unit"];
+/// The tiers this tool implements, in run order. Approved decisions on
+/// zipline#61 (Q1) and zipline#62 (Q1): `default` — and no `--test` flag at
+/// all — means every implemented tier, and since B5 the `netns` and `docker`
+/// end-to-end tiers are implemented, joining the default selection with
+/// probe-gated skip-with-reason.
+const IMPLEMENTED: &[&str] = &["unit", "netns", "docker"];
 
-/// Every tier spec-003 §6 names, implemented or not, in run order. A known
-/// but unimplemented name gets a "lands in B5" error rather than the unknown-
-/// name error, so the remedy is obvious from the message.
+/// Every tier spec-003 §6 names, in run order. Now identical to
+/// `IMPLEMENTED` — B5 landed the last two — but kept separate so the
+/// unknown-name error and any future tier land in the right place.
 const KNOWN: &[&str] = &["unit", "netns", "docker"];
 
 /// Which tiers a run executes, parsed from `--test` (spec-003 §7). Empty
 /// means `--test none`: build only, no tier runs and none is reported.
+///
+/// Each selected tier also records whether it was *explicit* — named in a
+/// `--test` list or covered by `--test all` — because the two end-to-end
+/// tiers are probe-gated: a default-selected tier whose prerequisites are
+/// missing is skipped with the reason, while an explicitly requested one is
+/// an error (exit 1), never a silent skip (spec-003 §6; approved Q1 on
+/// zipline#62).
 #[derive(Debug, PartialEq)]
 pub struct Selection {
-    /// Tier names in run order, deduplicated.
-    tiers: Vec<&'static str>,
+    /// Tier names in run order, deduplicated, each with its explicitness.
+    tiers: Vec<(&'static str, bool)>,
 }
 
 impl Selection {
     /// Parses the `--test` flag. `None` (flag absent) and `default` select
-    /// every implemented tier; `none` selects nothing; `all` asks for every
-    /// known tier; otherwise the value is a comma-separated list of tier
-    /// names. An unknown name, a known-but-unimplemented name, and the
-    /// special words mixed into a list are all usage errors — they surface
-    /// as exit 2 through `run`'s `Err` path.
+    /// every implemented tier, non-explicitly; `none` selects nothing;
+    /// `all` selects every known tier, each explicitly; otherwise the value
+    /// is a comma-separated list of tier names, each explicit. An unknown
+    /// name and the special words mixed into a list are usage errors — they
+    /// surface as exit 2 through `run`'s `Err` path.
     pub fn parse(flag: Option<&str>) -> Result<Selection> {
         // Absent and `default` are the same selection by definition
         // (approved Q1 on zipline#61): every implemented tier.
@@ -44,37 +52,33 @@ impl Selection {
         match text {
             "default" => {
                 return Ok(Selection {
-                    tiers: IMPLEMENTED.to_vec(),
+                    tiers: IMPLEMENTED.iter().map(|tier| (*tier, false)).collect(),
                 });
             }
             "none" => return Ok(Selection { tiers: Vec::new() }),
-            // `all` asks for every known tier, and an asked-for tier that
-            // cannot run is an error, never a silent skip (spec-003 §6) —
-            // so while any tier is unimplemented, `all` is an error too.
+            // `all` asks for every known tier by name, so each is explicit:
+            // an asked-for tier that cannot run is an error, never a silent
+            // skip (spec-003 §6).
             "all" => {
-                bail!(
-                    "--test all asks for every tier, but netns and docker land in B5; \
-                     use --test unit (or default) until then"
-                );
+                return Ok(Selection {
+                    tiers: KNOWN.iter().map(|tier| (*tier, true)).collect(),
+                });
             }
             _ => {}
         }
 
-        // A comma-separated list of tier names. The special whole-selection
-        // words are rejected inside a list: `unit,none` has no coherent
-        // meaning.
-        let mut tiers: Vec<&'static str> = Vec::new();
+        // A comma-separated list of tier names, each explicit. The special
+        // whole-selection words are rejected inside a list: `unit,none` has
+        // no coherent meaning.
+        let mut tiers: Vec<(&'static str, bool)> = Vec::new();
         for name in text.split(',') {
             let name = name.trim();
             match KNOWN.iter().find(|known| **known == name) {
-                Some(known) if IMPLEMENTED.contains(known) => {
-                    if !tiers.contains(known) {
-                        tiers.push(known);
+                Some(known) => {
+                    if !tiers.iter().any(|(tier, _)| tier == known) {
+                        tiers.push((known, true));
                     }
                 }
-                Some(known) => bail!(
-                    "--test {known} is not available yet: the netns and docker tiers land in B5"
-                ),
                 None => bail!(
                     "--test {name:?} is not a tier; valid values: none, default, all, \
                      or a comma-separated list of {}",
@@ -82,6 +86,10 @@ impl Selection {
                 ),
             }
         }
+        // Run order is KNOWN's order, not the list's: `docker,unit` and
+        // `unit,docker` are the same request, and unit failures should
+        // surface before the slower end-to-end tiers run.
+        tiers.sort_by_key(|(tier, _)| KNOWN.iter().position(|known| known == tier));
         Ok(Selection { tiers })
     }
 
@@ -92,7 +100,17 @@ impl Selection {
 
     /// True when `tier` was selected.
     pub fn contains(&self, tier: &str) -> bool {
-        self.tiers.contains(&tier)
+        self.tiers.iter().any(|(name, _)| *name == tier)
+    }
+
+    /// True when `tier` was selected *explicitly* — named in a `--test`
+    /// list or covered by `--test all` — which turns a failing prerequisite
+    /// probe from a skip-with-reason into an error (spec-003 §6; approved
+    /// Q1 on zipline#62). False for a tier that was not selected at all.
+    pub fn is_explicit(&self, tier: &str) -> bool {
+        self.tiers
+            .iter()
+            .any(|(name, explicit)| *name == tier && *explicit)
     }
 }
 
@@ -275,15 +293,61 @@ pub fn run_unit(plans: &[RepoPlan], logs: &Path, quiet: bool) -> TierOutcome {
 mod tests {
     use super::*;
 
-    /// The flag absent entirely selects every implemented tier — today
-    /// exactly `unit` (approved Q1 on zipline#61).
+    /// The flag absent entirely selects every implemented tier — `unit`,
+    /// `netns` and `docker` since B5 (approved Q1 on zipline#62: the two
+    /// end-to-end tiers join the default selection with probe-gated skips).
+    /// A default-selected tier is not *explicit*: its probe failing skips
+    /// it with a reason rather than failing the run.
     #[test]
     fn absent_flag_selects_the_implemented_tiers() {
         let selection = Selection::parse(None).unwrap();
         assert!(!selection.is_empty());
-        assert!(selection.contains("unit"));
+        for tier in ["unit", "netns", "docker"] {
+            assert!(selection.contains(tier), "{tier} missing from default");
+            assert!(
+                !selection.is_explicit(tier),
+                "{tier} must not be explicit under the default selection"
+            );
+        }
+    }
+
+    /// A tier named in `--test <list>` is explicit: the user asked for it,
+    /// so a failing prerequisite probe is an error, never a silent skip
+    /// (spec-003 §6; approved Q1 on zipline#62).
+    #[test]
+    fn a_listed_tier_is_explicit() {
+        let selection = Selection::parse(Some("docker")).unwrap();
+        assert!(selection.contains("docker"));
+        assert!(selection.is_explicit("docker"));
+        assert!(!selection.contains("unit"));
         assert!(!selection.contains("netns"));
-        assert!(!selection.contains("docker"));
+        // Not selected at all, so not explicit either.
+        assert!(!selection.is_explicit("unit"));
+    }
+
+    /// `all` selects every known tier, each explicitly — an asked-for tier
+    /// that cannot run must never silently degrade (spec-003 §6).
+    #[test]
+    fn all_selects_every_tier_explicitly() {
+        let selection = Selection::parse(Some("all")).unwrap();
+        for tier in ["unit", "netns", "docker"] {
+            assert!(selection.contains(tier), "{tier} missing from all");
+            assert!(selection.is_explicit(tier), "{tier} must be explicit");
+        }
+    }
+
+    /// The netns and docker tiers are selectable by name, alone and in a
+    /// list, now that B5 has landed.
+    #[test]
+    fn netns_and_docker_are_selectable_by_name() {
+        for flag in ["netns", "docker", "unit,netns,docker"] {
+            let selection = Selection::parse(Some(flag)).unwrap();
+            assert!(!selection.is_empty(), "{flag}");
+        }
+        let selection = Selection::parse(Some("unit,docker")).unwrap();
+        assert!(selection.contains("unit"));
+        assert!(selection.contains("docker"));
+        assert!(!selection.contains("netns"));
     }
 
     /// `default` is the spelled-out form of the absent flag.
@@ -319,16 +383,12 @@ mod tests {
         assert!(selection.contains("unit"));
     }
 
-    /// A known tier whose stage has not landed is rejected naming the stage,
-    /// not treated as unknown: `netns` and `docker` land in B5.
-    #[test]
-    fn unimplemented_tier_is_rejected_naming_its_stage() {
-        for name in ["netns", "docker", "unit,docker"] {
-            let error = Selection::parse(Some(name)).unwrap_err().to_string();
-            assert!(error.contains("B5"), "{name}: {error}");
-        }
-    }
-
+    /// A known tier whose stage has not landed used to be rejected naming
+    /// the stage; both stages have landed, so this behaviour is gone —
+    /// covered by `netns_and_docker_are_selectable_by_name` and
+    /// `all_selects_every_tier_explicitly` above. (The two B5-era tests were
+    /// replaced in this change; their RED failure was the proof the
+    /// behaviour changed.)
     /// An unknown name is rejected listing the valid values, so the fix is
     /// obvious from the message (exit 2 through `run`'s `Err` path).
     #[test]
@@ -349,14 +409,9 @@ mod tests {
         }
     }
 
-    /// `all` asks for every known tier, and today that is an error naming
-    /// the unimplemented ones — an asked-for tier that cannot run must never
-    /// silently degrade (spec-003 §6).
-    #[test]
-    fn all_is_an_error_while_tiers_are_unimplemented() {
-        let error = Selection::parse(Some("all")).unwrap_err().to_string();
-        assert!(error.contains("B5"), "{error}");
-    }
+    /// `all` used to be an error while tiers were unimplemented; every tier
+    /// has landed, so `all` now selects all three explicitly — see
+    /// `all_selects_every_tier_explicitly` above.
 
     // -- the unit tier's plan (issue steps 1-2) --------------------------------
 
