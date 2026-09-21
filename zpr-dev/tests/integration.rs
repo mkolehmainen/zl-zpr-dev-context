@@ -1500,3 +1500,22 @@ fn build_clean_build_dir_scopes_the_clean() {
     assert!(!named.exists());
     assert!(other.exists(), "unscoped clean removed the default tree");
 }
+
+/// `--dry-run --clean` prints the same report and removes nothing: the build
+/// directory still exists afterwards (spec-003 §7: a dry run writes nothing).
+#[test]
+fn build_clean_dry_run_removes_nothing() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+
+    let build_dir = fixture.workspace.join(".zpr-build").join("tip");
+    std::fs::create_dir_all(build_dir.join("dist")).unwrap();
+
+    let out = stdout_of(&fixture.run(&["build", "--clean", "--dry-run"]));
+    assert!(out.contains("dry-run"), "{out}");
+    assert!(out.contains("would remove"), "{out}");
+    assert!(
+        build_dir.exists(),
+        "dry-run removed the build directory: {out}"
+    );
+}
