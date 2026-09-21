@@ -712,6 +712,28 @@ fn collect_gate_findings(
     // -- gate 1: agreement ---------------------------------------------------
     findings.extend(gates::gate_pin_agreement(&pins, drift, downgrade));
 
+    // -- gate 1 lock scan: post-resolution dual versions (zipline#69) --------
+    // Manifest pins cannot see a pin made inside a tagged git dependency, so
+    // each scanned repository's resolved Cargo.lock is checked for any
+    // ZPR-family crate at two or more versions. A repository without a lock
+    // (a Go or docs repository, or a member directory) is a fact to state,
+    // not a failure — the same tolerance the manifest reader shows.
+    let mut locks: Vec<gates::LockSource> = Vec::new();
+    for (name, dir) in scan {
+        let lock_path = dir.join("Cargo.lock");
+        match std::fs::read_to_string(&lock_path) {
+            Ok(text) => locks.push(gates::LockSource {
+                path: format!("{name}/Cargo.lock"),
+                text,
+            }),
+            Err(_) => findings.push(gates::Finding::new(
+                gates::Severity::Info,
+                format!("{name}: no Cargo.lock, no resolution to scan"),
+            )),
+        }
+    }
+    findings.extend(gates::gate_lock_dual_versions(&locks));
+
     // -- gate 2: freshness, against the workspace checkouts' tags -----------
     findings.extend(gates::gate_freshness(&pins, |url| {
         // The pinned repository's checkout, located by the URL's repository

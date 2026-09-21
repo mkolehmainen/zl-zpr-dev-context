@@ -413,6 +413,116 @@ pub struct ManifestSource {
     pub text: String,
 }
 
+/// One resolved `Cargo.lock` handed to the dual-version scan: its display
+/// path and its text.
+pub struct LockSource {
+    pub path: String,
+    pub text: String,
+}
+
+/// Gate 1's post-resolution complement (zipline#69): scans each repository's
+/// resolved `Cargo.lock` and flags any ZPR-family crate present at two or
+/// more versions. Manifest-level pin extraction cannot see a pin made
+/// *inside* a tagged git dependency — `zpr-utils-v0.2.2` pinning `zpr` at
+/// `v0.8.1` never becomes a `PinOccurrence`, yet both copies ship in the
+/// binary — so the lock, which records what cargo actually resolved, is
+/// where transitive drift surfaces.
+///
+/// Known limitation, deliberate (issue #69's option 1): the lock records
+/// post-resolution facts, so a finding names the lock and the resolved
+/// sources, not the `Cargo.toml` line that pinned the stale version — that
+/// file lives inside a tagged artifact this workspace does not check out.
+/// No network access, no manifest walking. An unreadable or unparseable
+/// lock is an error finding, not a skip: a lock the scan cannot read is a
+/// resolution it cannot vouch for.
+pub fn gate_lock_dual_versions(locks: &[LockSource]) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = Vec::new();
+    let mut clean = 0usize;
+
+    for lock in locks {
+        let table: toml::Table = match lock.text.parse() {
+            Ok(table) => table,
+            Err(error) => {
+                findings.push(Finding::new(
+                    Severity::Error,
+                    format!("cannot parse {}: {error}", lock.path),
+                ));
+                continue;
+            }
+        };
+
+        // Every ZPR-family package's versions, keyed by name. Only git
+        // sources are considered: family membership is a property of the
+        // repository URL, and a registry crate cannot be ZPR-family.
+        let mut by_name: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+        let packages = table
+            .get("package")
+            .and_then(toml::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for package in packages {
+            let Some(package) = package.as_table() else {
+                continue;
+            };
+            let (Some(name), Some(version)) = (
+                package.get("name").and_then(toml::Value::as_str),
+                package.get("version").and_then(toml::Value::as_str),
+            ) else {
+                continue;
+            };
+            // A path-resolved workspace member has no `source`; it cannot
+            // be a duplicated dependency, so it is skipped along with
+            // registry crates.
+            let Some(source) = package.get("source").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            if is_zpr_family(source) {
+                by_name.entry(name).or_default().push((version, source));
+            }
+        }
+
+        let mut lock_clean = true;
+        for (name, mut versions) in by_name {
+            versions.sort_unstable();
+            versions.dedup();
+            if versions.len() <= 1 {
+                continue;
+            }
+            lock_clean = false;
+            // The finding names the lock and every resolved (version,
+            // source) pair, and states the limitation: the pinning file is
+            // inside a tagged artifact, so the remedy points at the family
+            // repositories rather than a file and line.
+            let mut message = format!(
+                "dual-version: crate `{name}` resolved at {} versions in {}",
+                versions.len(),
+                lock.path
+            );
+            for (version, source) in &versions {
+                message.push_str(&format!("\n  v{version}  {source}"));
+            }
+            message.push_str(
+                "\n  => a tagged ZPR-family dependency pins this crate at a stale version; \
+                 fix the pin in that repository and re-tag (the lock cannot name the \
+                 pinning file)",
+            );
+            findings.push(Finding::new(Severity::Error, message));
+        }
+        if lock_clean {
+            clean += 1;
+        }
+    }
+
+    if clean > 0 {
+        let locks_word = if clean == 1 { "lock" } else { "locks" };
+        findings.push(Finding::new(
+            Severity::Ok,
+            format!("lock scan: {clean} {locks_word} free of dual-version ZPR-family crates"),
+        ));
+    }
+    findings
+}
+
 /// True when the git URL is ZPR-family — our own forks or upstream — whose
 /// pins must agree even without a `rev` (spec-003 §4.1). Both https and ssh
 /// spellings are recognized.
@@ -1616,6 +1726,107 @@ pub const POLICY_MIN_COMPILER_PATCH: u32 = 0;
             findings[0].message.contains("0.18.0"),
             "{}",
             findings[0].message
+        );
+    }
+
+    // -- gate 1 lock scan: post-resolution dual versions (zipline#69) ---------
+
+    /// Builds one lock source for the scan tests.
+    fn lock(path: &str, text: &str) -> LockSource {
+        LockSource {
+            path: path.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    /// The zipline#69 blind spot: a lock carrying one ZPR-family crate at two
+    /// versions is an error naming the lock, the crate and both versions —
+    /// manifest-level gate 1 cannot see a pin inside a tagged git dependency,
+    /// so the resolved lock is where the dual version surfaces.
+    #[test]
+    fn lock_scan_dual_zpr_family_version_is_an_error() {
+        const LOCK: &str = r#"
+version = 4
+
+[[package]]
+name = "zpr"
+version = "0.8.1"
+source = "git+https://github.com/mkolehmainen/zl-zpr-common.git?tag=v0.8.1#71ead993"
+
+[[package]]
+name = "zpr"
+version = "0.28.0"
+source = "git+https://github.com/mkolehmainen/zl-zpr-common.git?tag=v0.28.0#3abdacfe"
+
+[[package]]
+name = "serde"
+version = "1.0.219"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+        let findings = gate_lock_dual_versions(&[lock("zl-zpr-core/Cargo.lock", LOCK)]);
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        let message = &errors[0].message;
+        for needle in [
+            "zpr",
+            "zl-zpr-core/Cargo.lock",
+            "0.8.1",
+            "0.28.0",
+            "tag=v0.8.1",
+            "tag=v0.28.0",
+        ] {
+            assert!(message.contains(needle), "missing {needle:?}: {message}");
+        }
+    }
+
+    /// A clean lock passes with a stated [OK] census, not silence, and a
+    /// non-ZPR-family crate at two versions (cargo's normal semver-major
+    /// duplication) is not our finding to raise.
+    #[test]
+    fn lock_scan_clean_and_foreign_duplicates_pass() {
+        const LOCK: &str = r#"
+version = 4
+
+[[package]]
+name = "zpr"
+version = "0.28.0"
+source = "git+https://github.com/mkolehmainen/zl-zpr-common.git?tag=v0.28.0#3abdacfe"
+
+[[package]]
+name = "syn"
+version = "1.0.109"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "syn"
+version = "2.0.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+        let findings = gate_lock_dual_versions(&[lock("zl-zpr-core/Cargo.lock", LOCK)]);
+        assert!(
+            at_least(&findings, Severity::Warn).is_empty(),
+            "{findings:#?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Ok && f.message.contains("1 lock")),
+            "{findings:#?}"
+        );
+    }
+
+    /// An unparseable lock is an error finding naming the lock — skipping it
+    /// silently would let the set pass with that repository's resolution
+    /// unexamined, the exact overstatement this scan exists to prevent.
+    #[test]
+    fn lock_scan_unparseable_lock_is_an_error() {
+        let findings = gate_lock_dual_versions(&[lock("zl-zpr-core/Cargo.lock", "not = [toml")]);
+        let errors = at_least(&findings, Severity::Error);
+        assert_eq!(errors.len(), 1, "{findings:#?}");
+        assert!(
+            errors[0].message.contains("zl-zpr-core/Cargo.lock"),
+            "{}",
+            errors[0].message
         );
     }
 }
