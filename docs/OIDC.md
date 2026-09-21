@@ -1093,8 +1093,9 @@ section where they differ**, per the `docs/plans/` rule in `AGENTS.md`.
   position: R8 removed the `if: false` that gated its job, and it was not run
   in the environment that implemented R8 (no passwordless sudo there), so the
   renewal loop is proven by unit tests and by inspection, not by an observed
-  end-to-end run. Its in-script banner still claims the test cannot pass —
-  stale since zipline#66.
+  end-to-end run. Its in-script banner, `ph-cli auth-agent --help` and
+  `adapter/cli/README` all still claim renewal does not work — stale since
+  zipline#66, tracked on zipline#67.
 - **The renewal ZDP messages are not in the RFC.**
   `RenewAuthenticationRequest = 142` and `RenewAuthenticationResponse = 143`
   are implemented and unit-tested but carry a `TODO: add to RFC 6`

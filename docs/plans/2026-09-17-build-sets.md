@@ -1,6 +1,6 @@
 # Build Sets Plan — reproducible, compatibility-gated builds of the whole ZPR binary set
 
-**Status:** IN FLIGHT (as of 2026-09-21) — umbrella [zipline#57](https://github.com/mkolehmainen/zipline/issues/57); B1–B4 merged, B5 ([#62](https://github.com/mkolehmainen/zipline/issues/62)) and B6 ([#63](https://github.com/mkolehmainen/zipline/issues/63)) open. See *Issue map*.
+**Status:** IN FLIGHT (as of 2026-09-21) — umbrella [zipline#57](https://github.com/mkolehmainen/zipline/issues/57); B1–B5 merged, B6 ([#63](https://github.com/mkolehmainen/zipline/issues/63)) open. See *Issue map*.
 **Date:** 2026-09-17
 **Repo state this plan was written against:** `zl-zpr-dev-context` @ `8bfd061`, `zl-zpr-core` @ `dd43b4b`, `zl-zpr-visaservice` @ `2cf9912`, `zl-zpr-compiler` @ `f63302c` (package version `0.18.0`), `zl-zpr-coredns` @ `f4202c4`, `zl-zpr-demo` @ `8ef671f`, `zl-zpr-common` @ `5fbbff8` (tag `v0.27.0`; consumers pin `v0.26.0`).
 
@@ -14,7 +14,7 @@
 
 Nothing today says "these binaries go together", and each of the three things that makes a set compatible is invisible at build time.
 
-**1. Cargo pins, not checkouts, decide what compiles.** Shared crates are consumed from Git by tag (`docs/BUILD.md`, "Cross-repository dependencies"). `zl-zpr-core`, `zl-zpr-visaservice` and `zl-zpr-compiler` each pin the `zpr` crate — today all three say `v0.26.0`, by diligence rather than by any check. A checkout of `zl-zpr-common` in the workspace has no effect on any of them. Related pins already disagree: `zl-zpr-common/Cargo.toml:21` pins `rcu` at tag `zpr-utils-v0.1.0` while `zl-zpr-core/adapter/ph/Cargo.toml:36` pins `rcu-v0.1.2`.
+**1. Cargo pins, not checkouts, decide what compiles.** Shared crates are consumed from Git by tag (`docs/BUILD.md`, "Cross-repository dependencies"). `zl-zpr-core`, `zl-zpr-visaservice` and `zl-zpr-compiler` each pin the `zpr` crate — today all three say `v0.26.0`, by diligence rather than by any check. A checkout of `zl-zpr-common` in the workspace has no effect on any of them. Related pins already disagree: `zl-zpr-common/Cargo.toml:21` pins `rcu` at tag `zpr-utils-v0.1.0` while `zl-zpr-core/adapter/ph/Cargo.toml:36` pins `rcu-v0.1.2`. (Resolved 2026-09-21 — see *Finding 1*.)
 
 **2. The visa service hardcodes the compiler version it will accept.** `zl-zpr-visaservice/vs/src/config.rs:29-31` sets `POLICY_MIN_COMPILER_{MAJOR,MINOR,PATCH} = 0, 18, 0`, and `libeval/src/pio.rs`'s `check_version` requires **major equal, minor equal, patch greater or equal** — not a floor, a near-exact match. `zl-zpr-compiler` stamps its `CARGO_PKG_VERSION` into every `PolicyContainer` (`src/compiler.rs:2`, `src/policybinaryv2.rs:208-210`). A set whose `zplc` is `0.19.x` against a `vs` wanting `0.18.0` builds perfectly and then fails to load any policy at runtime.
 
@@ -309,6 +309,14 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 **Acceptance:** run against this workspace, the gates report the two real findings — the `rcu` disagreement (error) and `zpr` pinned at `v0.26.0` behind `v0.27.0` (warning) — and nothing else; adding the `rcu` entry to `allow_pin_drift` leaves only the warning and exit 0. Forcing a mismatch by hand (compiler `version = "0.19.0"`) produces the gate 3 message with both file paths.
 
+> **Correcting note (2026-09-21, from B6).** This acceptance was met when B2 landed and is
+> kept as the record of it, but it no longer describes the workspace. Both predicted findings
+> have since been *fixed* rather than tolerated, and the second changed shape first: by the
+> time B6 came to run the gates, `zl-zpr-visaservice` and `zl-zpr-core` had moved to `v0.27.0`
+> while `zl-zpr-compiler` had not, so `zpr` presented as a gate 1 **pin disagreement (error)**
+> and never as the gate 2 freshness **warning** predicted here. `zpr-dev build --tip
+> --gates-only` against the workspace today reports no findings at all. See *Findings*.
+
 ---
 
 ### Task B3: Worktrees, recipes, `dist/`, emitted manifest ([zipline#60](https://github.com/mkolehmainen/zipline/issues/60), merged)
@@ -347,7 +355,7 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 ---
 
-### Task B5: The `netns` and `docker` tiers ([zipline#62](https://github.com/mkolehmainen/zipline/issues/62), open)
+### Task B5: The `netns` and `docker` tiers ([zipline#62](https://github.com/mkolehmainen/zipline/issues/62), merged)
 
 **Files:** `zpr-dev/src/build/tiers.rs`.
 
@@ -387,13 +395,53 @@ B2 and B3 are independent of each other and can be worked in parallel once B1 la
 
 `zl-zpr-common/Cargo.toml:21` pins `rcu` at tag `zpr-utils-v0.1.0`; `zl-zpr-core/adapter/ph/Cargo.toml:36` pins `rcu-v0.1.2`. Gate 1 will flag this on the first run. It is the same class of problem `docs/BUILD.md` describes for `cslab` (two crates from one commit via different sources), and `mkolehmainen/zipline#18` covers the repointing. Until then it belongs in `allow_pin_drift` with that issue number as its reason — which is the feature working as intended: a known divergence recorded in a reviewed file rather than discovered at runtime.
 
+**Resolved 2026-09-21 — fixed, not suppressed.** `zipline#18` closed without this part. Its
+stated acceptance was "no `org-zpr` URLs", which it met; its plan comment then scoped
+`zl-zpr-common` out ("already on mkolehmainen; the issue does not name that repo") — true of
+the URL and silent about the tag. The root cause was older: `zl-zpr-common` `e4bd655`
+(2026-03-25) rewrote a repo-wide `v0.1.0` tag to `zpr-utils-v0.1.0` for an **`rcu`**
+dependency, where `rcu-v0.1.0` names the identical commit (`17e29a1`). That detached
+`zl-zpr-common` from `rcu`'s tag line, so it never followed `rcu-v0.1.1` or `rcu-v0.1.2` and
+no audit searching for "rcu" found it.
+
+The fix was a re-pin, not an upgrade — `git diff zpr-utils-v0.1.0 rcu-v0.1.2 -- rcu/src/` is
+empty. `zl-zpr-common` `3abdacf` (tag `v0.28.0`) pins `rcu-v0.1.2`, and
+`zl-zpr-core/Cargo.lock` now holds exactly one `rcu` and one `cslab` — which was also
+`zipline#18`'s own second acceptance clause, previously unmet. **No `allow_pin_drift` entry
+was needed, and the first committed set should not carry one:** its reason would have cited a
+closed issue, leaving a permanent exception that no reader could justify.
+
 ### Finding 2 — consumers are one tag behind `zl-zpr-common`
 
 Consumers pin `zpr` `v0.26.0`; `zl-zpr-common` is tagged `v0.27.0` at `5fbbff8` (`ReauthRequest vsapi_types wrapper`). Gate 2 warns and does not fail. Whether the first committed set should bump to `v0.27.0` first is a decision for B6, not for this plan.
 
+**Resolved 2026-09-21 — B6 answered "bump first".** The split widened before it closed:
+`zl-zpr-visaservice` and `zl-zpr-core` moved to `v0.27.0` while `zl-zpr-compiler` stayed at
+`v0.26.0`, so this stopped being a gate 2 warning and became a gate 1 error. All three now
+pin `v0.28.0` — the same `zl-zpr-common` tag that carries Finding 1's `rcu` re-pin, so one
+tag closed both. `zplc` is `0.18.1` against `POLICY_MIN_COMPILER 0.18.0`, which gate 3
+accepts.
+
 ### Finding 3 — `docs/BUILD.md` is stale in two ways the gates would have caught
 
 Its dependency example says `zpr` `v0.25.1` (now `v0.26.0`) and shows `zpr-ext`/`cbpf-rs` from `org-zpr` (now `mkolehmainen` in the manifests actually checked out). Both are fixed in B6. This is the strongest argument for the emitted manifest: the authoritative record of what a set pinned should be generated, not prose.
+
+### Finding 4 — gate 1 cannot see a transitive pin, and one is wrong today (added 2026-09-21)
+
+Found while confirming Findings 1 and 2. `zl-zpr-core/Cargo.lock` carries **two** `zpr`
+crates: `v0.28.0` directly, and `v0.8.1` transitively, because `zpr-utils-v0.2.2`'s own
+`zpr-utils/Cargo.toml:11` pins it there. Gate 1 does not report this and structurally cannot:
+`zpr-dev/src/build/mod.rs:638-677` reads the root `Cargo.toml` and literal workspace members
+of the **five repositories in the set**, and `zpr-utils` is a git dependency with no
+worktree. `allow_pin_drift` is not an option either — there is no finding to suppress.
+
+So `pin agreement: 10 crates pinned consistently` is true of what the gate inspects and false
+of what ships. It compiles today only because the one type crossing the boundary,
+`VsapiIpProtocol`, is `pub type … = u8` in both versions; a newtype or `open_enum` there turns
+`zl-zpr-core/adapter/ph/src/defs.rs:88` into an `E0308`. Filed as
+[zipline#69](https://github.com/mkolehmainen/zipline/issues/69), which also weighs whether to
+widen gate 1. Not a blocker for B6 — a set can be cut today — but B6 should record the
+decision rather than let the first committed set imply coverage the gate does not have.
 
 ---
 
