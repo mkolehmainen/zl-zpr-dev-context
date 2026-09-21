@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.4.0
+version: 2.5.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -291,6 +291,10 @@ The build gate — build, `cargo fmt --check`, test, warnings-as-errors — is i
 `make check` before every push. Prefer each repository's `Makefile` over bare
 cargo: the targets carry required feature flags, and a bare `cargo build` fails
 misleadingly in `zl-zpr-common`.
+
+Whether a PR bumps a repository's `Cargo.toml` version: `docs/BUILD.md`,
+"Versions and tags". Short answer: only when compatibility changes — never as
+a routine part of a merge.
 
 ## Project invariants
 
