@@ -189,8 +189,8 @@ impl Probes {
 /// flag must neither prompt for a password nor fail on a redirected stdin
 /// (PR #15 review, P2 finding on zipline#70). Pure so the decision is
 /// testable without a live sudo.
-pub fn should_prime_sudo(prompt_for_sudo: bool, _selection: &Selection) -> bool {
-    prompt_for_sudo
+pub fn should_prime_sudo(prompt_for_sudo: bool, selection: &Selection) -> bool {
+    prompt_for_sudo && selection.contains("netns")
 }
 
 /// True when running `program args` exits 0, treating a spawn failure as a

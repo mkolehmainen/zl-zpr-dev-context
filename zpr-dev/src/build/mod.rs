@@ -989,9 +989,15 @@ fn report_dry_run(
             format!("not requested (--test {tier})")
         };
         // The netns line accounts for --prompt-for-sudo; the gate result is
-        // still computed above so the two never disagree on the probes.
+        // still computed above so the two never disagree on the probes. The
+        // flag is routed through the same should_prime_sudo gate as the real
+        // run, so a selection that will not prime is never described as
+        // prompting (PR #15 review finding).
         if tier == "netns" {
-            let text = tiers::netns_dry_run_text(&probes, prompt_for_sudo);
+            let text = tiers::netns_dry_run_text(
+                &probes,
+                tiers::should_prime_sudo(prompt_for_sudo, selection),
+            );
             println!("  {tier:7} {request}; {text}");
             continue;
         }
