@@ -256,7 +256,14 @@ own `zplc`.
 
 Sources come from `git worktree add --detach` per repository at the resolved
 sha — the live checkouts are never modified: no branch switch, no checkout, no
-fetch, no build inside them. Everything is a release build. Ordered so each
+fetch, no build inside them. Dropping a dangling worktree registration is not
+a modification in this sense: `worktree_add` runs `git worktree prune` on the
+source repository first (zipline#71), so a build directory deleted by hand —
+which strands a registration in every source repository — recovers on its own
+with no flag and no manual `git worktree prune`. Prune is scoped by git's own
+definition: it drops only registrations whose directory is already gone, so a
+live worktree, including one a developer created themselves, is never at
+risk. Everything is a release build. Ordered so each
 step's output is available to the next:
 
 | # | Repository | Command(s) | Staged into `dist/` |
@@ -323,7 +330,7 @@ step's output is available to the next:
 ```text
 zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
               [--build-dir <path>] [--keep] [--allow-pin-drift] [--no-tarball]
-              [--prompt-for-sudo]
+              [--prompt-for-sudo] [--clean]
 
 --manifest <path>   build set to build; default: newest file in build-sets/ (§2.2)
 --tip               ignore every ref; use origin/<default_branch> everywhere
@@ -334,7 +341,26 @@ zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
 --allow-pin-drift   gate 1 disagreements warn instead of failing
 --no-tarball        skip the dist tarball
 --prompt-for-sudo   prompt once for the sudo password before the run (§6)
+--clean             remove the build directory and clear its worktree
+                    registrations, then exit (zipline#71)
 ```
+
+`--clean` is a mode, not a modifier: it conflicts with `--manifest`, `--tip`,
+`--test`, `--repo`, `--keep`, `--gates-only`, `--allow-pin-drift`,
+`--no-tarball` and `--prompt-for-sudo` (usage error, exit 2). `--build-dir`
+stays allowed — it scopes the clean to that directory; without it the whole
+`<workspace>/.zpr-build` tree goes. Cleaning is not per-set: there is no
+manifest resolution and nothing to name a set with. After removing the
+directory, `git worktree prune` runs in every workspace-manifest repository,
+which is what catches registrations whose directories a person already
+deleted. `--clean` resolves no refs, fetches nothing, and runs no gates — it
+must work on a workspace too broken to resolve a build set. It never runs
+`worktree remove --force` on a path the tool did not create; the registration
+side is cleared only by prune, whose blast radius is limited to
+already-missing directories by git's own definition. Cleaning an already-clean
+workspace is a success (exit 0), not an error, and `--keep`'s contract is
+untouched: deliberately retained worktrees remain until something —
+`--force`, `--clean`, or a person — removes them.
 
 ### 7.1 Global options and exit codes
 
@@ -356,6 +382,10 @@ nothing. No worktree, no directory, no log file, and **no `git fetch`**:
 (spec-001 §5.1). Probes that are themselves read-only (`sudo -n true`,
 `docker` on `PATH`) may run; anything else is reported as "would probe".
 Final output is a one-screen summary in the existing `zpr-dev` style.
+
+`--dry-run --clean` follows the same contract: it prints the clean report —
+what would be removed and which repositories would be pruned — and removes
+nothing; the build directory still exists afterwards (zipline#71).
 
 ## 8. Testing
 

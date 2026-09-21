@@ -265,6 +265,9 @@ zpr-dev build --tip --gates-only             # just the gates, read-only, second
                     netns tier can run without a NOPASSWD sudoers entry
                     (needs a terminal; a background sudo -n -v keeps the
                     credential alive until the tier finishes)
+--clean             remove the build directory (--build-dir, or the whole
+                    <workspace>/.zpr-build tree) and clear its worktree
+                    registrations, then exit; resolves and fetches nothing
 ```
 
 Input manifests live in `<context>/build-sets/`, one YAML file per set;
@@ -283,8 +286,16 @@ binary digests, and tier results — including recorded skips. Re-running with
 The live checkouts are never modified: sources come from `git worktree add
 --detach`, and nothing fetches, switches branches, or writes inside a source
 repository. A build directory left by a previous run is refused; `--force`
-removes and recreates it. Exit codes follow the usual contract, with `1`
-covering gate, build, and test failures.
+removes and recreates it. A build directory deleted *by hand* recovers on its
+own: `worktree_add` prunes stale registrations first, so the next build
+succeeds with no flag and no manual `git worktree prune` — prune only ever
+drops registrations whose directory is already gone, so a live worktree is
+never at risk. To clean up without building, `zpr-dev build --clean` removes
+the build directory (`--build-dir`, or the whole `<workspace>/.zpr-build`
+tree) and prunes every workspace repository's registrations, resolving and
+fetching nothing; `--dry-run --clean` reports what would go without touching
+it. Exit codes follow the usual contract, with `1` covering gate, build, and
+test failures.
 
 The `netns` tier needs passwordless `sudo` **or** `--prompt-for-sudo`, which
 prompts once at the start of the run and keeps the credential alive for its
