@@ -175,9 +175,28 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
 /// The first `PATH` entry holding an executable file named `program`.
 fn find_on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
+    find_in_path_value(&path, program)
+}
+
+/// [`find_on_path`] against an explicit `PATH` value — separated so tests can
+/// probe a constructed PATH without mutating the process environment. A
+/// candidate must be a regular file AND executable: a non-executable file of
+/// the right name (a stray download, a sources checkout) must not satisfy a
+/// tier gate, or the tier runs and fails mid-script instead of skipping with
+/// the reason — the search continues to later PATH entries instead.
+fn find_in_path_value(path: &std::ffi::OsStr, program: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
         .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_executable_file(candidate))
+}
+
+/// True when `path` is a regular file with any execute bit set — what "on
+/// PATH" means to a shell about to run it.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 /// A tier's gate: run, or skip with the reason. What a skip *means* depends
@@ -1034,6 +1053,48 @@ mod tests {
             panic!("docker must skip without compose");
         };
         assert!(reason.contains("docker compose"), "{reason}");
+    }
+
+    /// The PATH probe requires the candidate to be executable, not merely a
+    /// regular file: a non-executable `valkey-server` shadowing the name on
+    /// an earlier PATH entry is passed over in favour of a later executable
+    /// one, and a PATH holding only the non-executable file finds nothing.
+    /// Otherwise the netns gate runs against a binary that cannot start —
+    /// and for valkey even exports the unusable path (Codex review, PR #10).
+    #[test]
+    fn path_probe_skips_non_executable_candidates() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let decoy_dir = tmp.path().join("decoy");
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir_all(&decoy_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        // A regular but non-executable file with the program's name.
+        let decoy = decoy_dir.join("valkey-server");
+        std::fs::write(&decoy, "not a binary").unwrap();
+        std::fs::set_permissions(&decoy, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // The real, executable program on a later PATH entry.
+        let real = real_dir.join("valkey-server");
+        std::fs::write(&real, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Only the decoy on PATH: the probe finds nothing.
+        let decoy_only = std::env::join_paths([&decoy_dir]).unwrap();
+        assert_eq!(find_in_path_value(&decoy_only, "valkey-server"), None);
+
+        // Decoy first, real second: the search continues past the decoy.
+        let both = std::env::join_paths([&decoy_dir, &real_dir]).unwrap();
+        assert_eq!(
+            find_in_path_value(&both, "valkey-server"),
+            Some(real.clone())
+        );
+
+        // A directory of the program's name is not a hit either.
+        std::fs::remove_file(&decoy).unwrap();
+        std::fs::create_dir(&decoy).unwrap();
+        assert_eq!(find_in_path_value(&both, "valkey-server"), Some(real));
     }
 
     /// A failed probe on a default-selected (non-explicit) tier is a skip
