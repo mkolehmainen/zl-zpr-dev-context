@@ -321,6 +321,55 @@ Two consequences worth knowing:
 (`emilazy/capnproto-rust`) via `[patch.crates-io]`; keep that patch section in
 sync when bumping Cap'n Proto.
 
+### Versions and tags
+
+What a repository's own `[package] version` in `Cargo.toml` means, and when a
+PR moves it. The per-repository rules:
+
+1. **A version means compatibility, not activity.** Bump it when something
+   *outside* the repository has to care — a wire format, a container format, a
+   published crate API — not because code changed. "What am I running?" is
+   answered by the `git describe` suffix that every binary stamps into its
+   `--version` output (`zipline#64`), not by the version number.
+
+2. **`zl-zpr-compiler`'s version is load-bearing — the only one anything
+   reads.** The compiler stamps its `CARGO_PKG_VERSION` into every
+   `PolicyContainer` it emits (`zl-zpr-compiler/src/compiler.rs:1-2`, written at
+   `src/policybinaryv2.rs:208-210`), and the visa service refuses to load a
+   container that fails `libeval::pio::check_version`
+   (`zl-zpr-visaservice/libeval/src/pio.rs:74`). That check is a near-exact
+   match, not a floor: the container's **major must equal** the minimum's, the
+   **minor must equal** it too, and the **patch must be greater than or
+   equal**. The minimum is `POLICY_MIN_COMPILER_{MAJOR,MINOR,PATCH}`
+   (`zl-zpr-visaservice/vs/src/config.rs:29-31`).
+
+   So: bump the compiler's **minor** when the container's meaning or format
+   changes, and move `POLICY_MIN_COMPILER_*` with it **in the same build set**.
+   **Never move the minor for a non-policy reason** — doing so makes the visa
+   service reject policy at runtime for a reason unrelated to policy. Patch
+   bumps are free: an old minimum accepts a newer patch.
+
+3. **`zl-zpr-common`, and the `zl-zpr-vsapi` / `zl-zpr-policy` submodules it
+   carries: unchanged from consequence 2 above** — tag the crate, then bump
+   the pin in every consumer in the same round. That rule is stated there;
+   this list only places it among the others.
+
+4. **Everything else** (`zl-zpr-visaservice`, `zl-zpr-core`, `zl-zpr-coredns`,
+   `zl-zpr-demo`): no bump per merge. Bump when compatibility changes, or when
+   cutting a tag.
+
+5. **A tag matches the cargo version.** Existing practice, now written down:
+   when cutting a tag, tag the version the `Cargo.toml` already carries (the
+   compiler's `v0.18.1` tags version `0.18.1`). Where a repository's version
+   has moved past its newest tag, the next tag continues from the version, not
+   from the old tag line.
+
+Why not bump-per-change: a version line that moves in every PR makes every PR
+conflict with every other on that line, and two branches rebased past each
+other can ship the same number for different code. It would also dilute the
+compiler's version — the only one with a runtime consumer — into a change
+counter. Build identity is the `git describe` stamp's job (`zipline#64`).
+
 ---
 
 ## Compatible build sets
