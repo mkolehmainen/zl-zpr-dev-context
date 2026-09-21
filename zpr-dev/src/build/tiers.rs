@@ -115,6 +115,132 @@ impl Selection {
 }
 
 // ---------------------------------------------------------------------------
+// Prerequisite probes for the end-to-end tiers (issue62 step 2)
+// ---------------------------------------------------------------------------
+
+/// What the host offers the end-to-end tiers, gathered once per run by
+/// [`Probes::gather`] and consumed by the pure gate functions below —
+/// separated so the gating logic is testable with injected results.
+#[derive(Debug)]
+pub struct Probes {
+    /// The target OS is Linux (the netns scripts create network namespaces).
+    pub linux: bool,
+    /// `sudo -n true` succeeded: sudo works without prompting. The probe is
+    /// read-only — `-n` never prompts and `true` changes nothing.
+    pub passwordless_sudo: bool,
+    /// Where `valkey-server` is: `$VALKEY_SERVER_BIN` when set (the same
+    /// override the scripts honour), otherwise the first hit on `PATH`.
+    pub valkey_server: Option<PathBuf>,
+    /// `python3` is on `PATH`.
+    pub python3: bool,
+    /// `docker` is on `PATH`.
+    pub docker: bool,
+    /// `docker compose version` succeeded (the compose v2 plugin exists).
+    pub docker_compose: bool,
+}
+
+impl Probes {
+    /// Probes the live host. Every check is read-only.
+    pub fn gather() -> Probes {
+        let valkey_server = std::env::var_os("VALKEY_SERVER_BIN")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .or_else(|| find_on_path("valkey-server"));
+        let docker = find_on_path("docker").is_some();
+        Probes {
+            linux: cfg!(target_os = "linux"),
+            passwordless_sudo: command_succeeds("sudo", &["-n", "true"]),
+            valkey_server,
+            python3: find_on_path("python3").is_some(),
+            docker,
+            // Only worth asking when docker itself exists.
+            docker_compose: docker && command_succeeds("docker", &["compose", "version"]),
+        }
+    }
+}
+
+/// True when running `program args` exits 0, treating a spawn failure as a
+/// failed probe rather than an error — a missing binary is exactly what the
+/// probe exists to detect.
+fn command_succeeds(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// The first `PATH` entry holding an executable file named `program`.
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// A tier's gate: run, or skip with the reason. What a skip *means* depends
+/// on explicitness — see [`check_gate`].
+#[derive(Debug)]
+pub enum TierGate {
+    /// Every prerequisite is present.
+    Run,
+    /// A prerequisite is missing; the text names each missing one.
+    Skip(String),
+}
+
+/// Gates the netns tier: Linux, passwordless sudo, `valkey-server` (on PATH
+/// or `$VALKEY_SERVER_BIN`) and `python3`. Pure — probes are injected.
+pub fn netns_gate(probes: &Probes) -> TierGate {
+    let mut missing: Vec<&str> = Vec::new();
+    if !probes.linux {
+        missing.push("linux");
+    }
+    if !probes.passwordless_sudo {
+        missing.push("passwordless sudo");
+    }
+    if probes.valkey_server.is_none() {
+        missing.push("valkey-server");
+    }
+    if !probes.python3 {
+        missing.push("python3");
+    }
+    if missing.is_empty() {
+        TierGate::Run
+    } else {
+        TierGate::Skip(format!("missing: {}", missing.join(", ")))
+    }
+}
+
+/// Gates the docker tier: `docker` and the compose v2 plugin. The missing-
+/// docker wording matches the issue's acceptance text (`docker not found`).
+pub fn docker_gate(probes: &Probes) -> TierGate {
+    if !probes.docker {
+        return TierGate::Skip("docker not found".to_string());
+    }
+    if !probes.docker_compose {
+        return TierGate::Skip("docker compose not found".to_string());
+    }
+    TierGate::Run
+}
+
+/// Applies a gate under the approved Q1 policy (zipline#62): a failing probe
+/// on a default-selected tier is a skip carrying its reason (`Ok(Some(..))`),
+/// the same failure on an explicitly requested tier is an error carrying the
+/// same text (exit 1 through `run`'s gate-style failure path), and a passing
+/// gate runs (`Ok(None)`) either way. Never a silent skip.
+pub fn check_gate(tier: &str, gate: TierGate, explicit: bool) -> Result<Option<String>> {
+    match gate {
+        TierGate::Run => Ok(None),
+        TierGate::Skip(reason) if explicit => {
+            bail!("--test {tier} was requested but cannot run: {reason}")
+        }
+        TierGate::Skip(reason) => Ok(Some(reason)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The unit tier (task B4 steps 1-2)
 // ---------------------------------------------------------------------------
 
@@ -412,6 +538,94 @@ mod tests {
     /// `all` used to be an error while tiers were unimplemented; every tier
     /// has landed, so `all` now selects all three explicitly — see
     /// `all_selects_every_tier_explicitly` above.
+
+    // -- the prerequisite probes (issue62 step 2) -------------------------------
+
+    /// A probe result with everything present.
+    fn all_present() -> Probes {
+        Probes {
+            linux: true,
+            passwordless_sudo: true,
+            valkey_server: Some(PathBuf::from("/usr/bin/valkey-server")),
+            python3: true,
+            docker: true,
+            docker_compose: true,
+        }
+    }
+
+    /// With every prerequisite present both tiers gate to `Run`.
+    #[test]
+    fn gates_run_when_every_prerequisite_is_present() {
+        let probes = all_present();
+        assert!(matches!(netns_gate(&probes), TierGate::Run));
+        assert!(matches!(docker_gate(&probes), TierGate::Run));
+    }
+
+    /// Each missing netns prerequisite lands in the skip reason by name, so
+    /// the output and the manifest say exactly what to install (spec-003 §6:
+    /// never a silent skip).
+    #[test]
+    fn netns_gate_names_each_missing_prerequisite() {
+        let mut probes = all_present();
+        probes.passwordless_sudo = false;
+        probes.valkey_server = None;
+        let TierGate::Skip(reason) = netns_gate(&probes) else {
+            panic!("netns must skip without sudo");
+        };
+        assert!(reason.contains("passwordless sudo"), "{reason}");
+        assert!(reason.contains("valkey-server"), "{reason}");
+        // Present prerequisites are not named as missing.
+        assert!(!reason.contains("python3"), "{reason}");
+    }
+
+    /// A non-Linux host skips netns naming the platform.
+    #[test]
+    fn netns_gate_requires_linux() {
+        let mut probes = all_present();
+        probes.linux = false;
+        let TierGate::Skip(reason) = netns_gate(&probes) else {
+            panic!("netns must skip off linux");
+        };
+        assert!(reason.to_lowercase().contains("linux"), "{reason}");
+    }
+
+    /// The docker gate's reason matches the acceptance wording: a missing
+    /// docker binary reads `docker not found`.
+    #[test]
+    fn docker_gate_names_the_missing_prerequisite() {
+        let mut probes = all_present();
+        probes.docker = false;
+        let TierGate::Skip(reason) = docker_gate(&probes) else {
+            panic!("docker must skip without docker");
+        };
+        assert!(reason.contains("docker not found"), "{reason}");
+
+        let mut probes = all_present();
+        probes.docker_compose = false;
+        let TierGate::Skip(reason) = docker_gate(&probes) else {
+            panic!("docker must skip without compose");
+        };
+        assert!(reason.contains("docker compose"), "{reason}");
+    }
+
+    /// A failed probe on a default-selected (non-explicit) tier is a skip
+    /// carrying the reason; the same failure on an explicitly requested tier
+    /// is an error with the same text (approved Q1 on zipline#62).
+    #[test]
+    fn gate_check_skips_by_default_and_errors_when_explicit() {
+        let gate = TierGate::Skip("docker not found".to_string());
+        // Non-explicit: skip with the reason.
+        let skipped = check_gate("docker", gate, false).unwrap();
+        assert_eq!(skipped, Some("docker not found".to_string()));
+        // Explicit: the same text as an error (exit 1 through run()).
+        let gate = TierGate::Skip("docker not found".to_string());
+        let error = check_gate("docker", gate, true).unwrap_err().to_string();
+        assert!(error.contains("docker not found"), "{error}");
+        assert!(error.contains("docker"), "{error}");
+        // A passing gate runs either way.
+        assert_eq!(check_gate("docker", TierGate::Run, true).unwrap(), None);
+        assert_eq!(check_gate("docker", TierGate::Run, false).unwrap(), None);
+    }
 
     // -- the unit tier's plan (issue steps 1-2) --------------------------------
 

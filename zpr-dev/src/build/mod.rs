@@ -876,16 +876,22 @@ fn report_dry_run(
     println!();
 
     println!("tiers (planned):");
-    if selection.contains("unit") {
-        println!("  unit    would run");
-    } else {
-        println!("  unit    not requested (--test unit)");
+    let probes = tiers::Probes::gather();
+    for (tier, gate) in [
+        ("unit", tiers::TierGate::Run),
+        ("netns", tiers::netns_gate(&probes)),
+        ("docker", tiers::docker_gate(&probes)),
+    ] {
+        let request = if selection.contains(tier) {
+            "would run".to_string()
+        } else {
+            format!("not requested (--test {tier})")
+        };
+        match gate {
+            tiers::TierGate::Run => println!("  {tier:7} {request}; prerequisites present"),
+            tiers::TierGate::Skip(reason) => println!("  {tier:7} {request}; {reason}"),
+        }
     }
-    println!("  netns   not requested (--test netns); {}", netns_probe());
-    println!(
-        "  docker  not requested (--test docker); {}",
-        docker_probe()
-    );
     println!();
 
     let build_dir = build_dir
@@ -895,51 +901,9 @@ fn report_dry_run(
     println!("dry-run: nothing was created, and nothing was fetched");
 }
 
-/// True when `program` is on `PATH` — the read-only half of a prerequisite
-/// probe (spec-003 §7.2).
-fn on_path(program: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
-}
-
-/// The `netns` tier's prerequisite probe results, as one report fragment. Every
-/// check here is read-only: `sudo -n true` never prompts and changes nothing.
-fn netns_probe() -> String {
-    let mut missing: Vec<&str> = Vec::new();
-    if !cfg!(target_os = "linux") {
-        missing.push("linux");
-    }
-    let sudo = std::process::Command::new("sudo")
-        .args(["-n", "true"])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false);
-    if !sudo {
-        missing.push("passwordless sudo");
-    }
-    if !on_path("valkey-server") {
-        missing.push("valkey-server");
-    }
-    if !on_path("python3") {
-        missing.push("python3");
-    }
-    if missing.is_empty() {
-        "prerequisites present".to_string()
-    } else {
-        format!("missing: {}", missing.join(", "))
-    }
-}
-
-/// The `docker` tier's prerequisite probe results.
-fn docker_probe() -> String {
-    if on_path("docker") {
-        "prerequisites present".to_string()
-    } else {
-        "missing: docker".to_string()
-    }
-}
+/// The prerequisite probes moved to `tiers::Probes` / `tiers::netns_gate` /
+/// `tiers::docker_gate` in B5, where the runners consume them; the dry-run
+/// report above reuses them so the two can never disagree.
 
 // ---------------------------------------------------------------------------
 // Emitted manifest (spec-003 §3)
