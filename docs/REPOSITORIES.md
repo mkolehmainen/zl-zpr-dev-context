@@ -274,7 +274,7 @@ a ZPR endpoint can reach a service by name.
 The only repository here that is not a fork, and the only one written in Go.
 `make build` clones CoreDNS at a pinned tag and compiles the plugin into
 `bin/coredns`; the demo bakes that binary into its own image. See
-`docs/plans/2026-09-15-dns-integration.md`.
+[DNS.md](DNS.md) for how it fits together.
 
 ### `zl-zpr-rfcs`
 

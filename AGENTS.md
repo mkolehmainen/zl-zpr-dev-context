@@ -51,6 +51,7 @@ paths, so they can be opened directly.
 | Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
 | Changing packet formats, links, docking sessions, forwarding, or compression | `docs/ZDP.md` |
 | Changing routing, topology, or address assignment | `docs/ROUTING.md`, `docs/SYSTEM_OVERVIEW.md`, `docs/ZDP.md` |
+| Changing DNS resolution, the CoreDNS `zpr` plugin, machine hostnames, or a demo's `Corefile` | `docs/DNS.md`, then `docs/plans/2026-09-15-dns-integration.md` (service names) or `docs/plans/2026-09-17-machine-hostname-dns.md` (machine names) |
 | Changing anything cryptographic, or touching the enforcement path | `docs/SECURITY_MODEL.md` |
 | Writing or reviewing a policy file | `docs/ZPL.md` |
 | Changing the topology schema, `Router`/`TopologyMgr`, or how a visa's next hop is chosen | `docs/ROUTING.md` |
