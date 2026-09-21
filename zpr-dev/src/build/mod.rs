@@ -13,6 +13,7 @@ use crate::config::Manifest;
 
 pub mod gates;
 pub mod recipes;
+pub mod tiers;
 
 /// The only build-set version this tool understands (spec-003 §2.1).
 const SUPPORTED_VERSION: u32 = 1;
@@ -317,16 +318,10 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         println!("note: --repo parses but is inert until its stage lands");
     }
 
-    // Approved decision on zipline#60 (Q2): B3 accepts only `--test none`;
-    // the tiers land in B4/B5. Rejecting other values is a usage error, so it
-    // exits 2 through the Err path.
-    if let Some(test) = &args.test
-        && test != "none"
-    {
-        bail!(
-            "--test {test} is not available yet: tiers land in B4/B5; only --test none is accepted"
-        );
-    }
+    // The tier selection is parsed up front so an unknown or unimplemented
+    // name is a usage error (exit 2 through the Err path) before anything
+    // touches the filesystem. `--test none` behaviour is unchanged from B3.
+    let selection = tiers::Selection::parse(args.test.as_deref())?;
 
     if args.gates_only {
         return run_gates(ctx, args);
@@ -397,6 +392,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
             &resolved,
             &skipped,
             args.build_dir.as_deref(),
+            &selection,
         );
         if ctx.verbose && !ctx.quiet {
             println!();
@@ -407,15 +403,6 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     }
 
     // -- the real build (task B3) ---------------------------------------------
-    // Approved decision on zipline#60 (Q2): a real build requires `--test
-    // none`, stated explicitly, until the tiers land in B4/B5 — so nobody
-    // runs one believing tests ran.
-    if args.test.is_none() {
-        bail!(
-            "a real build requires an explicit --test none until the test \
-             tiers land (B4/B5)"
-        );
-    }
     for name in &skipped {
         if !ctx.quiet {
             println!("{name}: not in workspace.yaml, skipped");
@@ -453,12 +440,15 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         downgrade_pin_drift: args.allow_pin_drift,
         manifest_path,
         context_sha,
+        selection: &selection,
     })?;
     if !ctx.quiet {
         println!("dist: {}", build_dir.join("dist").display());
-        // The tiers were not run at this stage, and saying so beats a green
-        // silence that overstates coverage (spec-003 §6).
-        println!("tests: none run (--test none; tiers land in B4/B5)");
+        // A tier that did not run is stated, never silently absent — a green
+        // silence must not overstate coverage (spec-003 §6).
+        if selection.is_empty() {
+            println!("tests: none run (--test none)");
+        }
     }
     Ok(if ok {
         std::process::ExitCode::SUCCESS
@@ -844,6 +834,7 @@ fn report_dry_run(
     resolved: &[Resolved],
     skipped: &[&str],
     build_dir: Option<&Path>,
+    selection: &tiers::Selection,
 ) {
     if ctx.quiet {
         return;
@@ -885,7 +876,11 @@ fn report_dry_run(
     println!();
 
     println!("tiers (planned):");
-    println!("  unit    would run");
+    if selection.contains("unit") {
+        println!("  unit    would run");
+    } else {
+        println!("  unit    not requested (--test unit)");
+    }
     println!("  netns   not requested (--test netns); {}", netns_probe());
     println!(
         "  docker  not requested (--test docker); {}",
@@ -1019,14 +1014,31 @@ pub struct Binary {
     pub from: String,
 }
 
-/// One tier's outcome. A skipped tier always carries its reason. Constructed
-/// by B4–B5; shape fixed here.
-#[allow(dead_code)]
+/// One tier's outcome. A skipped tier always carries its reason. The
+/// `repos` breakdown records each repository's result (approved Q3 on
+/// zipline#61), skip-serialized when empty so the #59/#60 shape is
+/// unchanged for tiers that carry no breakdown.
 #[derive(Debug, Serialize)]
 pub struct Tier {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Repository → `passed`, `failed at ...`, or `skipped: ...`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub repos: BTreeMap<String, String>,
+}
+
+impl Tier {
+    /// The manifest record of one executed tier: overall status from the
+    /// sweep (`failed` when any repository failed; skips do not fail it)
+    /// and the per-repository breakdown, verbatim.
+    pub fn from_outcome(outcome: &tiers::TierOutcome) -> Tier {
+        Tier {
+            status: if outcome.passed { "passed" } else { "failed" }.to_string(),
+            reason: None,
+            repos: outcome.repos.clone(),
+        }
+    }
 }
 
 /// Builds the emitted manifest for a resolution (spec-003 §3): the input set's
@@ -1087,6 +1099,8 @@ struct BuildInputs<'a> {
     manifest_path: String,
     /// The context checkout's short sha, for `built_from.context`.
     context_sha: String,
+    /// Which test tiers to run after a successful build (task B4).
+    selection: &'a tiers::Selection,
 }
 
 /// Worktrees, gates, recipes, staging, verification, the emitted manifest and
@@ -1208,7 +1222,26 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         }
     }
 
-    // -- the emitted manifest, written even on build failure (spec-003 §3) ---
+    // -- the test tiers (task B4), against the worktrees and dist/ ------------
+    // Only after a fully verified build: a tier run against a half-built set
+    // would test binaries that will never ship. The unit tier is `make test`
+    // per built repository in build order, with `make pregen ZPLC=<dist>/zplc`
+    // first in the visa service so its fixtures come from the set's own
+    // compiler (spec-003 §6).
+    let mut tier_results: BTreeMap<String, Tier> = BTreeMap::new();
+    let mut tier_failed = false;
+    if failure.is_none() && inputs.selection.contains("unit") {
+        if !inputs.quiet {
+            println!("unit tier:");
+        }
+        let plans = tiers::unit_plan(inputs.recipes, &worktrees, &dist);
+        let outcome = tiers::run_unit(&plans, &logs, inputs.quiet);
+        tier_failed = !outcome.passed;
+        tier_results.insert("unit".to_string(), Tier::from_outcome(&outcome));
+    }
+
+    // -- the emitted manifest, written even on build or tier failure ---------
+    // (spec-003 §3: emitted whenever the gates pass, failures recorded.)
     let mut emitted = emit(inputs.set, inputs.resolved, inputs.tip)?;
     emitted.resolved.built_from.manifest = inputs.manifest_path.clone();
     emitted.resolved.built_from.context = inputs.context_sha.clone();
@@ -1227,6 +1260,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
             .insert("vs_policy_min_compiler".to_string(), minimum.clone());
     }
     emitted.resolved.binaries = digest_binaries(&dist, &worktrees)?;
+    emitted.resolved.tiers = tier_results;
     let manifest_file = dist.join(format!("zpr-set-{}.yaml", inputs.set.name));
     std::fs::write(&manifest_file, emitted_yaml(&emitted)?)
         .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", manifest_file.display()))?;
@@ -1238,6 +1272,18 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         // Worktrees stay for debugging; dist/ (with the manifest) survives.
         if !inputs.quiet {
             println!("build failed: {failure}");
+            println!("worktrees left in {} for debugging", src.display());
+        }
+        return Ok(false);
+    }
+    if tier_failed {
+        // Same retention rule as a build failure: the failing tests and
+        // their fixtures live in the worktrees, so they are what a person
+        // debugs with. No tarball: a set that failed its tests must not
+        // look shippable, though dist/ (with the manifest recording the
+        // failure) survives.
+        if !inputs.quiet {
+            println!("unit tier failed; see tiers.unit in the emitted manifest");
             println!("worktrees left in {} for debugging", src.display());
         }
         return Ok(false);
@@ -1602,8 +1648,15 @@ allow_pin_drift:
     }
 
     /// A workspace holding one repository, `zl-zpr-core`, cloned from a local
-    /// bare origin so `origin/main` exists — what `--tip` resolves.
+    /// bare origin so `origin/main` exists — what `--tip` resolves. The
+    /// committed `Makefile` is what the unit tier's `make test` runs.
     fn workspace_with_repo() -> (tempfile::TempDir, PathBuf, String) {
+        workspace_with_repo_and_makefile("test:\n\t@echo unit tested\n")
+    }
+
+    /// [`workspace_with_repo`] with the fixture's `Makefile` supplied, so a
+    /// tier test can seed a failing `make test`.
+    fn workspace_with_repo_and_makefile(makefile: &str) -> (tempfile::TempDir, PathBuf, String) {
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin.git");
         std::fs::create_dir_all(&origin).unwrap();
@@ -1622,6 +1675,7 @@ allow_pin_drift:
         setup_git(&scratch, &["config", "user.email", "tests@example.invalid"]);
         setup_git(&scratch, &["config", "commit.gpgsign", "false"]);
         std::fs::write(scratch.join("README.md"), "fixture\n").unwrap();
+        std::fs::write(scratch.join("Makefile"), makefile).unwrap();
         setup_git(&scratch, &["add", "-A"]);
         setup_git(&scratch, &["commit", "-m", "seed"]);
         setup_git(&scratch, &["tag", "v0.3.1"]);
@@ -1787,6 +1841,52 @@ allow_pin_drift:
         assert!(!emitted.resolved.built_at.is_empty());
     }
 
+    /// The `tiers.unit` block (task B4 step 2 / approved Q3 on zipline#61):
+    /// a `Tier` built from a tier outcome serializes with its overall status
+    /// and the per-repository breakdown, and a skip-only tier is `passed`.
+    #[test]
+    fn tier_from_outcome_serializes_status_and_repo_breakdown() {
+        let outcome = tiers::TierOutcome {
+            passed: false,
+            repos: [
+                ("zl-zpr-compiler".to_string(), "passed".to_string()),
+                (
+                    "zl-zpr-visaservice".to_string(),
+                    "failed at `pregen`: ...".to_string(),
+                ),
+                (
+                    "zl-zpr-demo".to_string(),
+                    "skipped: no unit tests (docker tier covers it)".to_string(),
+                ),
+            ]
+            .into(),
+        };
+        let tier = Tier::from_outcome(&outcome);
+        assert_eq!(tier.status, "failed");
+
+        let yaml = serde_yaml_ng::to_string(&tier).unwrap();
+        assert!(yaml.contains("status: failed"), "{yaml}");
+        assert!(yaml.contains("zl-zpr-compiler: passed"), "{yaml}");
+        assert!(yaml.contains("pregen"), "{yaml}");
+        assert!(yaml.contains("zl-zpr-demo"), "{yaml}");
+    }
+
+    /// A `Tier` with no repos entries — the #59/#60 shape — serializes
+    /// without a `repos:` key at all, so earlier manifests are unchanged
+    /// (approved Q3: skip-serialized when empty).
+    #[test]
+    fn tier_without_repos_serializes_the_59_60_shape_unchanged() {
+        let tier = Tier {
+            status: "passed".to_string(),
+            reason: None,
+            repos: BTreeMap::new(),
+        };
+        let yaml = serde_yaml_ng::to_string(&tier).unwrap();
+        assert!(!yaml.contains("repos"), "{yaml}");
+        assert!(!yaml.contains("reason"), "{yaml}");
+        assert_eq!(yaml.trim(), "status: passed");
+    }
+
     // -- build directory lifecycle (task B3 step 2) ---------------------------
 
     /// A fresh build directory is created with `logs/` and `dist/` inside.
@@ -1945,7 +2045,9 @@ allow_pin_drift:
     /// Builds the standard inputs for `execute_build` over the one-repo
     /// fixture workspace. The fixture repository has no Cargo.toml, so the
     /// gates report an INFO and pass — the gate path is exercised without a
-    /// manifest fixture.
+    /// manifest fixture. The selection is `--test none`: the tier path has
+    /// its own tests below.
+    #[allow(clippy::too_many_arguments)]
     fn inputs<'a>(
         set: &'a BuildSet,
         resolved: &'a [Resolved],
@@ -1955,6 +2057,7 @@ allow_pin_drift:
         recipes: &'a [recipes::Recipe],
         no_tarball: bool,
         keep: bool,
+        selection: &'a tiers::Selection,
     ) -> BuildInputs<'a> {
         BuildInputs {
             set,
@@ -1970,7 +2073,13 @@ allow_pin_drift:
             downgrade_pin_drift: false,
             manifest_path: "test-set.yaml".to_string(),
             context_sha: "deadbee".to_string(),
+            selection,
         }
+    }
+
+    /// The `--test none` selection, for the B3-era tests above the tier ones.
+    fn no_tiers() -> tiers::Selection {
+        tiers::Selection::parse(Some("none")).unwrap()
     }
 
     /// The emitted manifest is written to `dist/zpr-set-<name>.yaml` **even
@@ -1989,7 +2098,15 @@ allow_pin_drift:
 
         let recipes = vec![failing_recipe()];
         let ok = execute_build(&inputs(
-            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            true,
+            false,
+            &no_tiers(),
         ))
         .unwrap();
         assert!(!ok, "a failing recipe must report failure");
@@ -2023,7 +2140,15 @@ allow_pin_drift:
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
-            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            true,
+            false,
+            &no_tiers(),
         ))
         .unwrap();
         assert!(ok);
@@ -2090,7 +2215,15 @@ allow_pin_drift:
             },
         ];
         let ok = execute_build(&inputs(
-            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            true,
+            false,
+            &no_tiers(),
         ))
         .unwrap();
         assert!(!ok, "a subset of the distribution must not verify");
@@ -2163,7 +2296,15 @@ allow_pin_drift:
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
-            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false,
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            true,
+            false,
+            &no_tiers(),
         ))
         .unwrap();
         assert!(ok, "the live checkout's drift must not fail a coherent set");
@@ -2194,7 +2335,15 @@ allow_pin_drift:
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
-            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, true,
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            true,
+            true,
+            &no_tiers(),
         ))
         .unwrap();
         assert!(ok);
@@ -2215,7 +2364,15 @@ allow_pin_drift:
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
-            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, false, false,
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            false,
+            false,
+            &no_tiers(),
         ))
         .unwrap();
         assert!(ok);
@@ -2225,5 +2382,99 @@ allow_pin_drift:
             .join("dist")
             .join(format!("zpr-set-t-linux-{arch}.tar.gz"));
         assert!(tarball.is_file(), "missing {}", tarball.display());
+    }
+
+    // -- the unit tier through execute_build (task B4, zipline#61) -------------
+
+    /// A unit-tier run records `tiers.unit` in the emitted manifest with the
+    /// per-repository breakdown matching what ran: the fixture's `make test`
+    /// passes, so the tier and its one repository are both `passed`.
+    #[test]
+    fn execute_build_records_a_passing_unit_tier_in_the_manifest() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        ))
+        .unwrap();
+        assert!(ok, "a passing tier must not fail the build");
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("tiers:"), "{text}");
+        assert!(text.contains("unit:"), "{text}");
+        assert!(text.contains("status: passed"), "{text}");
+        assert!(text.contains("zl-zpr-core: passed"), "{text}");
+        // The tier ran in the worktree, and the step's log was written.
+        assert!(build_dir.join("logs").join("zl-zpr-core-test.log").exists());
+    }
+
+    /// A failing `make test` fails the tier and the run (exit-1 path), the
+    /// manifest still lands (spec-003 §3: emitted whenever the gates pass)
+    /// recording `tiers.unit.status: failed` with the repository's entry
+    /// naming the failing step, and the worktree survives for debugging.
+    #[test]
+    fn execute_build_records_a_failing_unit_tier_and_returns_failure() {
+        let (_tmp, workspace, _sha) =
+            workspace_with_repo_and_makefile("test:\n\t@echo broken; exit 1\n");
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        ))
+        .unwrap();
+        assert!(!ok, "a failing tier must fail the run");
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("status: failed"), "{text}");
+        assert!(text.contains("`test`"), "failing step not named: {text}");
+        // The worktree is retained on a tier failure, like a build failure:
+        // the failing tests are what a person debugs with.
+        assert!(build_dir.join("src").join("zl-zpr-core").exists());
+    }
+
+    /// `--test none` still emits `tiers` empty — the #59/#60 output shape,
+    /// byte-unchanged (approved Q3) — and prunes worktrees as before.
+    #[test]
+    fn execute_build_test_none_emits_empty_tiers_as_before() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let ok = execute_build(&inputs(
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            true,
+            false,
+            &no_tiers(),
+        ))
+        .unwrap();
+        assert!(ok);
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(!text.contains("tiers:"), "{text}");
+        assert!(!build_dir.join("src").join("zl-zpr-core").exists());
     }
 }
