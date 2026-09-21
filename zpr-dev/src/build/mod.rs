@@ -2189,6 +2189,41 @@ allow_pin_drift:
         crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
     }
 
+    /// A build directory deleted by hand — `rm -rf` with worktrees still
+    /// registered — must not wedge the next build (zipline#71). Every source
+    /// checkout still carries a registration pointing into the directory that
+    /// is gone, and without a prune the next `git worktree add` fails with
+    /// git's "missing but already registered worktree". The tool must recover
+    /// on its own: a fresh `worktree_add` succeeds with no flag and no manual
+    /// `git worktree prune`.
+    #[test]
+    fn worktree_add_succeeds_after_build_dir_deleted() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let build_dir = workspace.join(".zpr-build").join("t");
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+
+        // A worktree, as a build run registers it.
+        let dest = build_dir.join("src").join("zl-zpr-core");
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+
+        // The by-hand deletion: the whole build directory goes, but every
+        // registration in the source repository survives it.
+        std::fs::remove_dir_all(&build_dir).unwrap();
+
+        // The next run's worktree_add — same registered path, fresh build
+        // directory — must succeed, self-healing the stale registration.
+        // `src/` is pre-created as a multi-repository build would have it:
+        // the first repository's add creates it, and only then does git's
+        // stale-registration check resolve the later destinations' paths and
+        // fail them with "missing but already registered worktree". (With no
+        // resolvable parent the check is silently skipped and git records a
+        // *duplicate* registration instead — the same stale state, hidden.)
+        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        std::fs::create_dir_all(build_dir.join("src")).unwrap();
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+        assert!(dest.join("README.md").exists());
+    }
+
     // -- dist/ verification (task B3 step 4) ----------------------------------
 
     /// Writes a mode-0755 stand-in binary named `name` into `dir`.
