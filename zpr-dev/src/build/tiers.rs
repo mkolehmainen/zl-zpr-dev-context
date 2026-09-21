@@ -11,32 +11,40 @@ use anyhow::{Result, bail};
 
 use super::recipes;
 
-/// The tiers this tool implements today, in run order. Approved decision on
-/// zipline#61 (Q1): `default` — and no `--test` flag at all — means every
-/// implemented tier, so `docker` joins this list when B5 lands and nothing
-/// about the flag changes.
-const IMPLEMENTED: &[&str] = &["unit"];
+/// The tiers this tool implements, in run order. Approved decisions on
+/// zipline#61 (Q1) and zipline#62 (Q1): `default` — and no `--test` flag at
+/// all — means every implemented tier, and since B5 the `netns` and `docker`
+/// end-to-end tiers are implemented, joining the default selection with
+/// probe-gated skip-with-reason.
+const IMPLEMENTED: &[&str] = &["unit", "netns", "docker"];
 
-/// Every tier spec-003 §6 names, implemented or not, in run order. A known
-/// but unimplemented name gets a "lands in B5" error rather than the unknown-
-/// name error, so the remedy is obvious from the message.
+/// Every tier spec-003 §6 names, in run order. Now identical to
+/// `IMPLEMENTED` — B5 landed the last two — but kept separate so the
+/// unknown-name error and any future tier land in the right place.
 const KNOWN: &[&str] = &["unit", "netns", "docker"];
 
 /// Which tiers a run executes, parsed from `--test` (spec-003 §7). Empty
 /// means `--test none`: build only, no tier runs and none is reported.
+///
+/// Each selected tier also records whether it was *explicit* — named in a
+/// `--test` list or covered by `--test all` — because the two end-to-end
+/// tiers are probe-gated: a default-selected tier whose prerequisites are
+/// missing is skipped with the reason, while an explicitly requested one is
+/// an error (exit 1), never a silent skip (spec-003 §6; approved Q1 on
+/// zipline#62).
 #[derive(Debug, PartialEq)]
 pub struct Selection {
-    /// Tier names in run order, deduplicated.
-    tiers: Vec<&'static str>,
+    /// Tier names in run order, deduplicated, each with its explicitness.
+    tiers: Vec<(&'static str, bool)>,
 }
 
 impl Selection {
     /// Parses the `--test` flag. `None` (flag absent) and `default` select
-    /// every implemented tier; `none` selects nothing; `all` asks for every
-    /// known tier; otherwise the value is a comma-separated list of tier
-    /// names. An unknown name, a known-but-unimplemented name, and the
-    /// special words mixed into a list are all usage errors — they surface
-    /// as exit 2 through `run`'s `Err` path.
+    /// every implemented tier, non-explicitly; `none` selects nothing;
+    /// `all` selects every known tier, each explicitly; otherwise the value
+    /// is a comma-separated list of tier names, each explicit. An unknown
+    /// name and the special words mixed into a list are usage errors — they
+    /// surface as exit 2 through `run`'s `Err` path.
     pub fn parse(flag: Option<&str>) -> Result<Selection> {
         // Absent and `default` are the same selection by definition
         // (approved Q1 on zipline#61): every implemented tier.
@@ -44,37 +52,33 @@ impl Selection {
         match text {
             "default" => {
                 return Ok(Selection {
-                    tiers: IMPLEMENTED.to_vec(),
+                    tiers: IMPLEMENTED.iter().map(|tier| (*tier, false)).collect(),
                 });
             }
             "none" => return Ok(Selection { tiers: Vec::new() }),
-            // `all` asks for every known tier, and an asked-for tier that
-            // cannot run is an error, never a silent skip (spec-003 §6) —
-            // so while any tier is unimplemented, `all` is an error too.
+            // `all` asks for every known tier by name, so each is explicit:
+            // an asked-for tier that cannot run is an error, never a silent
+            // skip (spec-003 §6).
             "all" => {
-                bail!(
-                    "--test all asks for every tier, but netns and docker land in B5; \
-                     use --test unit (or default) until then"
-                );
+                return Ok(Selection {
+                    tiers: KNOWN.iter().map(|tier| (*tier, true)).collect(),
+                });
             }
             _ => {}
         }
 
-        // A comma-separated list of tier names. The special whole-selection
-        // words are rejected inside a list: `unit,none` has no coherent
-        // meaning.
-        let mut tiers: Vec<&'static str> = Vec::new();
+        // A comma-separated list of tier names, each explicit. The special
+        // whole-selection words are rejected inside a list: `unit,none` has
+        // no coherent meaning.
+        let mut tiers: Vec<(&'static str, bool)> = Vec::new();
         for name in text.split(',') {
             let name = name.trim();
             match KNOWN.iter().find(|known| **known == name) {
-                Some(known) if IMPLEMENTED.contains(known) => {
-                    if !tiers.contains(known) {
-                        tiers.push(known);
+                Some(known) => {
+                    if !tiers.iter().any(|(tier, _)| tier == known) {
+                        tiers.push((known, true));
                     }
                 }
-                Some(known) => bail!(
-                    "--test {known} is not available yet: the netns and docker tiers land in B5"
-                ),
                 None => bail!(
                     "--test {name:?} is not a tier; valid values: none, default, all, \
                      or a comma-separated list of {}",
@@ -82,6 +86,10 @@ impl Selection {
                 ),
             }
         }
+        // Run order is KNOWN's order, not the list's: `docker,unit` and
+        // `unit,docker` are the same request, and unit failures should
+        // surface before the slower end-to-end tiers run.
+        tiers.sort_by_key(|(tier, _)| KNOWN.iter().position(|known| known == tier));
         Ok(Selection { tiers })
     }
 
@@ -92,7 +100,162 @@ impl Selection {
 
     /// True when `tier` was selected.
     pub fn contains(&self, tier: &str) -> bool {
-        self.tiers.contains(&tier)
+        self.tiers.iter().any(|(name, _)| *name == tier)
+    }
+
+    /// True when `tier` was selected *explicitly* — named in a `--test`
+    /// list or covered by `--test all` — which turns a failing prerequisite
+    /// probe from a skip-with-reason into an error (spec-003 §6; approved
+    /// Q1 on zipline#62). False for a tier that was not selected at all.
+    pub fn is_explicit(&self, tier: &str) -> bool {
+        self.tiers
+            .iter()
+            .any(|(name, explicit)| *name == tier && *explicit)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Prerequisite probes for the end-to-end tiers (issue62 step 2)
+// ---------------------------------------------------------------------------
+
+/// What the host offers the end-to-end tiers, gathered once per run by
+/// [`Probes::gather`] and consumed by the pure gate functions below —
+/// separated so the gating logic is testable with injected results.
+#[derive(Debug)]
+pub struct Probes {
+    /// The target OS is Linux (the netns scripts create network namespaces).
+    pub linux: bool,
+    /// `sudo -n true` succeeded: sudo works without prompting. The probe is
+    /// read-only — `-n` never prompts and `true` changes nothing.
+    pub passwordless_sudo: bool,
+    /// Where `valkey-server` is: `$VALKEY_SERVER_BIN` when set (the same
+    /// override the scripts honour), otherwise the first hit on `PATH`.
+    pub valkey_server: Option<PathBuf>,
+    /// `python3` is on `PATH`.
+    pub python3: bool,
+    /// `docker` is on `PATH`.
+    pub docker: bool,
+    /// `docker compose version` succeeded (the compose v2 plugin exists).
+    pub docker_compose: bool,
+}
+
+impl Probes {
+    /// Probes the live host. Every check is read-only.
+    pub fn gather() -> Probes {
+        let valkey_server = std::env::var_os("VALKEY_SERVER_BIN")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .or_else(|| find_on_path("valkey-server"));
+        let docker = find_on_path("docker").is_some();
+        Probes {
+            linux: cfg!(target_os = "linux"),
+            passwordless_sudo: command_succeeds("sudo", &["-n", "true"]),
+            valkey_server,
+            python3: find_on_path("python3").is_some(),
+            docker,
+            // Only worth asking when docker itself exists.
+            docker_compose: docker && command_succeeds("docker", &["compose", "version"]),
+        }
+    }
+}
+
+/// True when running `program args` exits 0, treating a spawn failure as a
+/// failed probe rather than an error — a missing binary is exactly what the
+/// probe exists to detect.
+fn command_succeeds(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// The first `PATH` entry holding an executable file named `program`.
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    find_in_path_value(&path, program)
+}
+
+/// [`find_on_path`] against an explicit `PATH` value — separated so tests can
+/// probe a constructed PATH without mutating the process environment. A
+/// candidate must be a regular file AND executable: a non-executable file of
+/// the right name (a stray download, a sources checkout) must not satisfy a
+/// tier gate, or the tier runs and fails mid-script instead of skipping with
+/// the reason — the search continues to later PATH entries instead.
+fn find_in_path_value(path: &std::ffi::OsStr, program: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+/// True when `path` is a regular file with any execute bit set — what "on
+/// PATH" means to a shell about to run it.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// A tier's gate: run, or skip with the reason. What a skip *means* depends
+/// on explicitness — see [`check_gate`].
+#[derive(Debug)]
+pub enum TierGate {
+    /// Every prerequisite is present.
+    Run,
+    /// A prerequisite is missing; the text names each missing one.
+    Skip(String),
+}
+
+/// Gates the netns tier: Linux, passwordless sudo, `valkey-server` (on PATH
+/// or `$VALKEY_SERVER_BIN`) and `python3`. Pure — probes are injected.
+pub fn netns_gate(probes: &Probes) -> TierGate {
+    let mut missing: Vec<&str> = Vec::new();
+    if !probes.linux {
+        missing.push("linux");
+    }
+    if !probes.passwordless_sudo {
+        missing.push("passwordless sudo");
+    }
+    if probes.valkey_server.is_none() {
+        missing.push("valkey-server");
+    }
+    if !probes.python3 {
+        missing.push("python3");
+    }
+    if missing.is_empty() {
+        TierGate::Run
+    } else {
+        TierGate::Skip(format!("missing: {}", missing.join(", ")))
+    }
+}
+
+/// Gates the docker tier: `docker` and the compose v2 plugin. The missing-
+/// docker wording matches the issue's acceptance text (`docker not found`).
+pub fn docker_gate(probes: &Probes) -> TierGate {
+    if !probes.docker {
+        return TierGate::Skip("docker not found".to_string());
+    }
+    if !probes.docker_compose {
+        return TierGate::Skip("docker compose not found".to_string());
+    }
+    TierGate::Run
+}
+
+/// Applies a gate under the approved Q1 policy (zipline#62): a failing probe
+/// on a default-selected tier is a skip carrying its reason (`Ok(Some(..))`),
+/// the same failure on an explicitly requested tier is an error carrying the
+/// same text (exit 1 through `run`'s gate-style failure path), and a passing
+/// gate runs (`Ok(None)`) either way. Never a silent skip.
+pub fn check_gate(tier: &str, gate: TierGate, explicit: bool) -> Result<Option<String>> {
+    match gate {
+        TierGate::Run => Ok(None),
+        TierGate::Skip(reason) if explicit => {
+            bail!("--test {tier} was requested but cannot run: {reason}")
+        }
+        TierGate::Skip(reason) => Ok(Some(reason)),
     }
 }
 
@@ -271,19 +434,493 @@ pub fn run_unit(plans: &[RepoPlan], logs: &Path, quiet: bool) -> TierOutcome {
     outcome
 }
 
+// ---------------------------------------------------------------------------
+// The netns tier (issue62 step 3)
+// ---------------------------------------------------------------------------
+
+/// The seven integration scripts the netns tier runs, in order. An explicit
+/// list, never a glob: `integration-test/unused_or_outdated/` stays out, and
+/// adding a script to the set's gate is a reviewed change (master plan B5).
+const NETNS_SCRIPTS: &[&str] = &[
+    "one-node-test.sh",
+    "one-node-v6-test.sh",
+    "one-node-oidc-test.sh",
+    "capture-test.sh",
+    "oidc-file-interplay-test.sh",
+    "fake-idp-smoke-test.sh",
+    "a2a-pubkey-test.sh",
+];
+
+/// A build that must succeed before its script runs — the worktree-local
+/// `enable-security-testing` build of `ph` for `a2a-pubkey-test.sh`. Kept
+/// separate from the script so its failure fails that one script while the
+/// rest of the tier still runs (master plan B5).
+#[derive(Debug)]
+pub struct PrepStep {
+    /// Labels the log file (`logs/netns-<name>.log`) and the failure entry.
+    pub name: &'static str,
+    pub program: &'static str,
+    pub args: Vec<String>,
+    /// Working directory — the `zl-zpr-core` worktree, not `integration-test/`.
+    pub dir: PathBuf,
+}
+
+/// One planned script: its name (relative to the plan's `dir`), the
+/// environment overrides it runs under, and an optional prep build.
+#[derive(Debug)]
+pub struct NetnsScript {
+    pub script: &'static str,
+    /// `KEY=value` pairs set on the child only — never the tool's own env.
+    pub env: Vec<(String, String)>,
+    pub prep: Option<PrepStep>,
+}
+
+/// The netns tier's plan: where the scripts live and what to run. Pure
+/// planning — nothing here executes a command.
+#[derive(Debug)]
+pub struct NetnsPlan {
+    /// `<zl-zpr-core worktree>/integration-test`.
+    pub dir: PathBuf,
+    pub scripts: Vec<NetnsScript>,
+}
+
+/// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
+/// the seven blessed scripts in order, each with the `*_BIN` overrides the
+/// scripts already honour pointed at `dist/` and the system valkey — nothing
+/// is copied into `integration-test/`. `a2a-pubkey-test.sh` alone runs the
+/// worktree-local `enable-security-testing` `ph` (a debug build that must
+/// never reach `dist/` — see [`dist_ph_is_clean`]). `verbose` exports
+/// `ZPR_TEST_VERBOSE=1`; `DEBUG_TARGETS` is left at the scripts' default.
+pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: bool) -> NetnsPlan {
+    let display = |path: PathBuf| path.display().to_string();
+    let scripts = NETNS_SCRIPTS
+        .iter()
+        .map(|script| {
+            let a2a = *script == "a2a-pubkey-test.sh";
+            // The security-testing ph is a debug-profile build in the
+            // worktree's own target/, pointed at for this one script only.
+            let ph_bin = if a2a {
+                display(core_worktree.join("target/debug/ph"))
+            } else {
+                display(dist.join("ph"))
+            };
+            let mut env: Vec<(String, String)> = vec![
+                ("PH_BIN".to_string(), ph_bin),
+                ("PH_DEBUG_BIN".to_string(), display(dist.join("ph-cli"))),
+                ("VS_BIN".to_string(), display(dist.join("vs"))),
+                ("VS_ADMIN_BIN".to_string(), display(dist.join("vs-admin"))),
+                (
+                    "VALKEY_SERVER_BIN".to_string(),
+                    valkey.display().to_string(),
+                ),
+            ];
+            if verbose {
+                env.push(("ZPR_TEST_VERBOSE".to_string(), "1".to_string()));
+            }
+            NetnsScript {
+                script,
+                env,
+                prep: a2a.then(|| PrepStep {
+                    name: "security-ph",
+                    program: "cargo",
+                    args: ["build", "-p", "ph", "--features", "enable-security-testing"]
+                        .iter()
+                        .map(|arg| arg.to_string())
+                        .collect(),
+                    dir: core_worktree.to_path_buf(),
+                }),
+            }
+        })
+        .collect();
+    NetnsPlan {
+        dir: core_worktree.join("integration-test"),
+        scripts,
+    }
+}
+
+/// Runs a netns plan: each script in order in the plan's directory, under
+/// its env overrides, logging as `logs/netns-<script>.log` in `run_unit`'s
+/// shape. A failing script — or a failing prep build — fails the tier and
+/// the sweep **keeps going**, so one run reports every broken script
+/// (master plan B5: continue after a failing script; record each).
+pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
+    let mut outcome = TierOutcome {
+        passed: true,
+        repos: BTreeMap::new(),
+    };
+    for script in &plan.scripts {
+        // The prep build first: a2a's security-testing ph. Its failure
+        // fails this script alone; the rest of the tier still runs.
+        if let Some(prep) = &script.prep {
+            if let Err(error) = run_env_command(
+                "netns",
+                prep.name,
+                prep.program,
+                &prep.args,
+                &[],
+                &prep.dir,
+                logs,
+                quiet,
+            ) {
+                if !quiet {
+                    println!("{}: FAILED at prep `{}`", script.script, prep.name);
+                }
+                outcome.passed = false;
+                outcome.repos.insert(
+                    script.script.to_string(),
+                    format!("failed at prep `{}`: {error}", prep.name),
+                );
+                continue;
+            }
+        }
+        let program = plan.dir.join(script.script).display().to_string();
+        match run_env_command(
+            "netns",
+            script.script,
+            &program,
+            &[] as &[&str],
+            &script.env,
+            &plan.dir,
+            logs,
+            quiet,
+        ) {
+            Ok(()) => {
+                if !quiet {
+                    println!("{}: passed", script.script);
+                }
+                outcome
+                    .repos
+                    .insert(script.script.to_string(), "passed".to_string());
+            }
+            Err(error) => {
+                if !quiet {
+                    println!("{}: FAILED", script.script);
+                }
+                outcome.passed = false;
+                outcome
+                    .repos
+                    .insert(script.script.to_string(), format!("failed: {error}"));
+            }
+        }
+    }
+    outcome
+}
+
+/// The runtime half of the dist/ guard (master plan B5): the staged `ph`
+/// must not be an `enable-security-testing` build. A security-testing `ph`
+/// advertises `--security-testing-mangle-forwarded-pings` in `node --help`
+/// (the same detection `a2a-pubkey-test.sh` uses); a clean one does not.
+/// A missing `dist/ph` passes — there is nothing to guard, and the staging
+/// verification reports the absence separately.
+pub fn dist_ph_is_clean(dist: &Path) -> Result<()> {
+    let ph = dist.join("ph");
+    if !ph.is_file() {
+        return Ok(());
+    }
+    let output = std::process::Command::new(&ph)
+        .args(["node", "--help"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("cannot run {} node --help: {e}", ph.display()))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if text.contains("--security-testing-mangle-forwarded-pings") {
+        bail!(
+            "{} is an enable-security-testing build; that ph is for \
+             a2a-pubkey-test.sh only and must never be staged into dist/",
+            ph.display()
+        );
+    }
+    Ok(())
+}
+
+/// [`recipes::run_command`] with per-child environment overrides: same
+/// working-directory, log shape (`logs/<label>-<name>.log`), failure echo
+/// and error wording. The env touches the child only, never this process.
+#[allow(clippy::too_many_arguments)]
+fn run_env_command(
+    label: &str,
+    name: &str,
+    program: &str,
+    args: &[impl AsRef<std::ffi::OsStr>],
+    env: &[(String, String)],
+    dir: &Path,
+    logs: &Path,
+    quiet: bool,
+) -> Result<()> {
+    use std::io::Write as _;
+
+    let log_path = logs.join(format!("{label}-{name}.log"));
+    let mut command = std::process::Command::new(program);
+    command.args(args).current_dir(dir);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().map_err(|e| {
+        anyhow::anyhow!("cannot run {program} for {label} in {}: {e}", dir.display())
+    })?;
+
+    // One log per step, stdout then stderr — the same record run_command
+    // writes, so netns logs read like build logs.
+    let mut log = std::fs::File::create(&log_path)
+        .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", log_path.display()))?;
+    log.write_all(&output.stdout)?;
+    log.write_all(&output.stderr)?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+    if !quiet {
+        let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines.len().saturating_sub(40);
+        eprintln!(
+            "--- last {} lines of {} ---",
+            lines.len() - start,
+            log_path.display()
+        );
+        for line in &lines[start..] {
+            eprintln!("{line}");
+        }
+    }
+    bail!(
+        "{label}: step `{name}` failed ({}); full output in {}",
+        output.status,
+        log_path.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The docker tier (issue62 step 4)
+// ---------------------------------------------------------------------------
+
+/// One docker-tier command: deploy, test, or teardown.
+#[derive(Debug)]
+pub struct DockerStep {
+    /// Labels the log file (`logs/docker-<name>.log`) and the outcome entry.
+    pub name: &'static str,
+    pub program: String,
+    pub args: Vec<String>,
+    pub dir: PathBuf,
+}
+
+/// The docker tier's plan: stage `dist/` into the demo's `dns-demo/bin/`,
+/// deploy, test, tear down. Pure planning — nothing here executes.
+#[derive(Debug)]
+pub struct DockerPlan {
+    /// Where the built set's binaries are.
+    pub dist: PathBuf,
+    /// `<zl-zpr-demo worktree>/dns-demo/bin` — the copy target.
+    pub bin: PathBuf,
+    pub deploy: DockerStep,
+    pub test: DockerStep,
+    pub teardown: DockerStep,
+}
+
+/// Builds the docker plan against the `zl-zpr-demo` worktree and `dist/`:
+/// stage `dist/`'s binaries into `dns-demo/bin/` — skipping the demo's own
+/// `make` entirely, so the DNS test exercises the set's binaries rather
+/// than a fresh build — then `local-compute/deploy-docker.sh`,
+/// `local-compute/test-dns.sh`, and `docker compose down -v`
+/// unconditionally (master plan B5).
+pub fn docker_plan(demo_worktree: &Path, dist: &Path) -> DockerPlan {
+    let demo = demo_worktree.join("dns-demo");
+    let compose_file = demo.join("docker-compose.yml").display().to_string();
+    DockerPlan {
+        dist: dist.to_path_buf(),
+        bin: demo.join("bin"),
+        deploy: DockerStep {
+            name: "deploy",
+            program: demo
+                .join("local-compute/deploy-docker.sh")
+                .display()
+                .to_string(),
+            args: vec![],
+            dir: demo.clone(),
+        },
+        test: DockerStep {
+            name: "test",
+            program: demo.join("local-compute/test-dns.sh").display().to_string(),
+            args: vec![],
+            dir: demo.clone(),
+        },
+        teardown: DockerStep {
+            name: "teardown",
+            program: "docker".to_string(),
+            args: ["compose", "-f", &compose_file, "down", "-v"]
+                .iter()
+                .map(|arg| arg.to_string())
+                .collect(),
+            dir: demo,
+        },
+    }
+}
+
+/// Copies every staged name the recipe table produces from `dist/` into the
+/// demo's `bin/`, executably — the two sets of names are identical, which is
+/// what makes the DNS test exercise the set (master plan B5). A missing
+/// binary is an error naming it: the demo must not run against a half-staged
+/// `bin/`.
+pub fn stage_dist_into_demo(dist: &Path, bin: &Path) -> Result<()> {
+    std::fs::create_dir_all(bin)
+        .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", bin.display()))?;
+    for recipe in recipes::RECIPES {
+        for staged in recipe.staged {
+            let source = dist.join(staged.name);
+            if !source.is_file() {
+                bail!(
+                    "dist/ is missing {} (expected at {}); cannot stage the demo",
+                    staged.name,
+                    source.display()
+                );
+            }
+            // fs::copy preserves the mode, so an executable stays executable.
+            std::fs::copy(&source, bin.join(staged.name)).map_err(|e| {
+                anyhow::anyhow!("cannot stage {} into {}: {e}", staged.name, bin.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs a docker plan: stage, deploy, test — each failure skipping the rest
+/// — then teardown **unconditionally**, recorded separately from a test
+/// failure (master plan B5). Compose down is safe when nothing is up, so
+/// even a stage failure tears down: a previous run's leftovers must not
+/// survive. Steps log as `logs/docker-<step>.log` in `run_unit`'s shape.
+pub fn run_docker(plan: &DockerPlan, logs: &Path, quiet: bool) -> TierOutcome {
+    let mut outcome = TierOutcome {
+        passed: true,
+        repos: BTreeMap::new(),
+    };
+    let record = |outcome: &mut TierOutcome, name: &str, result: Result<()>| -> bool {
+        match result {
+            Ok(()) => {
+                if !quiet {
+                    println!("{name}: passed");
+                }
+                outcome.repos.insert(name.to_string(), "passed".to_string());
+                true
+            }
+            Err(error) => {
+                if !quiet {
+                    println!("{name}: FAILED");
+                }
+                outcome.passed = false;
+                outcome
+                    .repos
+                    .insert(name.to_string(), format!("failed: {error}"));
+                false
+            }
+        }
+    };
+    let run_step = |step: &DockerStep, quiet: bool| -> Result<()> {
+        run_env_command(
+            "docker",
+            step.name,
+            &step.program,
+            &step.args,
+            &[],
+            &step.dir,
+            logs,
+            quiet,
+        )
+    };
+
+    // stage -> deploy -> test, each failure skipping what follows: the demo
+    // must not deploy half-staged, and a failed deploy leaves nothing to
+    // test. A skip is recorded with its reason, never silently absent.
+    let staged = record(
+        &mut outcome,
+        "stage",
+        stage_dist_into_demo(&plan.dist, &plan.bin),
+    );
+    let deployed = if staged {
+        record(&mut outcome, "deploy", run_step(&plan.deploy, quiet))
+    } else {
+        outcome
+            .repos
+            .insert("deploy".to_string(), "skipped: staging failed".to_string());
+        false
+    };
+    if deployed {
+        record(&mut outcome, "test", run_step(&plan.test, quiet));
+    } else {
+        let reason = if staged {
+            "skipped: deploy failed"
+        } else {
+            "skipped: staging failed"
+        };
+        outcome.repos.insert("test".to_string(), reason.to_string());
+    }
+
+    // Teardown, in every path — pass, fail, or half-start — and recorded
+    // separately: a stuck volume is a different problem than a red test.
+    record(&mut outcome, "teardown", run_step(&plan.teardown, quiet));
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The flag absent entirely selects every implemented tier — today
-    /// exactly `unit` (approved Q1 on zipline#61).
+    /// The flag absent entirely selects every implemented tier — `unit`,
+    /// `netns` and `docker` since B5 (approved Q1 on zipline#62: the two
+    /// end-to-end tiers join the default selection with probe-gated skips).
+    /// A default-selected tier is not *explicit*: its probe failing skips
+    /// it with a reason rather than failing the run.
     #[test]
     fn absent_flag_selects_the_implemented_tiers() {
         let selection = Selection::parse(None).unwrap();
         assert!(!selection.is_empty());
-        assert!(selection.contains("unit"));
+        for tier in ["unit", "netns", "docker"] {
+            assert!(selection.contains(tier), "{tier} missing from default");
+            assert!(
+                !selection.is_explicit(tier),
+                "{tier} must not be explicit under the default selection"
+            );
+        }
+    }
+
+    /// A tier named in `--test <list>` is explicit: the user asked for it,
+    /// so a failing prerequisite probe is an error, never a silent skip
+    /// (spec-003 §6; approved Q1 on zipline#62).
+    #[test]
+    fn a_listed_tier_is_explicit() {
+        let selection = Selection::parse(Some("docker")).unwrap();
+        assert!(selection.contains("docker"));
+        assert!(selection.is_explicit("docker"));
+        assert!(!selection.contains("unit"));
         assert!(!selection.contains("netns"));
-        assert!(!selection.contains("docker"));
+        // Not selected at all, so not explicit either.
+        assert!(!selection.is_explicit("unit"));
+    }
+
+    /// `all` selects every known tier, each explicitly — an asked-for tier
+    /// that cannot run must never silently degrade (spec-003 §6).
+    #[test]
+    fn all_selects_every_tier_explicitly() {
+        let selection = Selection::parse(Some("all")).unwrap();
+        for tier in ["unit", "netns", "docker"] {
+            assert!(selection.contains(tier), "{tier} missing from all");
+            assert!(selection.is_explicit(tier), "{tier} must be explicit");
+        }
+    }
+
+    /// The netns and docker tiers are selectable by name, alone and in a
+    /// list, now that B5 has landed.
+    #[test]
+    fn netns_and_docker_are_selectable_by_name() {
+        for flag in ["netns", "docker", "unit,netns,docker"] {
+            let selection = Selection::parse(Some(flag)).unwrap();
+            assert!(!selection.is_empty(), "{flag}");
+        }
+        let selection = Selection::parse(Some("unit,docker")).unwrap();
+        assert!(selection.contains("unit"));
+        assert!(selection.contains("docker"));
+        assert!(!selection.contains("netns"));
     }
 
     /// `default` is the spelled-out form of the absent flag.
@@ -319,16 +956,12 @@ mod tests {
         assert!(selection.contains("unit"));
     }
 
-    /// A known tier whose stage has not landed is rejected naming the stage,
-    /// not treated as unknown: `netns` and `docker` land in B5.
-    #[test]
-    fn unimplemented_tier_is_rejected_naming_its_stage() {
-        for name in ["netns", "docker", "unit,docker"] {
-            let error = Selection::parse(Some(name)).unwrap_err().to_string();
-            assert!(error.contains("B5"), "{name}: {error}");
-        }
-    }
-
+    /// A known tier whose stage has not landed used to be rejected naming
+    /// the stage; both stages have landed, so this behaviour is gone —
+    /// covered by `netns_and_docker_are_selectable_by_name` and
+    /// `all_selects_every_tier_explicitly` above. (The two B5-era tests were
+    /// replaced in this change; their RED failure was the proof the
+    /// behaviour changed.)
     /// An unknown name is rejected listing the valid values, so the fix is
     /// obvious from the message (exit 2 through `run`'s `Err` path).
     #[test]
@@ -349,13 +982,580 @@ mod tests {
         }
     }
 
-    /// `all` asks for every known tier, and today that is an error naming
-    /// the unimplemented ones — an asked-for tier that cannot run must never
-    /// silently degrade (spec-003 §6).
+    /// `all` used to be an error while tiers were unimplemented; every tier
+    /// has landed, so `all` now selects all three explicitly — see
+    /// `all_selects_every_tier_explicitly` above.
+
+    // -- the prerequisite probes (issue62 step 2) -------------------------------
+
+    /// A probe result with everything present.
+    fn all_present() -> Probes {
+        Probes {
+            linux: true,
+            passwordless_sudo: true,
+            valkey_server: Some(PathBuf::from("/usr/bin/valkey-server")),
+            python3: true,
+            docker: true,
+            docker_compose: true,
+        }
+    }
+
+    /// With every prerequisite present both tiers gate to `Run`.
     #[test]
-    fn all_is_an_error_while_tiers_are_unimplemented() {
-        let error = Selection::parse(Some("all")).unwrap_err().to_string();
-        assert!(error.contains("B5"), "{error}");
+    fn gates_run_when_every_prerequisite_is_present() {
+        let probes = all_present();
+        assert!(matches!(netns_gate(&probes), TierGate::Run));
+        assert!(matches!(docker_gate(&probes), TierGate::Run));
+    }
+
+    /// Each missing netns prerequisite lands in the skip reason by name, so
+    /// the output and the manifest say exactly what to install (spec-003 §6:
+    /// never a silent skip).
+    #[test]
+    fn netns_gate_names_each_missing_prerequisite() {
+        let mut probes = all_present();
+        probes.passwordless_sudo = false;
+        probes.valkey_server = None;
+        let TierGate::Skip(reason) = netns_gate(&probes) else {
+            panic!("netns must skip without sudo");
+        };
+        assert!(reason.contains("passwordless sudo"), "{reason}");
+        assert!(reason.contains("valkey-server"), "{reason}");
+        // Present prerequisites are not named as missing.
+        assert!(!reason.contains("python3"), "{reason}");
+    }
+
+    /// A non-Linux host skips netns naming the platform.
+    #[test]
+    fn netns_gate_requires_linux() {
+        let mut probes = all_present();
+        probes.linux = false;
+        let TierGate::Skip(reason) = netns_gate(&probes) else {
+            panic!("netns must skip off linux");
+        };
+        assert!(reason.to_lowercase().contains("linux"), "{reason}");
+    }
+
+    /// The docker gate's reason matches the acceptance wording: a missing
+    /// docker binary reads `docker not found`.
+    #[test]
+    fn docker_gate_names_the_missing_prerequisite() {
+        let mut probes = all_present();
+        probes.docker = false;
+        let TierGate::Skip(reason) = docker_gate(&probes) else {
+            panic!("docker must skip without docker");
+        };
+        assert!(reason.contains("docker not found"), "{reason}");
+
+        let mut probes = all_present();
+        probes.docker_compose = false;
+        let TierGate::Skip(reason) = docker_gate(&probes) else {
+            panic!("docker must skip without compose");
+        };
+        assert!(reason.contains("docker compose"), "{reason}");
+    }
+
+    /// The PATH probe requires the candidate to be executable, not merely a
+    /// regular file: a non-executable `valkey-server` shadowing the name on
+    /// an earlier PATH entry is passed over in favour of a later executable
+    /// one, and a PATH holding only the non-executable file finds nothing.
+    /// Otherwise the netns gate runs against a binary that cannot start —
+    /// and for valkey even exports the unusable path (Codex review, PR #10).
+    #[test]
+    fn path_probe_skips_non_executable_candidates() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let decoy_dir = tmp.path().join("decoy");
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir_all(&decoy_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        // A regular but non-executable file with the program's name.
+        let decoy = decoy_dir.join("valkey-server");
+        std::fs::write(&decoy, "not a binary").unwrap();
+        std::fs::set_permissions(&decoy, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // The real, executable program on a later PATH entry.
+        let real = real_dir.join("valkey-server");
+        std::fs::write(&real, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Only the decoy on PATH: the probe finds nothing.
+        let decoy_only = std::env::join_paths([&decoy_dir]).unwrap();
+        assert_eq!(find_in_path_value(&decoy_only, "valkey-server"), None);
+
+        // Decoy first, real second: the search continues past the decoy.
+        let both = std::env::join_paths([&decoy_dir, &real_dir]).unwrap();
+        assert_eq!(
+            find_in_path_value(&both, "valkey-server"),
+            Some(real.clone())
+        );
+
+        // A directory of the program's name is not a hit either.
+        std::fs::remove_file(&decoy).unwrap();
+        std::fs::create_dir(&decoy).unwrap();
+        assert_eq!(find_in_path_value(&both, "valkey-server"), Some(real));
+    }
+
+    /// A failed probe on a default-selected (non-explicit) tier is a skip
+    /// carrying the reason; the same failure on an explicitly requested tier
+    /// is an error with the same text (approved Q1 on zipline#62).
+    #[test]
+    fn gate_check_skips_by_default_and_errors_when_explicit() {
+        let gate = TierGate::Skip("docker not found".to_string());
+        // Non-explicit: skip with the reason.
+        let skipped = check_gate("docker", gate, false).unwrap();
+        assert_eq!(skipped, Some("docker not found".to_string()));
+        // Explicit: the same text as an error (exit 1 through run()).
+        let gate = TierGate::Skip("docker not found".to_string());
+        let error = check_gate("docker", gate, true).unwrap_err().to_string();
+        assert!(error.contains("docker not found"), "{error}");
+        assert!(error.contains("docker"), "{error}");
+        // A passing gate runs either way.
+        assert_eq!(check_gate("docker", TierGate::Run, true).unwrap(), None);
+        assert_eq!(check_gate("docker", TierGate::Run, false).unwrap(), None);
+    }
+
+    // -- the netns tier's plan (issue62 step 3) ---------------------------------
+
+    /// One env lookup in a planned script.
+    fn env_of<'a>(script: &'a NetnsScript, key: &str) -> Option<&'a str> {
+        script
+            .env
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// The plan runs exactly the seven blessed scripts, in order — an
+    /// explicit list, not a glob: `unused_or_outdated/` and any new script
+    /// stay out until reviewed in (master plan B5).
+    #[test]
+    fn netns_plan_lists_the_seven_scripts_in_order() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+        );
+        let names: Vec<&str> = plan.scripts.iter().map(|script| script.script).collect();
+        assert_eq!(
+            names,
+            [
+                "one-node-test.sh",
+                "one-node-v6-test.sh",
+                "one-node-oidc-test.sh",
+                "capture-test.sh",
+                "oidc-file-interplay-test.sh",
+                "fake-idp-smoke-test.sh",
+                "a2a-pubkey-test.sh",
+            ]
+        );
+        assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));
+    }
+
+    /// Every script gets the five `*_BIN` overrides pointing at `dist/` and
+    /// the system valkey — nothing is ever copied into `integration-test/`
+    /// (master plan B5 constraint).
+    #[test]
+    fn netns_plan_points_the_bin_overrides_at_dist() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+        );
+        // Every script except a2a runs the dist/ ph.
+        let one_node = &plan.scripts[0];
+        assert_eq!(env_of(one_node, "PH_BIN"), Some("/b/dist/ph"));
+        assert_eq!(env_of(one_node, "PH_DEBUG_BIN"), Some("/b/dist/ph-cli"));
+        assert_eq!(env_of(one_node, "VS_BIN"), Some("/b/dist/vs"));
+        assert_eq!(env_of(one_node, "VS_ADMIN_BIN"), Some("/b/dist/vs-admin"));
+        assert_eq!(
+            env_of(one_node, "VALKEY_SERVER_BIN"),
+            Some("/usr/bin/valkey-server")
+        );
+        // Not verbose: ZPR_TEST_VERBOSE is not set at all.
+        assert_eq!(env_of(one_node, "ZPR_TEST_VERBOSE"), None);
+    }
+
+    /// `--verbose` exports `ZPR_TEST_VERBOSE=1` to every script; the default
+    /// leaves it unset (the scripts' own default is quiet).
+    #[test]
+    fn netns_plan_sets_test_verbose_only_under_verbose() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            true,
+        );
+        for script in &plan.scripts {
+            assert_eq!(
+                env_of(script, "ZPR_TEST_VERBOSE"),
+                Some("1"),
+                "{} missing ZPR_TEST_VERBOSE under --verbose",
+                script.script
+            );
+        }
+    }
+
+    /// `a2a-pubkey-test.sh` alone gets a prep step — the worktree-local
+    /// `enable-security-testing` build of `ph` — and its `PH_BIN` points at
+    /// that build's debug binary, not at `dist/` (master plan B5: that
+    /// binary must never reach `dist/`).
+    #[test]
+    fn netns_plan_gives_a2a_its_own_security_testing_ph() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+        );
+        for script in &plan.scripts {
+            if script.script == "a2a-pubkey-test.sh" {
+                let prep = script.prep.as_ref().expect("a2a needs a prep build");
+                assert_eq!(prep.program, "cargo");
+                assert_eq!(
+                    prep.args,
+                    ["build", "-p", "ph", "--features", "enable-security-testing"]
+                );
+                assert_eq!(prep.dir, Path::new("/wt/zl-zpr-core"));
+                assert_eq!(
+                    env_of(script, "PH_BIN"),
+                    Some("/wt/zl-zpr-core/target/debug/ph")
+                );
+            } else {
+                assert!(script.prep.is_none(), "{} must not prep", script.script);
+                assert_eq!(env_of(script, "PH_BIN"), Some("/b/dist/ph"));
+            }
+        }
+    }
+
+    /// The staging table can never source the security-testing `ph`: it is
+    /// a debug-profile build, and every staged source is a release path.
+    /// This is the static half of the dist/ guard; the runtime half is
+    /// `dist_ph_is_clean` below.
+    #[test]
+    fn no_staged_source_is_a_debug_build() {
+        for recipe in recipes::RECIPES {
+            for staged in recipe.staged {
+                assert!(
+                    !staged.source.contains("debug"),
+                    "{}: staged source {} is a debug path — the security-testing \
+                     ph build must never be stageable",
+                    recipe.repo,
+                    staged.source
+                );
+            }
+        }
+    }
+
+    /// The runtime guard: a `dist/ph` that advertises the security-testing
+    /// flag fails the check; one that does not passes; a missing `ph` passes
+    /// (nothing to guard).
+    #[test]
+    fn dist_ph_clean_check_rejects_a_security_testing_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path();
+
+        // No ph staged: nothing to guard.
+        assert!(dist_ph_is_clean(dist).is_ok());
+
+        // A clean ph: `node --help` does not mention the mangle flag.
+        write_fake_ph(dist, "usage: ph node [--config PATH]\n");
+        assert!(dist_ph_is_clean(dist).is_ok());
+
+        // A security-testing ph: the check names the problem.
+        write_fake_ph(
+            dist,
+            "usage: ph node [--security-testing-mangle-forwarded-pings]\n",
+        );
+        let error = dist_ph_is_clean(dist).unwrap_err().to_string();
+        assert!(error.contains("enable-security-testing"), "{error}");
+    }
+
+    /// A fake `dist/ph` that prints `help_text` for any invocation.
+    fn write_fake_ph(dist: &Path, help_text: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dist.join("ph");
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s' '{help_text}'\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The netns runner: continues after a failing script, records each
+    /// script by name, and a prep-build failure fails that one script while
+    /// the rest of the tier still runs.
+    #[test]
+    fn run_netns_continues_after_failure_and_prep_failure_hits_one_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+
+        // Three fixture scripts: pass, fail, pass-with-failing-prep.
+        for (name, body) in [
+            ("ok.sh", "#!/bin/sh\necho fine\n"),
+            ("bad.sh", "#!/bin/sh\necho broken; exit 3\n"),
+            ("prepped.sh", "#!/bin/sh\necho never runs\n"),
+        ] {
+            use std::os::unix::fs::PermissionsExt as _;
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let plan = NetnsPlan {
+            dir: dir.clone(),
+            scripts: vec![
+                NetnsScript {
+                    script: "ok.sh",
+                    env: vec![],
+                    prep: None,
+                },
+                NetnsScript {
+                    script: "bad.sh",
+                    env: vec![],
+                    prep: None,
+                },
+                NetnsScript {
+                    script: "prepped.sh",
+                    env: vec![],
+                    prep: Some(PrepStep {
+                        name: "security-ph",
+                        program: "sh",
+                        args: vec!["-c".to_string(), "exit 1".to_string()],
+                        dir: tmp.path().to_path_buf(),
+                    }),
+                },
+            ],
+        };
+        let outcome = run_netns(&plan, &logs, true);
+        assert!(!outcome.passed);
+        assert_eq!(outcome.repos["ok.sh"], "passed");
+        let bad = &outcome.repos["bad.sh"];
+        assert!(bad.starts_with("failed"), "{bad}");
+        assert!(bad.contains("netns-bad.sh.log"), "log not named: {bad}");
+        // The prep failure fails prepped.sh without running it...
+        let prepped = &outcome.repos["prepped.sh"];
+        assert!(prepped.starts_with("failed"), "{prepped}");
+        assert!(prepped.contains("security-ph"), "{prepped}");
+        // ...and the earlier pass proves the sweep visited every script.
+        let ok_log = std::fs::read_to_string(logs.join("netns-ok.sh.log")).unwrap();
+        assert!(ok_log.contains("fine"), "{ok_log}");
+    }
+
+    // -- the docker tier's plan (issue62 step 4) --------------------------------
+
+    /// The plan stages `dist/` into the demo worktree's `dns-demo/bin/`,
+    /// then deploys, tests, and tears down with `docker compose down -v` —
+    /// never the demo's own `make`, so the DNS test exercises the set's
+    /// binaries rather than a fresh build (master plan B5).
+    #[test]
+    fn docker_plan_stages_deploys_tests_and_tears_down() {
+        let plan = docker_plan(Path::new("/wt/zl-zpr-demo"), Path::new("/b/dist"));
+        assert_eq!(plan.dist, Path::new("/b/dist"));
+        assert_eq!(plan.bin, Path::new("/wt/zl-zpr-demo/dns-demo/bin"));
+
+        assert_eq!(plan.deploy.name, "deploy");
+        assert!(
+            plan.deploy
+                .program
+                .ends_with("local-compute/deploy-docker.sh"),
+            "{}",
+            plan.deploy.program
+        );
+        assert_eq!(plan.test.name, "test");
+        assert!(
+            plan.test.program.ends_with("local-compute/test-dns.sh"),
+            "{}",
+            plan.test.program
+        );
+        // Teardown is compose down -v against the demo's compose file.
+        assert_eq!(plan.teardown.name, "teardown");
+        assert_eq!(plan.teardown.program, "docker");
+        assert_eq!(
+            plan.teardown.args,
+            [
+                "compose",
+                "-f",
+                "/wt/zl-zpr-demo/dns-demo/docker-compose.yml",
+                "down",
+                "-v"
+            ]
+        );
+    }
+
+    /// Staging copies exactly the recipe table's staged names — the ten
+    /// binaries of contract 4 — into `bin/`, executably, and a missing one
+    /// is an error naming it (the set must not half-stage).
+    #[test]
+    fn stage_dist_into_demo_copies_the_staged_names() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let names: Vec<&str> = recipes::RECIPES
+            .iter()
+            .flat_map(|recipe| recipe.staged.iter().map(|staged| staged.name))
+            .collect();
+        for name in &names {
+            let path = dist.join(name);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let bin = tmp.path().join("demo/dns-demo/bin");
+
+        stage_dist_into_demo(&dist, &bin).unwrap();
+        for name in &names {
+            let staged = bin.join(name);
+            assert!(staged.is_file(), "{name} not staged");
+            let mode = std::fs::metadata(&staged).unwrap().permissions().mode();
+            assert!(mode & 0o111 != 0, "{name} staged non-executable");
+        }
+
+        // A missing binary is an error naming it.
+        std::fs::remove_file(dist.join("coredns")).unwrap();
+        let error = stage_dist_into_demo(&dist, &bin).unwrap_err().to_string();
+        assert!(error.contains("coredns"), "{error}");
+    }
+
+    /// A fixture docker plan over shell scripts, with a marker file the
+    /// teardown step touches so its execution is observable.
+    fn fixture_docker_plan(tmp: &Path, test_body: &str, teardown_body: &str) -> DockerPlan {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dist = tmp.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        for recipe in recipes::RECIPES {
+            for staged in recipe.staged {
+                let path = dist.join(staged.name);
+                std::fs::write(&path, "#!/bin/sh\n").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let write_script = |name: &str, body: &str| -> String {
+            let path = tmp.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path.display().to_string()
+        };
+        DockerPlan {
+            dist,
+            bin: tmp.join("demo/dns-demo/bin"),
+            deploy: DockerStep {
+                name: "deploy",
+                program: write_script("deploy.sh", "#!/bin/sh\necho deployed\n"),
+                args: vec![],
+                dir: tmp.to_path_buf(),
+            },
+            test: DockerStep {
+                name: "test",
+                program: write_script("test.sh", test_body),
+                args: vec![],
+                dir: tmp.to_path_buf(),
+            },
+            teardown: DockerStep {
+                name: "teardown",
+                program: write_script("teardown.sh", teardown_body),
+                args: vec![],
+                dir: tmp.to_path_buf(),
+            },
+        }
+    }
+
+    /// Teardown runs even when the test step fails, and the two are recorded
+    /// separately: the tier fails on the test, the teardown entry still says
+    /// `passed` (master plan B5: report a teardown failure separately).
+    #[test]
+    fn run_docker_tears_down_unconditionally_after_a_test_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let marker = tmp.path().join("torn-down");
+        let plan = fixture_docker_plan(
+            tmp.path(),
+            "#!/bin/sh\necho SECTION 3 broke; exit 1\n",
+            &format!("#!/bin/sh\ntouch {}\n", marker.display()),
+        );
+
+        let outcome = run_docker(&plan, &logs, true);
+        assert!(!outcome.passed);
+        assert_eq!(outcome.repos["stage"], "passed");
+        assert_eq!(outcome.repos["deploy"], "passed");
+        assert!(
+            outcome.repos["test"].starts_with("failed"),
+            "{:?}",
+            outcome.repos
+        );
+        assert_eq!(outcome.repos["teardown"], "passed");
+        assert!(
+            marker.exists(),
+            "teardown did not run after the test failed"
+        );
+    }
+
+    /// A teardown failure is its own recorded failure — a passing test with
+    /// a failing teardown still fails the tier, attributed to teardown.
+    #[test]
+    fn run_docker_records_a_teardown_failure_separately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let plan = fixture_docker_plan(
+            tmp.path(),
+            "#!/bin/sh\necho all good\n",
+            "#!/bin/sh\necho stuck volume; exit 1\n",
+        );
+
+        let outcome = run_docker(&plan, &logs, true);
+        assert!(!outcome.passed, "a teardown failure must fail the tier");
+        assert_eq!(outcome.repos["test"], "passed");
+        assert!(
+            outcome.repos["teardown"].starts_with("failed"),
+            "{:?}",
+            outcome.repos
+        );
+    }
+
+    /// A staging failure skips deploy and test — nothing to run against —
+    /// but the teardown still runs (compose down is safe when nothing is
+    /// up, and a previous run's leftovers must not survive).
+    #[test]
+    fn run_docker_skips_deploy_and_test_after_a_stage_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let marker = tmp.path().join("torn-down");
+        let mut plan = fixture_docker_plan(
+            tmp.path(),
+            "#!/bin/sh\necho unreachable\n",
+            &format!("#!/bin/sh\ntouch {}\n", marker.display()),
+        );
+        // Break staging: remove one staged binary from dist/.
+        std::fs::remove_file(plan.dist.join("ph")).unwrap();
+        plan.bin = tmp.path().join("demo2/dns-demo/bin");
+
+        let outcome = run_docker(&plan, &logs, true);
+        assert!(!outcome.passed);
+        assert!(
+            outcome.repos["stage"].starts_with("failed"),
+            "{:?}",
+            outcome.repos
+        );
+        assert!(
+            outcome.repos["deploy"].starts_with("skipped"),
+            "{:?}",
+            outcome.repos
+        );
+        assert!(
+            outcome.repos["test"].starts_with("skipped"),
+            "{:?}",
+            outcome.repos
+        );
+        assert!(
+            marker.exists(),
+            "teardown must run even after a stage failure"
+        );
     }
 
     // -- the unit tier's plan (issue steps 1-2) --------------------------------
