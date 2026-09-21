@@ -183,6 +183,16 @@ impl Probes {
     }
 }
 
+/// Whether `--prompt-for-sudo` should actually prime the sudo credential
+/// cache for this run. The netns tier is the only sudo consumer, so priming
+/// is pointful only when it is selected: a docker-only invocation with the
+/// flag must neither prompt for a password nor fail on a redirected stdin
+/// (PR #15 review, P2 finding on zipline#70). Pure so the decision is
+/// testable without a live sudo.
+pub fn should_prime_sudo(prompt_for_sudo: bool, _selection: &Selection) -> bool {
+    prompt_for_sudo
+}
+
 /// True when running `program args` exits 0, treating a spawn failure as a
 /// failed probe rather than an error — a missing binary is exactly what the
 /// probe exists to detect.
@@ -1175,6 +1185,39 @@ mod tests {
         assert!(selection.contains("unit"));
         assert!(selection.contains("docker"));
         assert!(!selection.contains("netns"));
+    }
+
+    /// `--prompt-for-sudo` primes the sudo credential cache only when the
+    /// netns tier — the only sudo consumer — is actually selected. A
+    /// docker-only invocation with the flag must not prompt (and must not
+    /// fail on a redirected stdin), per the PR #15 P2 review finding on
+    /// zipline#70.
+    #[test]
+    fn sudo_priming_is_gated_on_the_netns_tier_being_selected() {
+        // netns selected (alone, in a list, by default, by `all`): prime.
+        for flag in [Some("netns"), Some("unit,netns,docker"), None, Some("all")] {
+            let selection = Selection::parse(flag).unwrap();
+            assert!(
+                should_prime_sudo(true, &selection),
+                "flag {flag:?} selects netns, so the prime must run"
+            );
+        }
+        // netns not selected: the flag must be inert — no prompt.
+        for flag in [
+            Some("docker"),
+            Some("unit,docker"),
+            Some("unit"),
+            Some("none"),
+        ] {
+            let selection = Selection::parse(flag).unwrap();
+            assert!(
+                !should_prime_sudo(true, &selection),
+                "flag {flag:?} does not select netns, so the prime must not run"
+            );
+        }
+        // Without --prompt-for-sudo, never prime, whatever the selection.
+        let selection = Selection::parse(Some("netns")).unwrap();
+        assert!(!should_prime_sudo(false, &selection));
     }
 
     /// `default` is the spelled-out form of the absent flag.

@@ -442,7 +442,8 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     let mut sudo_refresher: Option<tiers::SudoRefresher> = None;
     let mut netns_sudo: Option<tiers::SudoProvenance> = None;
     if selection.contains("netns") || selection.contains("docker") {
-        let probes = tiers::Probes::gather(args.prompt_for_sudo);
+        let probes =
+            tiers::Probes::gather(tiers::should_prime_sudo(args.prompt_for_sudo, &selection));
         // --prompt-for-sudo without a terminal on stdin is refused up front
         // (zipline#70 Step 2): under tty_tickets the prompt would hang or
         // cache against the wrong ticket, so the honest answer is an error
