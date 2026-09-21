@@ -286,7 +286,7 @@ step's output is available to the next:
 | Tier | What runs | Prerequisites | Default |
 |---|---|---|---|
 | `unit` | `make test` in each built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | run |
-| `netns` | the seven `zl-zpr-core/integration-test/` scripts | Linux, passwordless `sudo`, `valkey-server`, `python3` | `--test netns` |
+| `netns` | the seven `zl-zpr-core/integration-test/` scripts | Linux, passwordless `sudo` **or** `--prompt-for-sudo`, `valkey-server`, `python3` | `--test netns` |
 | `docker` | `dns-demo` deploy, `test-dns.sh`, `docker compose down -v` | `docker`, `docker compose` | `--test docker` |
 
 - A tier that was asked for and cannot run is an error under `--test all`; a
@@ -299,12 +299,31 @@ step's output is available to the next:
 - `a2a-pubkey-test.sh` needs a `ph` built with `enable-security-testing`;
   that binary must never be staged into `dist/`.
 - The `docker` tier always runs `docker compose down -v`, pass or fail.
+- `--prompt-for-sudo` (zipline#70): opt-in. When the netns tier is selected
+  and `sudo -n true` fails, prompt once, up front — `sudo -v` with inherited
+  stdio, immediately after ref resolution and before any compilation — then
+  re-probe `sudo -n true`, so a sudoers with `timestamp_timeout=0` degrades
+  to the ordinary skip/error path with a note instead of dying mid-tier. A
+  background thread runs `sudo -n -v` every 60s from the prime until the
+  netns tier returns, so a run longer than sudo's timestamp timeout does not
+  lose the credential mid-tier. The flag requires a terminal on stdin (exit 1
+  otherwise, never a hang), never prompts under `--dry-run` or `--gates-only`,
+  and never weakens the probe: without it, behaviour is exactly as before.
+  The emitted manifest records the netns tier's sudo provenance as
+  `sudo: nopasswd` or `sudo: primed` — the two are never conflated.
+
+  Known ceiling: `tty_tickets` makes this a workstation-only convenience —
+  it works because the netns children inherit our controlling terminal. It
+  is not a path to running the netns tier in CI, and should not be
+  documented as one. CI still needs a host with passwordless sudo, or a
+  container.
 
 ## 7. CLI surface
 
 ```text
 zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
               [--build-dir <path>] [--keep] [--allow-pin-drift] [--no-tarball]
+              [--prompt-for-sudo]
 
 --manifest <path>   build set to build; default: newest file in build-sets/ (§2.2)
 --tip               ignore every ref; use origin/<default_branch> everywhere
@@ -314,6 +333,7 @@ zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
 --keep              keep worktrees after a successful run
 --allow-pin-drift   gate 1 disagreements warn instead of failing
 --no-tarball        skip the dist tarball
+--prompt-for-sudo   prompt once for the sudo password before the run (§6)
 ```
 
 ### 7.1 Global options and exit codes

@@ -261,6 +261,10 @@ zpr-dev build --tip --gates-only             # just the gates, read-only, second
 --gates-only        run only the compatibility gates against the live checkouts
 --allow-pin-drift   gate 1 disagreements warn instead of failing
 --no-tarball        skip the dist tarball
+--prompt-for-sudo   prompt once for the sudo password before the run, so the
+                    netns tier can run without a NOPASSWD sudoers entry
+                    (needs a terminal; a background sudo -n -v keeps the
+                    credential alive until the tier finishes)
 ```
 
 Input manifests live in `<context>/build-sets/`, one YAML file per set;
@@ -281,6 +285,13 @@ The live checkouts are never modified: sources come from `git worktree add
 repository. A build directory left by a previous run is refused; `--force`
 removes and recreates it. Exit codes follow the usual contract, with `1`
 covering gate, build, and test failures.
+
+The `netns` tier needs passwordless `sudo` **or** `--prompt-for-sudo`, which
+prompts once at the start of the run and keeps the credential alive for its
+duration. `tty_tickets` makes this a workstation-only convenience: it works
+because the netns children inherit our controlling terminal. It is not a path
+to running the netns tier in CI — CI still needs a host with passwordless
+sudo, or a container.
 
 ---
 
