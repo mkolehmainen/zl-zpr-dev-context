@@ -441,6 +441,18 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     let mut valkey: Option<PathBuf> = None;
     if selection.contains("netns") || selection.contains("docker") {
         let probes = tiers::Probes::gather(args.prompt_for_sudo);
+        // --prompt-for-sudo without a terminal on stdin is refused up front
+        // (zipline#70 Step 2): under tty_tickets the prompt would hang or
+        // cache against the wrong ticket, so the honest answer is an error
+        // naming the requirement — never a hang, never a silent skip.
+        if probes.sudo_prime == Some(tiers::PrimeOutcome::NoTty) {
+            eprintln!(
+                "error: --prompt-for-sudo needs a terminal on stdin \
+                 (sudo's credential cache is keyed to the controlling tty); \
+                 run interactively, or drop the flag"
+            );
+            return Ok(std::process::ExitCode::from(1));
+        }
         valkey = probes.valkey_server.clone();
         for (tier, gate, skip) in [
             ("netns", tiers::netns_gate(&probes), &mut netns_skip),

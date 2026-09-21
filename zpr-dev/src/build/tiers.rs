@@ -137,27 +137,48 @@ pub struct Probes {
     pub docker: bool,
     /// `docker compose version` succeeded (the compose v2 plugin exists).
     pub docker_compose: bool,
+    /// What `--prompt-for-sudo` achieved, when it was given: `None` when
+    /// the flag was off (zipline#70). `NoTty` is handled by the caller as
+    /// a hard error before any gate is read.
+    pub sudo_prime: Option<PrimeOutcome>,
 }
 
 impl Probes {
-    /// Probes the live host. Every check is read-only. `_prompt_for_sudo`
-    /// is plumbed from `--prompt-for-sudo` (zipline#70); the prime it
-    /// authorizes lands with the next step — until then the flag changes
-    /// nothing here.
-    pub fn gather(_prompt_for_sudo: bool) -> Probes {
+    /// Probes the live host. Every check is read-only, with one deliberate
+    /// exception: `prompt_for_sudo` (the `--prompt-for-sudo` flag,
+    /// zipline#70) runs the [`prime_sudo`] sequence, which may prompt once
+    /// on the operator's terminal and cache the sudo credential. The
+    /// outcome lands in `sudo_prime`; a `NoTty` there is the caller's cue
+    /// to refuse the run before any gate is read.
+    pub fn gather(prompt_for_sudo: bool) -> Probes {
         let valkey_server = std::env::var_os("VALKEY_SERVER_BIN")
             .map(PathBuf::from)
             .filter(|path| path.is_file())
             .or_else(|| find_on_path("valkey-server"));
         let docker = find_on_path("docker").is_some();
+        // The prime replaces the plain probe when the flag is set —
+        // prime_sudo itself starts with `sudo -n true`, so sudo is probed
+        // exactly once either way.
+        let sudo_prime = prompt_for_sudo.then(|| {
+            use std::io::IsTerminal as _;
+            prime_sudo(&LiveSudo, std::io::stdin().is_terminal())
+        });
+        let passwordless_sudo = match sudo_prime {
+            // Both mean the netns scripts' sudo calls will now succeed
+            // non-interactively; the manifest keeps the two distinct.
+            Some(PrimeOutcome::AlreadyPasswordless) | Some(PrimeOutcome::Primed) => true,
+            Some(_) => false,
+            None => command_succeeds("sudo", &["-n", "true"]),
+        };
         Probes {
             linux: cfg!(target_os = "linux"),
-            passwordless_sudo: command_succeeds("sudo", &["-n", "true"]),
+            passwordless_sudo,
             valkey_server,
             python3: find_on_path("python3").is_some(),
             docker,
             // Only worth asking when docker itself exists.
             docker_compose: docker && command_succeeds("docker", &["compose", "version"]),
+            sudo_prime,
         }
     }
 }
@@ -234,7 +255,98 @@ pub fn netns_gate(probes: &Probes) -> TierGate {
     if missing.is_empty() {
         TierGate::Run
     } else {
-        TierGate::Skip(format!("missing: {}", missing.join(", ")))
+        let mut reason = format!("missing: {}", missing.join(", "));
+        // A prime that ran but bought nothing is diagnosed, not silent:
+        // without this note the operator typed their password and still
+        // got the generic skip (issue Step 3).
+        if probes.sudo_prime == Some(PrimeOutcome::CacheDisabled) {
+            reason.push_str(
+                "; sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)",
+            );
+        }
+        TierGate::Skip(reason)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The --prompt-for-sudo prime (zipline#70 steps 2-3)
+// ---------------------------------------------------------------------------
+
+/// The three sudo invocations `--prompt-for-sudo` is allowed to make
+/// (zipline#70 constraint: `sudo -v` / `sudo -n -v` / `sudo -n true` and
+/// nothing else). A trait so [`prime_sudo`] and the refresher are testable
+/// with a scripted fake — real sudo prompts, and a test must never.
+pub trait SudoRunner {
+    /// `sudo -n true`: does sudo work right now without prompting?
+    fn probe(&self) -> bool;
+    /// `sudo -v` with inherited stdio: prompt once on the operator's own
+    /// terminal and cache the credential.
+    fn prime(&self) -> bool;
+}
+
+/// The live [`SudoRunner`]: real sudo on the real host.
+pub struct LiveSudo;
+
+impl SudoRunner for LiveSudo {
+    fn probe(&self) -> bool {
+        command_succeeds("sudo", &["-n", "true"])
+    }
+    fn prime(&self) -> bool {
+        // Inherited stdio, deliberately: the prompt must reach the
+        // operator's terminal and read their answer. This is the one place
+        // in the build that is allowed to talk to the tty.
+        std::process::Command::new("sudo")
+            .arg("-v")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// What priming achieved, decided by [`prime_sudo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimeOutcome {
+    /// `sudo -n true` already succeeded: nothing to prompt for (approved
+    /// Q2 on zipline#70). The manifest records this run as `nopasswd`.
+    AlreadyPasswordless,
+    /// The prompt ran, and the re-probe confirmed the credential cached.
+    /// The manifest records this run as `primed`.
+    Primed,
+    /// Stdin is not a terminal, so the prompt was refused before it could
+    /// hang or cache against the wrong tty ticket (issue Step 2).
+    NoTty,
+    /// `sudo -v` itself failed — wrong password, or the prompt was aborted.
+    PrimeFailed,
+    /// `sudo -v` succeeded but the re-probe still failed: a sudoers with
+    /// `timestamp_timeout=0` caches nothing, so the prime bought nothing
+    /// (issue Step 3). Degrades to the ordinary skip/error path with a
+    /// note, instead of dying mid-tier.
+    CacheDisabled,
+}
+
+/// Primes sudo's credential cache for the netns tier (zipline#70): probe,
+/// refuse without a tty, prompt once, re-probe. Pure over its inputs —
+/// `stdin_is_tty` is passed in and every sudo call goes through `runner` —
+/// so each outcome is unit-testable without a real prompt.
+pub fn prime_sudo(runner: &dyn SudoRunner, stdin_is_tty: bool) -> PrimeOutcome {
+    if runner.probe() {
+        return PrimeOutcome::AlreadyPasswordless;
+    }
+    if !stdin_is_tty {
+        // tty_tickets keys the credential cache to the controlling tty on
+        // most distros: without one the prompt would hang or cache against
+        // the wrong ticket. Fail fast instead (issue Step 2).
+        return PrimeOutcome::NoTty;
+    }
+    if !runner.prime() {
+        return PrimeOutcome::PrimeFailed;
+    }
+    // The re-probe is what turns timestamp_timeout=0 into a diagnosis
+    // rather than a mid-tier failure four scripts in (issue Step 3).
+    if runner.probe() {
+        PrimeOutcome::Primed
+    } else {
+        PrimeOutcome::CacheDisabled
     }
 }
 
@@ -260,6 +372,7 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
         python3: probes.python3,
         docker: probes.docker,
         docker_compose: probes.docker_compose,
+        sudo_prime: None,
     };
     match netns_gate(&primed) {
         TierGate::Run => "would prompt for sudo (--prompt-for-sudo)".to_string(),
@@ -1034,6 +1147,7 @@ mod tests {
             python3: true,
             docker: true,
             docker_compose: true,
+            sudo_prime: None,
         }
     }
 
@@ -1110,6 +1224,112 @@ mod tests {
         // Flag given but sudo already passwordless: nothing to prompt for.
         let text = netns_dry_run_text(&all_present(), true);
         assert_eq!(text, "prerequisites present");
+    }
+
+    // -- the --prompt-for-sudo prime (zipline#70 steps 2-3) ----------------------
+
+    /// A scripted [`SudoRunner`]: probe answers are consumed in order, the
+    /// prime's answer is fixed, and every call is counted so a test can
+    /// assert what was and was not run.
+    struct FakeSudo {
+        probe_answers: std::cell::RefCell<Vec<bool>>,
+        prime_answer: bool,
+        prime_calls: std::cell::Cell<usize>,
+    }
+
+    impl FakeSudo {
+        fn new(probe_answers: &[bool], prime_answer: bool) -> FakeSudo {
+            FakeSudo {
+                probe_answers: std::cell::RefCell::new(probe_answers.to_vec()),
+                prime_answer,
+                prime_calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl SudoRunner for FakeSudo {
+        fn probe(&self) -> bool {
+            let mut answers = self.probe_answers.borrow_mut();
+            assert!(!answers.is_empty(), "unexpected extra sudo -n true probe");
+            answers.remove(0)
+        }
+        fn prime(&self) -> bool {
+            self.prime_calls.set(self.prime_calls.get() + 1);
+            self.prime_answer
+        }
+    }
+
+    /// A host where `sudo -n true` already succeeds skips the prompt
+    /// entirely (approved Q2 on zipline#70): no `sudo -v` is ever run.
+    #[test]
+    fn prime_sudo_skips_the_prompt_when_already_passwordless() {
+        let sudo = FakeSudo::new(&[true], true);
+        let outcome = prime_sudo(&sudo, true);
+        assert!(matches!(outcome, PrimeOutcome::AlreadyPasswordless));
+        assert_eq!(sudo.prime_calls.get(), 0, "no prompt when none is needed");
+    }
+
+    /// Without a terminal on stdin the prime is refused before any prompt:
+    /// `tty_tickets` would key the cache to the wrong (or no) tty, so the
+    /// only honest behaviour is to fail fast, never to hang (issue Step 2).
+    #[test]
+    fn prime_sudo_refuses_without_a_tty_and_never_prompts() {
+        let sudo = FakeSudo::new(&[false], true);
+        let outcome = prime_sudo(&sudo, false);
+        assert!(matches!(outcome, PrimeOutcome::NoTty));
+        assert_eq!(sudo.prime_calls.get(), 0, "a prompt without a tty hangs");
+    }
+
+    /// The happy path: sudo prompts once via `sudo -v`, the re-probe
+    /// confirms the credential cached, and the outcome says so.
+    #[test]
+    fn prime_sudo_primes_and_reprobes() {
+        let sudo = FakeSudo::new(&[false, true], true);
+        let outcome = prime_sudo(&sudo, true);
+        assert!(matches!(outcome, PrimeOutcome::Primed));
+        assert_eq!(sudo.prime_calls.get(), 1);
+    }
+
+    /// A sudoers with `timestamp_timeout=0` caches nothing: `sudo -v`
+    /// succeeds but the re-probe still fails. The outcome names that, so
+    /// the caller can degrade to the existing skip/error path with a note
+    /// instead of dying mid-tier (issue Step 3).
+    #[test]
+    fn prime_sudo_detects_a_disabled_credential_cache() {
+        let sudo = FakeSudo::new(&[false, false], true);
+        let outcome = prime_sudo(&sudo, true);
+        assert!(matches!(outcome, PrimeOutcome::CacheDisabled));
+        assert_eq!(sudo.prime_calls.get(), 1);
+    }
+
+    /// `sudo -v` itself failing (wrong password three times, Ctrl-C) is its
+    /// own outcome — reported as a failed prime, not misdiagnosed as a
+    /// disabled credential cache.
+    #[test]
+    fn prime_sudo_reports_a_failed_prime() {
+        let sudo = FakeSudo::new(&[false], false);
+        let outcome = prime_sudo(&sudo, true);
+        assert!(matches!(outcome, PrimeOutcome::PrimeFailed));
+        assert_eq!(sudo.prime_calls.get(), 1);
+    }
+
+    /// `sudo -v` succeeded but nothing cached (`timestamp_timeout=0`): the
+    /// netns skip reason carries a note diagnosing it, instead of letting
+    /// the prime silently buy nothing (issue Step 3).
+    #[test]
+    fn netns_gate_notes_a_disabled_credential_cache() {
+        let mut probes = all_present();
+        probes.passwordless_sudo = false;
+        probes.sudo_prime = Some(PrimeOutcome::CacheDisabled);
+        let TierGate::Skip(reason) = netns_gate(&probes) else {
+            panic!("netns must still skip when the prime bought nothing");
+        };
+        assert!(
+            reason
+                .contains("sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)"),
+            "{reason}"
+        );
+        assert!(reason.contains("passwordless sudo"), "{reason}");
     }
 
     /// The docker gate's reason matches the acceptance wording: a missing
