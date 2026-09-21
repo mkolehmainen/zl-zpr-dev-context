@@ -231,6 +231,10 @@ pub struct BuildArgs {
     pub gates_only: bool,
     pub allow_pin_drift: bool,
     pub no_tarball: bool,
+    /// `--prompt-for-sudo`: authorize one sudo password prompt before the
+    /// run, so the netns tier can run without a NOPASSWD sudoers entry
+    /// (zipline#70). Opt-in, and refused when stdin is not a terminal.
+    pub prompt_for_sudo: bool,
 }
 
 /// Creates the build directory `<build_dir>` with `logs/` and `dist/` inside.
@@ -393,6 +397,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
             &skipped,
             args.build_dir.as_deref(),
             &selection,
+            args.prompt_for_sudo,
         );
         if ctx.verbose && !ctx.quiet {
             println!();
@@ -435,7 +440,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     let mut docker_skip: Option<String> = None;
     let mut valkey: Option<PathBuf> = None;
     if selection.contains("netns") || selection.contains("docker") {
-        let probes = tiers::Probes::gather();
+        let probes = tiers::Probes::gather(args.prompt_for_sudo);
         valkey = probes.valkey_server.clone();
         for (tier, gate, skip) in [
             ("netns", tiers::netns_gate(&probes), &mut netns_skip),
@@ -881,7 +886,9 @@ fn print_findings(quiet: bool, set_name: &str, findings: &[gates::Finding]) -> u
 
 /// Prints the §7.2 dry-run report: resolved shas, planned build order, planned
 /// tiers with probe results, and the dist/ target. Read-only by construction —
-/// the only processes it may spawn are the read-only tier probes.
+/// the only processes it may spawn are the read-only tier probes. In
+/// particular it never prompts: `prompt_for_sudo` only changes what the netns
+/// line *says* the real run would do (zipline#70 Step 5).
 fn report_dry_run(
     ctx: &crate::Ctx,
     name: &str,
@@ -889,6 +896,7 @@ fn report_dry_run(
     skipped: &[&str],
     build_dir: Option<&Path>,
     selection: &tiers::Selection,
+    prompt_for_sudo: bool,
 ) {
     if ctx.quiet {
         return;
@@ -930,7 +938,10 @@ fn report_dry_run(
     println!();
 
     println!("tiers (planned):");
-    let probes = tiers::Probes::gather();
+    // gather(false): the dry-run report never prompts (zipline#70 Step 5) —
+    // it probes read-only and *describes* what a real run with the flag
+    // would do, via `netns_dry_run_text` below.
+    let probes = tiers::Probes::gather(false);
     for (tier, gate) in [
         ("unit", tiers::TierGate::Run),
         ("netns", tiers::netns_gate(&probes)),
@@ -941,6 +952,13 @@ fn report_dry_run(
         } else {
             format!("not requested (--test {tier})")
         };
+        // The netns line accounts for --prompt-for-sudo; the gate result is
+        // still computed above so the two never disagree on the probes.
+        if tier == "netns" {
+            let text = tiers::netns_dry_run_text(&probes, prompt_for_sudo);
+            println!("  {tier:7} {request}; {text}");
+            continue;
+        }
         match gate {
             tiers::TierGate::Run => println!("  {tier:7} {request}; prerequisites present"),
             tiers::TierGate::Skip(reason) => println!("  {tier:7} {request}; {reason}"),

@@ -140,8 +140,11 @@ pub struct Probes {
 }
 
 impl Probes {
-    /// Probes the live host. Every check is read-only.
-    pub fn gather() -> Probes {
+    /// Probes the live host. Every check is read-only. `_prompt_for_sudo`
+    /// is plumbed from `--prompt-for-sudo` (zipline#70); the prime it
+    /// authorizes lands with the next step — until then the flag changes
+    /// nothing here.
+    pub fn gather(_prompt_for_sudo: bool) -> Probes {
         let valkey_server = std::env::var_os("VALKEY_SERVER_BIN")
             .map(PathBuf::from)
             .filter(|path| path.is_file())
@@ -217,7 +220,10 @@ pub fn netns_gate(probes: &Probes) -> TierGate {
         missing.push("linux");
     }
     if !probes.passwordless_sudo {
-        missing.push("passwordless sudo");
+        // The parenthetical makes the remedy discoverable from the failure
+        // (zipline#70 acceptance): the flag is what you grep for when the
+        // netns tier skipped on a host where sudo prompts.
+        missing.push("passwordless sudo (or pass --prompt-for-sudo)");
     }
     if probes.valkey_server.is_none() {
         missing.push("valkey-server");
@@ -229,6 +235,37 @@ pub fn netns_gate(probes: &Probes) -> TierGate {
         TierGate::Run
     } else {
         TierGate::Skip(format!("missing: {}", missing.join(", ")))
+    }
+}
+
+/// The dry-run report's planned-tier annotation for netns (zipline#70
+/// Step 5). A dry run never prompts, so when `--prompt-for-sudo` was given
+/// and sudo is the reason netns would skip, say the real run would prompt —
+/// without hiding any *other* missing prerequisite, which the prompt cannot
+/// buy. Pure, like the gates, so it is testable with injected probes.
+pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
+    if !prompt_for_sudo || probes.passwordless_sudo {
+        // The flag changes nothing: report the gate verbatim.
+        return match netns_gate(probes) {
+            TierGate::Run => "prerequisites present".to_string(),
+            TierGate::Skip(reason) => reason,
+        };
+    }
+    // The flag would buy sudo. Gate as if it already had, and append what
+    // the real run would do about the password.
+    let primed = Probes {
+        passwordless_sudo: true,
+        linux: probes.linux,
+        valkey_server: probes.valkey_server.clone(),
+        python3: probes.python3,
+        docker: probes.docker,
+        docker_compose: probes.docker_compose,
+    };
+    match netns_gate(&primed) {
+        TierGate::Run => "would prompt for sudo (--prompt-for-sudo)".to_string(),
+        TierGate::Skip(reason) => {
+            format!("would prompt for sudo (--prompt-for-sudo); {reason}")
+        }
     }
 }
 
@@ -1019,7 +1056,10 @@ mod tests {
         let TierGate::Skip(reason) = netns_gate(&probes) else {
             panic!("netns must skip without sudo");
         };
-        assert!(reason.contains("passwordless sudo"), "{reason}");
+        assert!(
+            reason.contains("passwordless sudo (or pass --prompt-for-sudo)"),
+            "the skip reason must make the fix discoverable: {reason}"
+        );
         assert!(reason.contains("valkey-server"), "{reason}");
         // Present prerequisites are not named as missing.
         assert!(!reason.contains("python3"), "{reason}");
@@ -1034,6 +1074,42 @@ mod tests {
             panic!("netns must skip off linux");
         };
         assert!(reason.to_lowercase().contains("linux"), "{reason}");
+    }
+
+    /// The dry-run planned-tier line for netns (zipline#70 Step 5): a dry
+    /// run never prompts, so when `--prompt-for-sudo` was given and sudo
+    /// would prompt, the line says the real run would prompt instead of
+    /// presenting sudo as missing — while any other missing prerequisite is
+    /// still reported, because the prompt only buys sudo.
+    #[test]
+    fn netns_dry_run_text_reports_the_prompt_instead_of_missing_sudo() {
+        // Flag given, sudo is the only gap: the real run would prompt.
+        let mut probes = all_present();
+        probes.passwordless_sudo = false;
+        let text = netns_dry_run_text(&probes, true);
+        assert_eq!(text, "would prompt for sudo (--prompt-for-sudo)");
+
+        // Flag given, sudo AND valkey missing: the prompt is reported and
+        // the remaining gap is not hidden behind it.
+        probes.valkey_server = None;
+        let text = netns_dry_run_text(&probes, true);
+        assert!(
+            text.contains("would prompt for sudo (--prompt-for-sudo)"),
+            "{text}"
+        );
+        assert!(text.contains("valkey-server"), "{text}");
+        assert!(!text.contains("passwordless sudo"), "{text}");
+
+        // No flag: the ordinary skip reason, prompt not mentioned.
+        let mut probes = all_present();
+        probes.passwordless_sudo = false;
+        let text = netns_dry_run_text(&probes, false);
+        assert!(text.contains("passwordless sudo"), "{text}");
+        assert!(!text.contains("would prompt"), "{text}");
+
+        // Flag given but sudo already passwordless: nothing to prompt for.
+        let text = netns_dry_run_text(&all_present(), true);
+        assert_eq!(text, "prerequisites present");
     }
 
     /// The docker gate's reason matches the acceptance wording: a missing

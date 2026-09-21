@@ -139,6 +139,11 @@ enum Command {
         /// Skip the dist tarball
         #[arg(long)]
         no_tarball: bool,
+
+        /// Prompt once for the sudo password before the run, so the netns
+        /// tier can run without a NOPASSWD sudoers entry (needs a terminal)
+        #[arg(long)]
+        prompt_for_sudo: bool,
     },
 
     /// Configure or inspect a coding agent's global setup
@@ -234,6 +239,7 @@ fn run() -> Result<ExitCode> {
             gates_only,
             allow_pin_drift,
             no_tarball,
+            prompt_for_sudo,
         } => build::run(
             &ctx,
             &build::BuildArgs {
@@ -246,6 +252,7 @@ fn run() -> Result<ExitCode> {
                 gates_only: *gates_only,
                 allow_pin_drift: *allow_pin_drift,
                 no_tarball: *no_tarball,
+                prompt_for_sudo: *prompt_for_sudo,
             },
         ),
         Command::Agent { command } => match command {
