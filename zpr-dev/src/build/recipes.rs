@@ -96,6 +96,10 @@ pub const RECIPES: &[Recipe] = &[
                 name: "zpr-dashboard",
                 source: "build-release/zpr-dashboard",
             },
+            Staged {
+                name: "zpr-attr-server",
+                source: "build-release/zpr-attr-server",
+            },
         ],
     },
     Recipe {
