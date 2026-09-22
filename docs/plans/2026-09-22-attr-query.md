@@ -136,6 +136,8 @@ Taken 2026-09-22 with the operator, recorded here so no issue re-opens them.
 | `api` value | `zpr-attr/1` | Names the contract and its version; leaves room for `zpr-attr/2`. |
 | Identity keys on the wire | ZPR key names (`user.sub`, `device.zpr.adapter.cn`, `user.zpr.authority`) | Mirrors the `file` store JSON; no reverse mapping; the authority marker has no service-side name. |
 | SCHEMA use by the visa service | Fetch once at store build, `warn` on mismatch, never fail | Catches typos and the `user.email` keying mistake; keeps policy authoritative and installs independent of the service being up. |
+| SCHEMA format | SCIM 2.0 attribute definitions (RFC 7643 §7) inside a small envelope carrying `identityKeys` | Directories already speak SCIM, so a SCIM-backed service copies its `Schema.attributes` through; `canonicalValues` gives editors allowed-value lists for free. JSON Schema rejected for the schema itself: it describes JSON shapes, and single/multi/tag all travel as `values: [...]`. Reserved as a later per-value constraint. |
+| Machine-readable API description | `docs/zpr-attr-v1.openapi.yaml`, non-normative | Implementers (zipline first) get a document tools can consume; V3's contract tests hold the reference server to it. The spec stays normative so two sources cannot silently diverge. |
 | Where the contract lives | `docs/ATTRIBUTE_SERVICE.md`; this plan sequences | A completed plan is a frozen historical record; the contract must stay current. |
 
 ---
@@ -292,6 +294,7 @@ section, this plan in the house format, and a required-reading row in `AGENTS.md
 - [x] Write `docs/ATTRIBUTE_SERVICE.md`.
 - [x] Rewrite this document from the draft into the master-plan format.
 - [x] Add the `AGENTS.md` required-reading row.
+- [x] Write `docs/zpr-attr-v1.openapi.yaml` from the spec's wire-protocol section.
 - [ ] File the umbrella and S1–D1 in `mkolehmainen/zipline`, wire `blockedBy`, run
       `scripts/board-sync.py --apply`, and record the issue numbers in the *Issue map* and the
       *Status* line.
@@ -396,9 +399,11 @@ arm, the install-time schema check. Nothing in `connection_control.rs`,
     `oidc/jwks.rs` into a shared helper rather than copying them); apply the five read-order
     rules from the spec; stamp source and clamped expiry.
   - `flush`, `current_revision`, `get_source_id` as in the OIDC store.
-- [ ] Schema check at build: `GET {url}/schema`; warn per missing name, per type mismatch,
-      and when `identity_keys` is disjoint from `policy.lookup_identity_keys()`; `info` on
-      any failure. Runs once, inside `build_services`, never fails the install.
+- [ ] Schema check at build: `GET {url}/schema`; parse the SCIM attribute definitions
+      (unknown SCIM fields ignored); warn per missing name, per spelling/definition mismatch
+      under the spec's correspondence table (including `complex`), and when `identityKeys`
+      is disjoint from `policy.lookup_identity_keys()`; `info` on any failure. Runs once,
+      inside `build_services`, never fails the install.
 - [ ] `factory.rs`: `TS_API_ATTR_QUERY`; accept it in `trusted_service_definitions` (require
       `attr_query`, reject a missing record); build arm passing `ts_secrets_dir` and the
       policy.
@@ -449,13 +454,17 @@ example for zipline's implementers, and the thing that keeps the spec honest.
   - `POST /query`: look up every identity pair in the JSON (same union-and-conflict rule as
     `FileAttributeStore`; conflict → `409`); honour the `attributes` hint; never emit
     `expires_at` unless the JSON entry carries one.
-  - `GET /schema`: derived from a `_schema` key in the JSON, or `{}` if absent.
+  - `GET /schema`: SCIM attribute definitions from a `_schema` key in the JSON, or a
+      definition list derived from the data (`string`, `multiValued` when any entry has more
+      than one value) if absent; `identityKeys` from the JSON's top-level keys.
   - Bearer check → `401`; anything else → `400`/`500` per the spec table.
   - `--notify [identity=value ...]`: a subcommand that posts `changed` to a visa service —
     the operator's and E1's way to simulate an attribute change.
 - [ ] Contract tests (`zpr-attr-server/tests/`): drive the router in-process with every
-      request/response example in the spec, byte-for-byte on the JSON shapes; then point
-      V1's `AttrQueryStore` at the in-process server and assert the mapped attributes.
+      request/response example in the spec, byte-for-byte on the JSON shapes, and validate
+      each exchange against `docs/zpr-attr-v1.openapi.yaml` (vendor the file into the crate's
+      `tests/` with its source path in a comment; no network); then point V1's
+      `AttrQueryStore` at the in-process server and assert the mapped attributes.
 - [ ] Not staged into `make release` or the build set: a development and test tool. Say so in
       its `README.md`, with the spec as the only normative reference.
 

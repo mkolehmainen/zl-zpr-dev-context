@@ -14,7 +14,8 @@ the protocol. Read it alongside [VISA_SERVICE.md](VISA_SERVICE.md) (how
 attributes are refreshed and when a visa is denied) and
 [SECURITY_MODEL.md](SECURITY_MODEL.md) (what an attribute's provenance means).
 
-**Status.** Design, sequenced by `docs/plans/2026-09-22-attr-query.md`. Nothing
+**Status.** Design, sequenced by `docs/plans/2026-09-22-attr-query.md`. The
+wire protocol is also rendered as `docs/zpr-attr-v1.openapi.yaml`. Nothing
 below is implemented yet; the `## Implementation status` section at the end is
 the record of what is.
 
@@ -27,6 +28,8 @@ the record of what is.
 | `docs/plans/2026-09-22-attr-query.md` | The master plan: ordering, issues, acceptance criteria. Wins over this document while it is in flight. |
 | `zl-zpr-visaservice/vs/src/trusted_services/` | The store trait and the two stores that exist today (`file`, `oidc`). |
 | internal RFC-13.1, *Authentication, Identity and Attributes* | Design intent for trusted services generally. This document departs from it in one place, recorded under *Security*. |
+| [RFC 7643](https://www.rfc-editor.org/rfc/rfc7643) §7, SCIM 2.0 schema definitions | The attribute-definition vocabulary `GET {url}/schema` returns. |
+| `docs/zpr-attr-v1.openapi.yaml` | Machine-readable rendering of the wire protocol. This document is normative; the OpenAPI file follows it, and V3's contract tests hold the reference server to both. |
 
 ---
 
@@ -248,30 +251,65 @@ Request has no body. Response, `200 OK`:
 
 ```json
 {
-  "identity_keys": ["user.sub", "device.zpr.adapter.cn"],
+  "identityKeys": ["user.sub", "device.zpr.adapter.cn"],
   "attributes": [
-    { "name": "dept",       "type": "single", "description": "Cost centre" },
-    { "name": "roles",      "type": "multi" },
-    { "name": "contractor", "type": "tag",    "description": "Not an employee" }
+    { "name": "dept",       "type": "string",  "multiValued": false,
+      "description": "Cost centre", "canonicalValues": ["eng", "sales", "ops"] },
+    { "name": "roles",      "type": "string",  "multiValued": true },
+    { "name": "contractor", "type": "boolean", "description": "Not an employee" }
   ]
 }
 ```
 
+The `attributes` array holds **SCIM 2.0 attribute definitions** (RFC 7643,
+section 7). SCIM is the directory world's vocabulary for describing user and
+device attributes, and Okta, Entra and most identity products already emit
+it, so a service fronting a SCIM directory can copy the `attributes` of its
+own `Schema` resource here — minus `complex` ones — and a future SCIM-backed
+attribute service maps onto this endpoint without translation. The envelope
+around the array is ours, because SCIM has no notion of a store that is keyed
+on identities *someone else* vends.
+
 | Field | Meaning |
 |---|---|
-| `identity_keys` | The ZPR identity keys this service can look up on. Empty or absent means "unspecified". |
-| `attributes[].name` | A service-side name, as it would appear on the left of `returns_attributes`. |
-| `attributes[].type` | `single`, `multi` or `tag`. |
-| `attributes[].description` | Optional, for editors. |
+| `identityKeys` | Ours, not SCIM. The ZPR identity keys this service can look up on. Empty or absent means "unspecified". |
+| `attributes[].name` | SCIM. A service-side name, as it would appear on the left of `returns_attributes`. |
+| `attributes[].type` | SCIM. `string`, `boolean`, `integer`, `decimal`, `dateTime`, `reference` or `binary`. `complex` is not supported and is reported as a mismatch. |
+| `attributes[].multiValued` | SCIM. Default `false`. |
+| `attributes[].description` | SCIM. Optional, for editors. |
+| `attributes[].canonicalValues` | SCIM. Optional. The values the service will ever return for this attribute. For editors; the visa service does not check policy literals against it in `zpr-attr/1`. |
+| any other SCIM field | `required`, `caseExact`, `mutability`, `returned`, `uniqueness`, `referenceTypes` may be present and are ignored. |
+
+How a policy mapping corresponds to a definition:
+
+| `returns_attributes` spelling | Expected definition |
+|---|---|
+| `dept -> user.dept` (single-valued) | any type but `boolean` or `complex`, `multiValued: false` |
+| `roles -> user.role{}` (multi-valued) | any type but `boolean` or `complex`, `multiValued: true` |
+| `contractor -> #user.contractor` (tag) | `type: boolean`, `multiValued: false` |
+
+Values still travel as strings in `values` whatever the declared SCIM type;
+the type is a description for editors and a consistency check, not a wire
+encoding. A `boolean` attribute's *presence* is the tag; its `values` are
+ignored, as under `POST {url}/query`.
+
+Per-value constraints beyond `canonicalValues` (a pattern, a format) are
+**reserved**: a later revision may allow an optional JSON Schema fragment per
+attribute describing one value. JSON Schema is not used for the schema itself
+because it describes JSON shapes, and what this endpoint describes is a ZPR
+attribute vocabulary — single, multi and tag all travel as `values: [...]`,
+so a JSON Schema of the response would erase exactly the distinction editors
+need.
 
 The schema exists mainly for **policy editors** — an online editor can check a
-`returns_attributes` list as it is typed. The visa service also fetches it
-**once, when the store is built at policy install**, and:
+`returns_attributes` list as it is typed and offer `canonicalValues` as
+completions. The visa service also fetches it **once, when the store is built
+at policy install**, and:
 
 - logs a `warn` for every mapped name the schema does not list;
-- logs a `warn` for every mapped name whose policy type (`{}`, `#`, plain)
-  disagrees with the schema's;
-- logs a `warn` if `identity_keys` is non-empty and shares nothing with the
+- logs a `warn` for every mapped name whose policy spelling (`{}`, `#`, plain)
+  disagrees with the definition per the table above, including `complex`;
+- logs a `warn` if `identityKeys` is non-empty and shares nothing with the
   policy's lookup-identity keys — the classic misconfiguration of keying a
   store on `user.email`;
 - logs one `info` line and moves on if the endpoint is missing or fails.
@@ -484,3 +522,4 @@ limiting on `changed`.
 | `changed` endpoint, `notify` permission | `zl-zpr-visaservice/vs/src/admin_service.rs`, `admin_apikeys.rs`, `admin-http-api.txt` |
 | Reference server | `zl-zpr-visaservice/zpr-attr-server/` |
 | End-to-end test | `zl-zpr-core/integration-test/attr-query-test.sh` |
+| OpenAPI rendering | `docs/zpr-attr-v1.openapi.yaml` (this repository) |
