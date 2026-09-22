@@ -276,8 +276,9 @@ fn prepare_build_dir(
 }
 
 /// Unregisters every build worktree under `<build_dir>/src` from its source
-/// repository, then prunes every manifest repository. Shared by `--force`
-/// (via [`prepare_build_dir`]) and `--clean` (zipline#71).
+/// repository, then prunes every manifest repository. Used by `--force`
+/// (via [`prepare_build_dir`]); the `--clean` path prunes *after* its
+/// deletions instead — see [`run_clean`].
 ///
 /// A failed run retains its worktrees under `src/` for debugging (see
 /// `execute_build`). They must be *unregistered* from their source
@@ -311,6 +312,16 @@ fn unregister_worktrees(build_dir: &Path, workspace: &Path, manifest_repos: &[&s
     // deleted by hand, so the registrations are cleared from the repository
     // side: prune every manifest repository rather than trusting the
     // enumeration.
+    prune_worktree_registrations(workspace, manifest_repos);
+}
+
+/// Runs `git worktree prune` in every manifest repository that exists in the
+/// workspace. Prune drops exactly the registrations whose worktree directory
+/// is missing and never touches a live worktree, so it is safe to run
+/// unconditionally — but for the same reason it only helps *after* the
+/// directories are gone. Callers that delete a build tree must call this
+/// after the deletion, not before (Codex review on PR #16).
+fn prune_worktree_registrations(workspace: &Path, manifest_repos: &[&str]) {
     for name in manifest_repos {
         let repo = workspace.join(name);
         if crate::git::is_repo(&repo) {
@@ -638,29 +649,27 @@ fn run_clean(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
     }
 
     for dir in &targets {
-        // Unregister what can still be enumerated, then remove the tree.
-        // The manifest-wide prune inside unregister_worktrees is what clears
-        // registrations whose directories are already gone.
-        unregister_worktrees(dir, &ctx.workspace, &manifest_repo_names);
+        // Remove the tree first, then prune: `git worktree prune` drops
+        // exactly the registrations whose directory is missing, so a prune
+        // that runs before the deletion correctly retains every still-live
+        // registration and clears nothing (Codex review on PR #16). With the
+        // named directory this also sidesteps rooting the walk wrong: the
+        // default target is the `.zpr-build` root whose worktrees live one
+        // level down at `<set>/src/<repo>`, not at `src/<repo>`.
         std::fs::remove_dir_all(dir)
             .map_err(|e| anyhow::anyhow!("cannot remove {}: {e}", dir.display()))?;
         if !ctx.quiet {
             println!("clean: removed {}", dir.display());
         }
     }
-    if targets.is_empty() {
-        // The registrations may still be stale even with no directory left —
-        // the zipline#71 case is exactly `rm -rf` ahead of the tool — so the
-        // prune pass runs regardless.
-        unregister_worktrees(
-            &ctx.workspace.join(".zpr-build"),
-            &ctx.workspace,
-            &manifest_repo_names,
-        );
-        if !ctx.quiet {
-            println!("clean: nothing to clean");
-        }
+    if targets.is_empty() && !ctx.quiet {
+        println!("clean: nothing to clean");
     }
+    // The manifest-wide prune runs after every deletion, and also when there
+    // was no directory left to delete — the zipline#71 case is exactly
+    // `rm -rf` ahead of the tool, which leaves registrations with no
+    // directory behind them.
+    prune_worktree_registrations(&ctx.workspace, &manifest_repo_names);
     if !ctx.quiet {
         println!(
             "clean: pruned worktree registrations in {} workspace repositories",
