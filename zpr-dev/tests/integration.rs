@@ -1461,6 +1461,44 @@ fn build_clean_recovers_a_hand_wiped_build_dir() {
     assert!(!fixture.workspace.join(".zpr-build").exists());
 }
 
+/// `--clean` without `--build-dir` over a *still-present* default tree must
+/// leave no dangling registration (Codex review on PR #16). The worktrees
+/// live at `.zpr-build/<set>/src/<repo>`, so the unregister walk rooted at
+/// `.zpr-build/src` enumerates nothing — and a prune that runs *before*
+/// `remove_dir_all` correctly retains the still-live registrations. Deleting
+/// the tree afterwards with no subsequent prune leaves every registration
+/// dangling while the command reports them pruned.
+#[test]
+fn build_clean_prunes_registrations_of_live_default_tree() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+
+    // A registered build worktree whose directory still exists — the state a
+    // failed or `--keep` run leaves behind.
+    let core = fixture.workspace.join("zl-zpr-core");
+    let sha = common::git(&core, &["rev-parse", "HEAD"]);
+    let dest = fixture
+        .workspace
+        .join(".zpr-build")
+        .join("tip")
+        .join("src")
+        .join("zl-zpr-core");
+    common::git(
+        &core,
+        &["worktree", "add", "--detach", &dest.to_string_lossy(), &sha],
+    );
+    assert!(dest.exists(), "fixture worktree missing");
+
+    let out = stdout_of(&fixture.run(&["build", "--clean"]));
+    assert!(out.contains("clean:"), "{out}");
+
+    // The tree is gone AND only the checkout itself remains registered: the
+    // prune must observe the deletion, not precede it.
+    assert!(!fixture.workspace.join(".zpr-build").exists());
+    let listing = common::git(&core, &["worktree", "list"]);
+    assert_eq!(listing.lines().count(), 1, "stale registration: {listing}");
+}
+
 /// `--clean` on an already-clean workspace exits 0 and says there was
 /// nothing to clean — cleaning clean is a success, not an error.
 #[test]
