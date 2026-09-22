@@ -157,6 +157,13 @@ pub fn tag_list(dir: &Path) -> Result<Vec<String>> {
 /// naming the path: half-overwriting a previous run's directory is how stale
 /// binaries get shipped (task B3 step 1).
 pub fn worktree_add(repo: &Path, dest: &Path, sha: &str) -> Result<()> {
+    // Prune first, mirroring the prune-after in `worktree_remove` below: a
+    // build directory deleted by hand leaves every registration behind, and
+    // git then refuses the very same path with "missing but already
+    // registered worktree" (zipline#71). Prune is scoped by git's own
+    // definition — it drops only registrations whose directory is already
+    // gone — so a live worktree, anyone's, is untouchable by construction.
+    git(repo, &["worktree", "prune"])?;
     // `git worktree add` itself refuses a non-empty directory, but its message
     // names neither our context nor the remedy; check first so the error is
     // diagnosable from a build report.
@@ -483,5 +490,39 @@ mod tests {
 
         worktree_remove(&repo, &dest).unwrap();
         assert!(!dest.exists());
+    }
+
+    /// The prune-first in `worktree_add` (zipline#71) never touches a *live*
+    /// worktree: one whose directory exists — a developer's own, unrelated to
+    /// any build — survives an unrelated `worktree_add` on the same
+    /// repository, registration and content both. This pins the prune's blast
+    /// radius at zero so it can never be widened by accident: prune drops
+    /// only registrations whose directory is already gone.
+    #[test]
+    fn worktree_add_prune_leaves_live_worktrees_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+        let sha = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+
+        // The developer's own live worktree, with an uncommitted file in it.
+        let live = tmp.path().join("live-wt");
+        worktree_add(&repo, &live, &sha).unwrap();
+        std::fs::write(live.join("scratch.txt"), "work in progress\n").unwrap();
+
+        // An unrelated add — the prune inside it must not disturb `live`.
+        let other = tmp.path().join("other-wt");
+        worktree_add(&repo, &other, &sha).unwrap();
+
+        // Still registered, directory intact, uncommitted content untouched.
+        let listing = git(&repo, &["worktree", "list"]).unwrap();
+        assert!(
+            listing.contains("live-wt"),
+            "live worktree pruned: {listing}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(live.join("scratch.txt")).unwrap(),
+            "work in progress\n"
+        );
     }
 }

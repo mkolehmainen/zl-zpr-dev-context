@@ -235,15 +235,27 @@ pub struct BuildArgs {
     /// run, so the netns tier can run without a NOPASSWD sudoers entry
     /// (zipline#70). Opt-in, and refused when stdin is not a terminal.
     pub prompt_for_sudo: bool,
+    /// `--clean`: remove the build directory and clear its worktree
+    /// registrations, then exit — a mode, not a modifier (zipline#71). It
+    /// resolves nothing and fetches nothing, so it works on a workspace too
+    /// broken to resolve a build set. Conflicts with every build-shaping
+    /// flag; `--build-dir` is allowed because it scopes the clean.
+    pub clean: bool,
 }
 
 /// Creates the build directory `<build_dir>` with `logs/` and `dist/` inside.
 /// A directory left over from a previous run is refused naming the path and
 /// `--force` (approved decision on zipline#60: reuse of half-built state is
 /// how silent staleness gets shipped); `force` removes it entirely and
-/// recreates it fresh. `workspace` locates the source repositories, so a
-/// worktree retained by a failed run is unregistered, not just deleted.
-fn prepare_build_dir(dir: &Path, force: bool, workspace: &Path) -> Result<()> {
+/// recreates it fresh. `workspace` and `manifest_repos` locate the source
+/// repositories, so a worktree retained by a failed run is unregistered, not
+/// just deleted.
+fn prepare_build_dir(
+    dir: &Path,
+    force: bool,
+    workspace: &Path,
+    manifest_repos: &[&str],
+) -> Result<()> {
     if dir.exists() {
         if !force {
             bail!(
@@ -252,26 +264,7 @@ fn prepare_build_dir(dir: &Path, force: bool, workspace: &Path) -> Result<()> {
                 dir.display()
             );
         }
-        // A failed run retains its worktrees under `src/` for debugging
-        // (see execute_build). They must be *unregistered* from their source
-        // repositories, not just deleted: a raw removal leaves each
-        // registration behind, and the next `git worktree add` fails with
-        // git's "missing but already registered worktree" — which made the
-        // documented --force recovery unusable (Codex review on PR #8).
-        if let Ok(entries) = std::fs::read_dir(dir.join("src")) {
-            for entry in entries.flatten() {
-                let repo = workspace.join(entry.file_name());
-                if !crate::git::is_repo(&repo) {
-                    continue;
-                }
-                // Best effort: a worktree that cannot be removed cleanly is
-                // deleted with the directory below; prune then drops whatever
-                // registration is left pointing at the missing path.
-                if crate::git::worktree_remove(&repo, &entry.path()).is_err() {
-                    let _ = crate::git::git(&repo, &["worktree", "prune"]);
-                }
-            }
-        }
+        unregister_worktrees(dir, workspace, manifest_repos);
         std::fs::remove_dir_all(dir)
             .map_err(|e| anyhow::anyhow!("cannot remove {}: {e}", dir.display()))?;
     }
@@ -280,6 +273,61 @@ fn prepare_build_dir(dir: &Path, force: bool, workspace: &Path) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("cannot create {}/{sub}: {e}", dir.display()))?;
     }
     Ok(())
+}
+
+/// Unregisters every build worktree under `<build_dir>/src` from its source
+/// repository, then prunes every manifest repository. Used by `--force`
+/// (via [`prepare_build_dir`]); the `--clean` path prunes *after* its
+/// deletions instead — see [`run_clean`].
+///
+/// A failed run retains its worktrees under `src/` for debugging (see
+/// `execute_build`). They must be *unregistered* from their source
+/// repositories, not just deleted: a raw removal leaves each registration
+/// behind, and the next `git worktree add` fails with git's "missing but
+/// already registered worktree" — which made the documented --force recovery
+/// unusable (Codex review on PR #8).
+///
+/// The `src/` walk is best-effort by construction — it derives names from the
+/// filesystem, and the failure mode this function exists for is exactly the
+/// filesystem being gone (zipline#71: `rm -rf` of the build directory). The
+/// prune pass over the manifest list is what guarantees no registration
+/// survives: prune drops exactly the registrations whose directory is
+/// missing, and never touches a live worktree, so it is safe to run against
+/// every repository unconditionally.
+fn unregister_worktrees(build_dir: &Path, workspace: &Path, manifest_repos: &[&str]) {
+    if let Ok(entries) = std::fs::read_dir(build_dir.join("src")) {
+        for entry in entries.flatten() {
+            let repo = workspace.join(entry.file_name());
+            if !crate::git::is_repo(&repo) {
+                continue;
+            }
+            // Best effort: a worktree that cannot be removed cleanly is
+            // deleted with the build directory by the caller; the prune
+            // below drops whatever registration is left pointing at a
+            // missing path.
+            let _ = crate::git::worktree_remove(&repo, &entry.path());
+        }
+    }
+    // The walk above cannot see a worktree whose directory was already
+    // deleted by hand, so the registrations are cleared from the repository
+    // side: prune every manifest repository rather than trusting the
+    // enumeration.
+    prune_worktree_registrations(workspace, manifest_repos);
+}
+
+/// Runs `git worktree prune` in every manifest repository that exists in the
+/// workspace. Prune drops exactly the registrations whose worktree directory
+/// is missing and never touches a live worktree, so it is safe to run
+/// unconditionally — but for the same reason it only helps *after* the
+/// directories are gone. Callers that delete a build tree must call this
+/// after the deletion, not before (Codex review on PR #16).
+fn prune_worktree_registrations(workspace: &Path, manifest_repos: &[&str]) {
+    for name in manifest_repos {
+        let repo = workspace.join(name);
+        if crate::git::is_repo(&repo) {
+            let _ = crate::git::git(&repo, &["worktree", "prune"]);
+        }
+    }
 }
 
 /// Verifies that every expected binary exists in `dist/` and is executable
@@ -316,6 +364,14 @@ fn verify_dist(dist: &Path, expected: &[&str]) -> Result<()> {
 /// against the live checkouts (B2); worktrees, builds and tiers land with
 /// B3-B5.
 pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
+    // `--clean` is a mode, not a modifier (zipline#71): it runs before the
+    // tier-selection parse and the `--gates-only` branch, resolves no refs,
+    // fetches nothing, and runs no gates — it must work on a workspace too
+    // broken to resolve a build set, which is when it is needed.
+    if args.clean {
+        return run_clean(ctx, args);
+    }
+
     // `--repo` parses but its stage has not landed (spec-003 §7.1); saying so
     // beats silently ignoring it.
     if args.repo.is_some() && !ctx.quiet {
@@ -418,7 +474,15 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         .build_dir
         .clone()
         .unwrap_or_else(|| ctx.workspace.join(".zpr-build").join(&set.name));
-    prepare_build_dir(&build_dir, ctx.force, &ctx.workspace)?;
+    // The manifest's repository names, for the registration-side prune in
+    // unregister_worktrees: the filesystem walk alone cannot see worktrees
+    // whose directories were deleted by hand (zipline#71).
+    let manifest_repo_names: Vec<&str> = manifest
+        .repositories
+        .iter()
+        .map(|repo| repo.name.as_str())
+        .collect();
+    prepare_build_dir(&build_dir, ctx.force, &ctx.workspace, &manifest_repo_names)?;
 
     // What the emitted manifest records as its own provenance (spec-003 §3).
     let manifest_path = if args.tip {
@@ -528,6 +592,91 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     } else {
         std::process::ExitCode::from(1)
     })
+}
+
+/// The `build --clean` path (zipline#71): removes the build directory and
+/// clears its worktree registrations, then exits. With `--build-dir` it
+/// cleans that directory; without it, the whole `<workspace>/.zpr-build`
+/// tree — cleaning is not per-set, because there is nothing to name a set
+/// with. Then `git worktree prune` runs in every workspace-manifest
+/// repository, which is what catches registrations whose directories a
+/// person already deleted. No ref resolution, no fetch, no gates, no build;
+/// the only manifest read is the repository list. Exit 0 even when there was
+/// nothing to clean — cleaning an already-clean workspace is a success, not
+/// an error. Under `--dry-run` the same report prints and nothing is removed
+/// (spec-003 §7: a dry run writes nothing).
+fn run_clean(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode> {
+    let manifest = crate::config::load(&ctx.context.join(crate::config::MANIFEST_FILE))?;
+    let manifest_repo_names: Vec<&str> = manifest
+        .repositories
+        .iter()
+        .map(|repo| repo.name.as_str())
+        .collect();
+
+    // The directories to remove: the named one, or every entry of the
+    // default `.zpr-build` tree (one subdirectory per set name).
+    let targets: Vec<PathBuf> = match &args.build_dir {
+        Some(dir) => {
+            if dir.exists() {
+                vec![dir.clone()]
+            } else {
+                vec![]
+            }
+        }
+        None => {
+            let root = ctx.workspace.join(".zpr-build");
+            if root.exists() { vec![root] } else { vec![] }
+        }
+    };
+
+    if ctx.dry_run {
+        if !ctx.quiet {
+            if targets.is_empty() {
+                println!("clean (dry-run): nothing to clean");
+            } else {
+                for dir in &targets {
+                    println!("clean (dry-run): would remove {}", dir.display());
+                }
+            }
+            println!(
+                "clean (dry-run): would prune worktree registrations in {} \
+                 workspace repositories",
+                manifest_repo_names.len()
+            );
+            println!("dry-run: nothing was removed, and nothing was fetched");
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+
+    for dir in &targets {
+        // Remove the tree first, then prune: `git worktree prune` drops
+        // exactly the registrations whose directory is missing, so a prune
+        // that runs before the deletion correctly retains every still-live
+        // registration and clears nothing (Codex review on PR #16). With the
+        // named directory this also sidesteps rooting the walk wrong: the
+        // default target is the `.zpr-build` root whose worktrees live one
+        // level down at `<set>/src/<repo>`, not at `src/<repo>`.
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| anyhow::anyhow!("cannot remove {}: {e}", dir.display()))?;
+        if !ctx.quiet {
+            println!("clean: removed {}", dir.display());
+        }
+    }
+    if targets.is_empty() && !ctx.quiet {
+        println!("clean: nothing to clean");
+    }
+    // The manifest-wide prune runs after every deletion, and also when there
+    // was no directory left to delete — the zipline#71 case is exactly
+    // `rm -rf` ahead of the tool, which leaves registrations with no
+    // directory behind them.
+    prune_worktree_registrations(&ctx.workspace, &manifest_repo_names);
+    if !ctx.quiet {
+        println!(
+            "clean: pruned worktree registrations in {} workspace repositories",
+            manifest_repo_names.len()
+        );
+    }
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 /// The `build --gates-only` path (spec-003 §4, stage B2): runs the three
@@ -2123,7 +2272,7 @@ allow_pin_drift:
     fn prepare_build_dir_creates_logs_and_dist() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("tip");
-        prepare_build_dir(&dir, false, tmp.path()).unwrap();
+        prepare_build_dir(&dir, false, tmp.path(), &[]).unwrap();
         assert!(dir.join("logs").is_dir());
         assert!(dir.join("dist").is_dir());
     }
@@ -2138,7 +2287,7 @@ allow_pin_drift:
         std::fs::create_dir_all(dir.join("dist")).unwrap();
         std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
 
-        let error = prepare_build_dir(&dir, false, tmp.path())
+        let error = prepare_build_dir(&dir, false, tmp.path(), &[])
             .unwrap_err()
             .to_string();
         assert!(error.contains("tip"), "path not named: {error}");
@@ -2156,7 +2305,7 @@ allow_pin_drift:
         std::fs::create_dir_all(dir.join("dist")).unwrap();
         std::fs::write(dir.join("dist").join("stale-binary"), "old\n").unwrap();
 
-        prepare_build_dir(&dir, true, tmp.path()).unwrap();
+        prepare_build_dir(&dir, true, tmp.path(), &[]).unwrap();
         assert!(!dir.join("dist").join("stale-binary").exists());
         assert!(dir.join("logs").is_dir());
         assert!(dir.join("dist").is_dir());
@@ -2172,14 +2321,14 @@ allow_pin_drift:
     fn prepare_build_dir_force_unregisters_retained_worktrees() {
         let (_tmp, workspace, sha) = workspace_with_repo();
         let build_dir = workspace.join(".zpr-build").join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         // A retained worktree, as a failed run leaves it.
         let dest = build_dir.join("src").join("zl-zpr-core");
         crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
 
         // The --force retry must clear the directory AND the registration...
-        prepare_build_dir(&build_dir, true, &workspace).unwrap();
+        prepare_build_dir(&build_dir, true, &workspace, &["zl-zpr-core"]).unwrap();
         assert!(!dest.exists());
         let listing =
             crate::git::git(&workspace.join("zl-zpr-core"), &["worktree", "list"]).unwrap();
@@ -2187,6 +2336,66 @@ allow_pin_drift:
 
         // ...so the next run's worktree_add succeeds where it used to fail.
         crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+    }
+
+    /// A build directory deleted by hand — `rm -rf` with worktrees still
+    /// registered — must not wedge the next build (zipline#71). Every source
+    /// checkout still carries a registration pointing into the directory that
+    /// is gone, and without a prune the next `git worktree add` fails with
+    /// git's "missing but already registered worktree". The tool must recover
+    /// on its own: a fresh `worktree_add` succeeds with no flag and no manual
+    /// `git worktree prune`.
+    #[test]
+    fn worktree_add_succeeds_after_build_dir_deleted() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let build_dir = workspace.join(".zpr-build").join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        // A worktree, as a build run registers it.
+        let dest = build_dir.join("src").join("zl-zpr-core");
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+
+        // The by-hand deletion: the whole build directory goes, but every
+        // registration in the source repository survives it.
+        std::fs::remove_dir_all(&build_dir).unwrap();
+
+        // The next run's worktree_add — same registered path, fresh build
+        // directory — must succeed, self-healing the stale registration.
+        // `src/` is pre-created as a multi-repository build would have it:
+        // the first repository's add creates it, and only then does git's
+        // stale-registration check resolve the later destinations' paths and
+        // fail them with "missing but already registered worktree". (With no
+        // resolvable parent the check is silently skipped and git records a
+        // *duplicate* registration instead — the same stale state, hidden.)
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+        std::fs::create_dir_all(build_dir.join("src")).unwrap();
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+        assert!(dest.join("README.md").exists());
+    }
+
+    /// `--force` over a *half-wiped* build directory — `src/` deleted by hand,
+    /// the rest still present — must still clear every registration
+    /// (zipline#71). The old unregister loop derived the worktree list from
+    /// the filesystem (`read_dir` on `src/`), and the failure mode is exactly
+    /// the filesystem being gone: it enumerated nothing and every
+    /// registration survived. The manifest-driven prune catches them.
+    #[test]
+    fn prepare_build_dir_force_unregisters_when_src_is_wiped() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let build_dir = workspace.join(".zpr-build").join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        // A retained worktree, then the by-hand half-wipe: src/ goes, the
+        // build directory itself stays, so the --force path runs in full.
+        let dest = build_dir.join("src").join("zl-zpr-core");
+        crate::git::worktree_add(&workspace.join("zl-zpr-core"), &dest, &sha).unwrap();
+        std::fs::remove_dir_all(build_dir.join("src")).unwrap();
+
+        // --force must clear the registration it can no longer enumerate.
+        prepare_build_dir(&build_dir, true, &workspace, &["zl-zpr-core"]).unwrap();
+        let listing =
+            crate::git::git(&workspace.join("zl-zpr-core"), &["worktree", "list"]).unwrap();
+        assert_eq!(listing.lines().count(), 1, "stale registration: {listing}");
     }
 
     // -- dist/ verification (task B3 step 4) ----------------------------------
@@ -2329,7 +2538,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![failing_recipe()];
         let ok = execute_build(&inputs(
@@ -2371,7 +2580,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
@@ -2434,7 +2643,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         // The table stages bin1 (buildable here) and bin2 from a repository
         // the set does not name — so bin2 can never be staged.
@@ -2527,7 +2736,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
@@ -2566,7 +2775,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
@@ -2595,7 +2804,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
@@ -2632,7 +2841,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let selection = tiers::Selection::parse(Some("unit")).unwrap();
@@ -2664,7 +2873,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let selection = tiers::Selection::parse(Some("unit")).unwrap();
@@ -2692,7 +2901,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let ok = execute_build(&inputs(
@@ -2738,7 +2947,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
         let selection = tiers::Selection::parse(Some("docker")).unwrap();
@@ -2794,7 +3003,7 @@ allow_pin_drift:
         let manifest = workspace_manifest();
         let tmp = tempfile::tempdir().unwrap();
         let build_dir = tmp.path().join("t");
-        prepare_build_dir(&build_dir, false, &workspace).unwrap();
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         // The fixture set holds only zl-zpr-core: no zl-zpr-demo worktree.
         let recipes = vec![ok_recipe()];
