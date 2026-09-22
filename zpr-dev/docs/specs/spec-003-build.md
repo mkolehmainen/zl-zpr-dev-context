@@ -8,7 +8,8 @@ Master plan: `docs/plans/2026-09-17-build-sets.md` (umbrella
 `mkolehmainen/zipline#57`)
 
 `zpr-dev build` builds the whole ZPR binary set — `vs`, `vs-admin`, `vsapikey`,
-`zpt`, `zpr-dashboard`, `zplc`, `zpdump`, `ph`, `ph-cli`, `coredns` — from a
+`zpt`, `zpr-dashboard`, `zpr-attr-server`, `zplc`, `zpdump`, `ph`, `ph-cli`,
+`coredns` — from a
 manifest that names a tag, branch or commit per repository, or from the tip of
 each default branch. Before compiling anything it proves the set is coherent
 (§4); after compiling it runs the test tiers (§6) against those exact binaries
@@ -269,7 +270,7 @@ step's output is available to the next:
 | # | Repository | Command(s) | Staged into `dist/` |
 |---|---|---|---|
 | 1 | `zl-zpr-compiler` | `cargo build --release` | `zplc`, `zpdump` |
-| 2 | `zl-zpr-visaservice` | `make release` | `vs`, `vs-admin`, `vsapikey`, `zpt`, `zpr-dashboard` |
+| 2 | `zl-zpr-visaservice` | `make release` | `vs`, `vs-admin`, `vsapikey`, `zpt`, `zpr-dashboard`, `zpr-attr-server` |
 | 3 | `zl-zpr-core` | `cargo build --release` | `ph`, `ph-cli` |
 | 4 | `zl-zpr-coredns` | `make build` (Go) | `coredns` |
 | 5 | `zl-zpr-demo` | none | none |

@@ -1905,7 +1905,7 @@ mod tests {
         );
     }
 
-    /// Staging copies exactly the recipe table's staged names — the ten
+    /// Staging copies exactly the recipe table's staged names — the eleven
     /// binaries of contract 4 — into `bin/`, executably, and a missing one
     /// is an error naming it (the set must not half-stage).
     #[test]

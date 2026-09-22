@@ -238,7 +238,8 @@ a merely stale one are indistinguishable on disk.
 ### `zpr-dev build`
 
 Build, gate, and test the whole ZPR binary set — `vs`, `vs-admin`, `vsapikey`,
-`zpt`, `zpr-dashboard`, `zplc`, `zpdump`, `ph`, `ph-cli`, `coredns` — from a
+`zpr-attr-server`, `zpt`, `zpr-dashboard`, `zplc`, `zpdump`, `ph`, `ph-cli`,
+`coredns` — from a
 **build set**: a manifest naming a tag, branch, or commit per binary-producing
 repository. Specification: [`docs/specs/spec-003-build.md`](docs/specs/spec-003-build.md);
 working knowledge, including how to cut and reproduce a set: `docs/BUILD.md`,

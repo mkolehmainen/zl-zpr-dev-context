@@ -175,9 +175,9 @@ make check      # fmt and warning checks across every member
 make release    # release tarball in build-release/, plus release-linux-<arch>.tar.gz
 ```
 
-`make release` collects `vs`, `vs-admin`, `vsapikey`, `zpt`, and
-`zpr-dashboard` into `build-release/` and tars it up. That tarball is what
-`zl-zpr-core`'s integration tests consume.
+`make release` collects `vs`, `vs-admin`, `vsapikey`, `zpt`, `zpr-dashboard`,
+and `zpr-attr-server` into `build-release/` and tars it up. That tarball is
+what `zl-zpr-core`'s integration tests consume.
 
 `vs` needs a running Valkey/Redis at runtime, but not to build or to run the
 unit tests.
