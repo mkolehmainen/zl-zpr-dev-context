@@ -56,6 +56,7 @@ paths, so they can be opened directly.
 | Writing or reviewing a policy file | `docs/ZPL.md` |
 | Changing the topology schema, `Router`/`TopologyMgr`, or how a visa's next hop is chosen | `docs/ROUTING.md` |
 | Changing OIDC token validation, JWKS handling, silent re-authentication, or the `api = "oidc"` trusted service | `docs/OIDC.md`, `docs/SECURITY_MODEL.md` |
+| Changing an attribute store, the `api = "zpr-attr/1"` attribute-service API, or implementing that API | `docs/ATTRIBUTE_SERVICE.md`, `docs/VISA_SERVICE.md` |
 | Writing or reviewing Rust code | `skills/rust-coding-guidelines/SKILL.md` |
 
 Three rules that apply to every task above:
