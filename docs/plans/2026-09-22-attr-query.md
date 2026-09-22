@@ -153,9 +153,11 @@ Taken 2026-09-22 with the operator, recorded here so no issue re-opens them.
   `zl-zpr-common` tag, and a pin bump in both consumers. This is the plan's one hard
   cross-repository coupling; it is confined to P1 → C1 and everything downstream reads the new
   tag. Do not add a second schema change anywhere in this plan.
-- **Version floors after this work:** `zl-zpr-policy` `v0.12.0`; `zl-zpr-common` `v0.29.0`;
-  `zl-zpr-compiler` `0.19.0`; `zl-zpr-visaservice` `0.20.0` with
-  `POLICY_MIN_COMPILER_MINOR = 19`. The visa service's version check is near-exact on minor
+- **Version floors after this work:** `zl-zpr-policy` `v0.12.0`; `zl-zpr-common` `v0.29.0`
+  pinned by **all three** consumers — `zl-zpr-compiler`, `zl-zpr-visaservice` and
+  `zl-zpr-core` (BUILD.md, *Version bumps are explicit*: gate 1 rejects a set whose consumers
+  pin different tags, so R1 is not optional); `zl-zpr-compiler` `0.19.0`; `zl-zpr-visaservice`
+  `0.20.0` with `POLICY_MIN_COMPILER_MINOR = 19`. The visa service's version check is near-exact on minor
   (BUILD.md, *Versions and tags*), so the compiler and visa service bumps land together in a
   build set (D1).
 - **Fail closed on every new error path.** Transport error, bad status, malformed body, type
@@ -241,7 +243,11 @@ POST /admin/services/{id}/changed        X-API-Key: <notify | readwrite>
 
 `Permission::Notify` is a fourth `admin_apikeys::Permission` value, serialised `notify`;
 `can_notify()` is true for `Notify` and `ReadWrite`; `can_resolve`/`can_read`/`can_write`
-are false for it. `vsapikey` accepts `notify`.
+are false for it. `ApiKeyRecord` gains `service: Option<String>`; it is **required** when
+`permission = "notify"` (a keys file with a `notify` key lacking it is rejected at load) and
+ignored otherwise. The route: a `Notify` key whose `service` differs from `{id}` is `403`; a
+`ReadWrite` key may name any id. `vsapikey` accepts `notify` and requires `--service <id>`
+with it.
 
 ### 5. `vs.toml` `[core] ts_secrets_dir` (`zl-zpr-visaservice`, V1)
 
@@ -255,16 +261,16 @@ Default `"."`, rebased against the config file's directory like `file_ts_dir`. T
 ```
 S1 (spec + this plan)
  └─> P1 (policy.capnp) ─> C1 (common mirror, tag)
-                            ├─> K1 (compiler)  ──────────┐
-                            └─> V1 (vs store) ─> V2 (vs changed endpoint) ─> V3 (reference server + contract tests)
-                                                                              │
-                                             K1 + V3 ─────────────────────────┴─> E1 (core: netns end-to-end) ─> D1 (docs status, build set)
+                            ├─> K1 (compiler) ───────────────────────────────┐
+                            ├─> R1 (core: pin bump) ─────────────────────────┤
+                            └─> V1 (vs store) ─> V2 (changed endpoint) ─> V3 ┴─> E1 (core: netns end-to-end) ─> D1 (docs, zpr-dev staging, build set)
 ```
 
-`K1` and `V1` touch disjoint repositories and share only contract 2, which `C1` has fixed by
-the time either starts, so they may run in parallel. `V2` follows `V1` because it shares the
-manager and factory files. `E1` needs a compiler that emits the config and a visa service that
-consumes it.
+`K1`, `R1` and `V1` touch disjoint repositories and share only contract 2, which `C1` has fixed
+by the time any of them starts, so they may run in parallel. `V2` follows `V1` because it
+shares the manager and factory files. `E1` needs a compiler that emits the config, a visa
+service that consumes it, and a core already on the new `zpr` tag — it is the same repository
+as `R1`, so it must not start until `R1` has merged.
 
 ## Issue map
 
@@ -277,11 +283,12 @@ in this order.
 | P1 | zl-zpr-policy | `AttrQueryConfig` and `TrustedService.attrQuery @5` | S1 |
 | C1 | zl-zpr-common | Mirror `AttrQueryConfig`; round-trip tests; bump the `zpr-policy` submodule; tag `v0.29.0` | P1 |
 | K1 | zl-zpr-compiler | Parse `api = "zpr-attr/1"`, emit `AttrQueryConfig`, fixtures, version `0.19.0` | C1 |
+| R1 | zl-zpr-core | Pin `zpr` `v0.29.0`; regenerate `Cargo.lock`; fix any `TrustedService` literals | C1 |
 | V1 | zl-zpr-visaservice | `AttrQueryStore`: query, schema check, `ts_secrets_dir`, factory arm, min-compiler `0.19.0` | C1 |
 | V2 | zl-zpr-visaservice | `POST /admin/services/{id}/changed` and `Permission::Notify` | V1 |
 | V3 | zl-zpr-visaservice | `zpr-attr-server` reference implementation and protocol contract tests | V2 |
-| E1 | zl-zpr-core | netns end-to-end test: OIDC login + `zpr-attr/1` decoration + `changed` revocation | K1, V3 |
-| D1 | zl-zpr-dev-context | Docs status updates; committed build set; plan COMPLETE | E1 |
+| E1 | zl-zpr-core | netns end-to-end test: OIDC login + `zpr-attr/1` decoration + `changed` revocation | K1, R1, V3 |
+| D1 | zl-zpr-dev-context | Docs status updates; `zpr-dev` stages `zpr-attr-server`; committed build set; plan COMPLETE | E1 |
 
 ---
 
@@ -381,6 +388,26 @@ weaver treating the new kind like `file`, and the config reaching the binary pol
 
 ---
 
+## Phase R — Core pin (`zl-zpr-core`)
+
+### Task R1: Pin `zpr` `v0.29.0`
+
+**Scope.** `zl-zpr-core/Cargo.toml` pins the same `zpr` crate as the compiler and the visa
+service. Gate 1 of `zpr-dev build` rejects a set whose consumers disagree on the tag, so the
+core must move with them or D1's build set fails before compiling anything. No behaviour
+change: the core never reads `TrustedService` records.
+
+- [ ] `Cargo.toml`: `zpr = { ..., tag = "v0.29.0" }`; regenerate `Cargo.lock` with no local
+      paths.
+- [ ] Fix any `TrustedService { .. }` struct literals in tests or fixtures for the new
+      `attr_query` field (expected: none; check).
+- [ ] `make check`, `make test`, and the netns tier green on the existing scripts.
+
+**Acceptance.** `zpr-dev build --tip` gate 1 reports a single `zpr` tag across all three
+consumers.
+
+---
+
 ## Phase V — Visa service (`zl-zpr-visaservice`)
 
 ### Task V1: `AttrQueryStore`
@@ -394,7 +421,9 @@ arm, the install-time schema check. Nothing in `connection_control.rs`,
       `file_ts_dir`; tests for the relative and absolute cases beside the existing ones.
 - [ ] `trusted_services/attr_query_store.rs` — `AttrQueryStore`, `TrustedServiceInterface`:
   - Construction: read `<id>.token` (trimmed; missing/empty → `TrustedServiceInit`); build
-    the `reqwest::Client` (no redirects, `add_root_certificate` for each PEM block, timeout).
+    the `reqwest::Client`: no redirects, the policy timeout, and when `ca_cert_pem` is set
+    `tls_built_in_root_certs(false)` **plus** `add_root_certificate` per PEM block — the pin
+    is exclusive (spec, *Declaring an attribute service in policy*), never additive.
   - `get_attributes_for_actor`: `POST {url}/query` with the request body from the spec; read
     the body under a 1 MiB cap (factor `MAX_JWKS_BYTES` and the chunked reader out of
     `oidc/jwks.rs` into a shared helper rather than copying them); apply the five read-order
@@ -415,7 +444,10 @@ arm, the install-time schema check. Nothing in `connection_control.rs`,
   - happy path: all three types, `expires_at` clamped both ways, unmapped names dropped;
   - unknown actor → `Ok(empty)`;
   - each failure: non-200 (incl. `404`, `409`, `500`), timeout, oversized body, malformed
-    body, single-valued with two values, `https` pin mismatch → `Err`;
+    body, single-valued with two values → `Err`;
+  - pin semantics: with `ca_cert_pem` set, a server presenting a chain to the pinned root is
+    accepted and one presenting a chain to a *different* root the process would otherwise
+    trust is rejected; with no pin, the built-in roots apply;
   - empty `values` on a non-tag → attribute absent;
   - missing token file → install fails; bearer header present on the wire;
   - schema check: each warning fires; endpoint absent → install succeeds;
@@ -427,19 +459,23 @@ installs against the mock and an actor keyed on `user.sub` receives the mapped a
 
 ### Task V2: `POST /admin/services/{id}/changed` and `Permission::Notify`
 
-- [ ] `admin_apikeys.rs`: `Permission::Notify` (`"notify"`), `can_notify()`; `vsapikey`
-      accepts it; existing `can_*` predicates return `false` for it (tests).
+- [ ] `admin_apikeys.rs`: `Permission::Notify` (`"notify"`), `can_notify()`;
+      `ApiKeyRecord.service: Option<String>`, required for `notify` keys (load rejects a
+      `notify` key without it); `vsapikey` accepts `notify` and requires `--service <id>`;
+      existing `can_*` predicates return `false` for `Notify` (tests).
 - [ ] `manager.rs`: `forget_source_revision(&self, zpr_addr, source)`; test that it makes
       exactly that source stale for exactly that actor.
 - [ ] `admin_service.rs`: the route per contract 4. Body `{}` → `flush_one` + event (share
       the body of `flush_service_cache`). Body with `identities` → for each connected actor
       (`actor_mgr.list_actors`) carrying any listed pair, `forget_source_revision`; then
       event. Return `202`; `400` on a malformed body; `404` when `{id}` is not a trusted
-      service; `403` without `can_notify`.
+      service; `403` without `can_notify`, and `403` when a `Notify` key's bound `service` is
+      not `{id}` — checked before the `404`, so a bound key cannot probe which ids exist.
 - [ ] `admin-http-api.txt`: document the endpoint and the `notify` level; note the
       `DELETE .../cache` equivalence.
-- [ ] Tests on the admin test assembly: permission matrix; targeted body leaves an unlisted
-      actor's revision intact; end-to-end through `handle_trusted_service_change` a listed
+- [ ] Tests on the admin test assembly: permission matrix including a `notify` key bound to
+      `a` posting to `b` → `403` and to a nonexistent id → `403` not `404`; a `readwrite` key
+      posting to any id; targeted body leaves an unlisted actor's revision intact; end-to-end through `handle_trusted_service_change` a listed
       actor is re-queried and an unlisted one is not.
 
 **Acceptance.** `make check`, `make test`; `admin-http-api.txt` updated.
@@ -468,8 +504,12 @@ example for zipline's implementers, and the thing that keeps the spec honest.
       each exchange against `docs/zpr-attr-v1.openapi.yaml` (vendor the file into the crate's
       `tests/` with its source path in a comment; no network); then point V1's
       `AttrQueryStore` at the in-process server and assert the mapped attributes.
-- [ ] Not staged into `make release` or the build set: a development and test tool. Say so in
-      its `README.md`, with the spec as the only normative reference.
+- [ ] Add `zpr-attr-server` to the root `Makefile`'s `release` target (`cp
+      ./target/release/zpr-attr-server $(RELEASE_DIR)`) so it rides `make release` into the
+      build set's `dist/` — the netns tier runs only staged binaries
+      (`zpr-dev/docs/specs/spec-003-build.md` §5), so E1 cannot start it otherwise. Its
+      `README.md` says it is a development and test tool, not a product binary, with the spec
+      as the only normative reference.
 
 **Acceptance.** `make check`, `make test`; a reader can implement the protocol from the spec
 plus this crate without reading `vs`.
@@ -486,14 +526,16 @@ plus this crate without reading `vs`.
 - [ ] `integration-test/pregen/attr-query.zpl/.zplc`: the interplay fixture with the `file`
       store replaced by a `zpr-attr/1` service pointing at `zpr-attr-server` on the loopback,
       CA-pinned to a test certificate.
-- [ ] `integration-test/attr-query-test.sh`: start `zpr-attr-server` with a `user.sub`-keyed
-      JSON; connect with the fake IdP token; assert the actor carries the mapped attributes
+- [ ] `integration-test/attr-query-test.sh`: locate the server as
+      `ZPR_ATTR_SERVER_BIN="${ZPR_ATTR_SERVER_BIN:-$(dirname "$0")/zpr-attr-server}"`, the
+      same convention `VS_BIN`/`VS_ADMIN_BIN` use for staged binaries; start it with a
+      `user.sub`-keyed JSON; connect with the fake IdP token; assert the actor carries the mapped attributes
       and `user.zpr.authority = google`; issue a visa on `allow contractors to access Web`;
       edit the JSON to drop `contractor`; `zpr-attr-server --notify user.sub=...`; assert
       the visa is revoked and a re-request is denied. Then the untargeted `{}` body once.
 - [ ] Wire it into the netns tier alongside the interplay test.
 
-**Acceptance.** Passes under `zpr-dev build --tier netns`; the revocation assertion fails if
+**Acceptance.** Passes under `zpr-dev build --test netns`; the revocation assertion fails if
 V2's event is not queued (verified by running once with the notify step removed).
 
 ---
@@ -511,6 +553,10 @@ V2's event is not queued (verified by running once with the notify step removed)
 - [ ] `docs/SECURITY_MODEL.md`: *Networked attribute sources* under implementation status is
       no longer true — say what is; add the RFC-13.1 HMAC departure note by reference.
 - [ ] `docs/ZPL.md`: the `[trusted_services.<NAME>]` table row lists `zpr-attr/1`.
+- [ ] `zpr-dev`: stage `zpr-attr-server` from `build-release/` in `src/build/recipes.rs`
+      (the visa-service recipe's staged list and the binary-name list beside it); update the
+      recipe table in `zpr-dev/docs/specs/spec-003-build.md` §5 and the `make release` binary
+      list in `docs/BUILD.md`. The set grows from ten binaries to eleven.
 - [ ] `build-sets/<date>.yaml`: a set at the post-plan floors, built and gated with
       `zpr-dev build`.
 - [ ] This document: `**Status:** COMPLETE (<date>)`, issue links, the V-outcomes recorded.

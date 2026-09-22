@@ -110,7 +110,7 @@ returns_attributes = [
 | Property | Rule |
 |---|---|
 | `url` | Required. `https` with a host, no query or fragment. May carry a path prefix; the visa service appends `/query` and `/schema`. A trailing slash is normalised away. |
-| `ca_cert_path` | Optional. Path, relative to the `.zplc`, of a PEM file holding one or more `CERTIFICATE` blocks. Its **contents** are embedded in the compiled policy, so the pin is signed along with everything else; the visa service adds them to its trust roots for this service. Absent means system roots. |
+| `ca_cert_path` | Optional. Path, relative to the `.zplc`, of a PEM file holding one or more `CERTIFICATE` blocks. Its **contents** are embedded in the compiled policy, so the pin is signed along with everything else. When present it is **exclusive**: the visa service trusts only these roots for this service and disables the built-in system roots, so a certificate for the same hostname chaining to a public CA is rejected. Absent means system roots. |
 | `timeout_seconds` | Optional. Whole-request timeout the visa service applies to every call. Default 5, maximum 30. |
 | `expiration_seconds` | Required and positive. Default lifetime of every attribute returned, and the ceiling on any lifetime the service asks for. The visa service enforces the same 60-second floor as the file store. |
 | `returns_attributes` | Required, at least one mapping. Service-side names on the left, ZPR names on the right, the usual `{}` and `#` markers. |
@@ -155,8 +155,9 @@ token the visa service presents is **not** in the policy — see *Configuration*
 ## The wire protocol
 
 Every endpoint lives under the policy's `url`. All requests and responses are
-`application/json`, UTF-8. TLS is mandatory and is verified against system
-roots plus the policy's `ca_cert_path`, if any. Every request carries
+`application/json`, UTF-8. TLS is mandatory and is verified against the
+policy's `ca_cert_path` alone when one is pinned, otherwise against system
+roots. Every request carries
 
 ```
 Authorization: Bearer <token>
@@ -349,16 +350,21 @@ Responses: `202` accepted (reconcile queued; the outcome is logged, as for the
 cache flush), `400` malformed, `403` key lacks permission, `404` no such
 trusted service.
 
-The endpoint is gated by a new API-key permission level, **`notify`**, that can
-reach this endpoint and nothing else — the same least-privilege precedent as
-the `resolve` level the CoreDNS plugin uses. A hosted attribute service holds
-a visa-service credential; it should be one that can do exactly one thing.
+The endpoint is gated by a new API-key permission level, **`notify`**, that
+can reach this endpoint and nothing else — the same least-privilege precedent
+as the `resolve` level the CoreDNS plugin uses. A `notify` key is **bound to
+exactly one trusted-service id** when it is minted (`vsapikey ... --service
+<id>`), and a request whose `{id}` names any other service is `403`. So a
+compromised attribute service can force re-queries of its own declaration
+and nothing else; it cannot flush another attribute store or an
+authentication service. A `readwrite` key may name any id, as an administrator
+can today with the cache flush.
 
-Since `{id}` is the trusted-service id from policy and the key is per visa
-service, a multi-tenant attribute service holds one `notify` key per ZPRnet it
-serves and posts to that ZPRnet's visa service. There is no rate limiting in
-`zpr-attr/1`; a chatty notifier costs a reconcile pass per call, which is the
-same cost an administrator flushing the cache would incur.
+Since the key is per visa service and per declaration, a multi-tenant
+attribute service holds one `notify` key per (ZPRnet, declaration) it serves
+and posts to that ZPRnet's visa service. There is no rate limiting in
+`zpr-attr/1`; a chatty notifier costs a reconcile pass per call against its
+own store, the same cost an administrator flushing that cache would incur.
 
 ### Reserved
 
@@ -473,15 +479,19 @@ denies rather than permits.
 
 - **Transport.** TLS is required; the compiler rejects a non-`https` URL. The
   optional CA pin travels inside the signed policy, so changing it needs the
-  policy signing key. Redirects are refused: a redirect is a way to move a
-  request to a host the pin does not cover.
+  policy signing key, and it is exclusive: with a pin set the built-in roots
+  are disabled, so "pinned" means pinned and not "also trusted". Redirects
+  are refused: a redirect is a way to move a request to a host the pin does
+  not cover.
 - **Caller authentication.** A per-declaration bearer token, read from a file
   the visa service operator controls. It is never written to the policy, never
   logged, and never sent anywhere but the pinned `url`. There is no
   visa-service-wide credential to an attribute service; see *Configuration*
   for why that matters under delegation.
 - **Callback authentication.** The `changed` endpoint requires a visa-service
-  API key with the `notify` permission, which cannot read or change anything.
+  API key with the `notify` permission, which cannot read or change anything
+  and is bound to one trusted-service id, so the blast radius of a leaked key
+  is one store's reconcile passes.
 - **Bounded work.** Every call has a timeout (≤ 30 s) and a body cap (1 MiB).
   A slow or verbose service can deny its own actors' visas — the fail-closed
   outcome — but cannot hold a request worker indefinitely.
@@ -547,6 +557,6 @@ limiting on `changed`.
 | Factory arm, api constant | `zl-zpr-visaservice/vs/src/trusted_services/factory.rs` |
 | Secrets directory | `zl-zpr-visaservice/vs/src/config.rs` (`ts_secrets_dir`) |
 | `changed` endpoint, `notify` permission | `zl-zpr-visaservice/vs/src/admin_service.rs`, `admin_apikeys.rs`, `admin-http-api.txt` |
-| Reference server | `zl-zpr-visaservice/zpr-attr-server/` |
+| Reference server | `zl-zpr-visaservice/zpr-attr-server/`, staged by `make release` so the netns tier can run it |
 | End-to-end test | `zl-zpr-core/integration-test/attr-query-test.sh` |
 | OpenAPI rendering | `docs/zpr-attr-v1.openapi.yaml` (this repository) |
