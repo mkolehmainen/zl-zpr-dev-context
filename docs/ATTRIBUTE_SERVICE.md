@@ -14,10 +14,12 @@ the protocol. Read it alongside [VISA_SERVICE.md](VISA_SERVICE.md) (how
 attributes are refreshed and when a visa is denied) and
 [SECURITY_MODEL.md](SECURITY_MODEL.md) (what an attribute's provenance means).
 
-**Status.** Design, sequenced by `docs/plans/2026-09-22-attr-query.md` (umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72)). The
-wire protocol is also rendered as `docs/zpr-attr-v1.openapi.yaml`. Nothing
-below is implemented yet; the `## Implementation status` section at the end is
-the record of what is.
+**Status.** Implemented as of 2026-09-22, by zipline issues #74–#81 under
+umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72),
+sequenced by `docs/plans/2026-09-22-attr-query.md` (now COMPLETE). This
+document and the code are current. The wire protocol is also rendered as
+`docs/zpr-attr-v1.openapi.yaml`. The `## Implementation status` section at the
+end records version floors and what was deliberately not built.
 
 ---
 
