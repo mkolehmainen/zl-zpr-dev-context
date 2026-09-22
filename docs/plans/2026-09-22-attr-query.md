@@ -1,6 +1,37 @@
 # Attribute Query — networked attribute sources and the `zpr-attr/1` API
 
-**Status:** IN FLIGHT — umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72); S1 merged (mkolehmainen/zl-zpr-dev-context#17). Spec: `docs/ATTRIBUTE_SERVICE.md`. While this plan is in flight it wins over the spec wherever they disagree.
+**Status:** COMPLETE (2026-09-22) — umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72), delivered by
+[#73](https://github.com/mkolehmainen/zipline/issues/73) (S1, spec + this plan),
+[#74](https://github.com/mkolehmainen/zipline/issues/74) (P1),
+[#75](https://github.com/mkolehmainen/zipline/issues/75) (C1, `zpr` v0.29.0),
+[#76](https://github.com/mkolehmainen/zipline/issues/76) (K1, compiler 0.19.0),
+[#77](https://github.com/mkolehmainen/zipline/issues/77) (R1),
+[#78](https://github.com/mkolehmainen/zipline/issues/78) (V1),
+[#79](https://github.com/mkolehmainen/zipline/issues/79) (V2),
+[#80](https://github.com/mkolehmainen/zipline/issues/80) (V3),
+[#81](https://github.com/mkolehmainen/zipline/issues/81) (E1) and
+[#82](https://github.com/mkolehmainen/zipline/issues/82) (D1, close-out).
+Spec: `docs/ATTRIBUTE_SERVICE.md` — now the current record; this plan is a
+historical document.
+
+**Outcomes.**
+
+- Everything in the issue map landed as scoped; no interface contract changed
+  after approval.
+- The RFC-13.1 per-call HMAC was deliberately not adopted for `zpr-attr/1`
+  (bearer token over pinned TLS instead); recorded in
+  `docs/ATTRIBUTE_SERVICE.md` ("Departure from RFC-13.1") and by reference in
+  `docs/SECURITY_MODEL.md`. The HMAC remains the design of record for the
+  unimplemented `validation/2`.
+- [#81](https://github.com/mkolehmainen/zipline/issues/81)'s e2e run surfaced
+  a pre-existing bug outside this plan's scope: a user-only adapter with no
+  join policy is assigned a dynamic ZPR address it never sends from, so the
+  node denies every bind. Filed as
+  [zipline#83](https://github.com/mkolehmainen/zipline/issues/83); not fixed
+  here.
+- The committed build set `build-sets/2026-09-22.yaml` gates the eleven-binary
+  set (now including `zpr-attr-server`) on the unit tier; the netns tier is
+  operator-run.
 **Date:** 2026-09-22
 **Repo state this plan was written against:** `zl-zpr-dev-context` @ `53cc516`, `zl-zpr-policy` @ `434b276` (tag `v0.11.0`), `zl-zpr-common` @ `4b3ddf4` (tag `v0.28.0`; compiler and visa service both pin `v0.28.0`), `zl-zpr-compiler` @ `d4e306c` (package `0.18.1`), `zl-zpr-visaservice` @ `17ac0fd` (workspace `0.19.1`, `POLICY_MIN_COMPILER_MINOR = 18`), all on `zipline`.
 
@@ -544,22 +575,22 @@ V2's event is not queued (verified by running once with the notify step removed)
 
 ### Task D1: status updates and build set
 
-- [ ] `docs/ATTRIBUTE_SERVICE.md` `## Implementation status`: what landed, with issue links,
+- [x] `docs/ATTRIBUTE_SERVICE.md` `## Implementation status`: what landed, with issue links,
       and the version floors.
-- [ ] `docs/VISA_SERVICE.md`: the *Trusted-service attribute stores are file-backed only*
+- [x] `docs/VISA_SERVICE.md`: the *Trusted-service attribute stores are file-backed only*
       divergence bullet becomes history; add `zpr-attr/1` to *Inside `vs`* and to the
       configuration list (`ts_secrets_dir`); admin API paragraph mentions `changed` and the
       `notify` key level.
-- [ ] `docs/SECURITY_MODEL.md`: *Networked attribute sources* under implementation status is
+- [x] `docs/SECURITY_MODEL.md`: *Networked attribute sources* under implementation status is
       no longer true — say what is; add the RFC-13.1 HMAC departure note by reference.
-- [ ] `docs/ZPL.md`: the `[trusted_services.<NAME>]` table row lists `zpr-attr/1`.
-- [ ] `zpr-dev`: stage `zpr-attr-server` from `build-release/` in `src/build/recipes.rs`
+- [x] `docs/ZPL.md`: the `[trusted_services.<NAME>]` table row lists `zpr-attr/1`.
+- [x] `zpr-dev`: stage `zpr-attr-server` from `build-release/` in `src/build/recipes.rs`
       (the visa-service recipe's staged list and the binary-name list beside it); update the
       recipe table in `zpr-dev/docs/specs/spec-003-build.md` §5 and the `make release` binary
       list in `docs/BUILD.md`. The set grows from ten binaries to eleven.
-- [ ] `build-sets/<date>.yaml`: a set at the post-plan floors, built and gated with
+- [x] `build-sets/<date>.yaml`: a set at the post-plan floors, built and gated with
       `zpr-dev build`.
-- [ ] This document: `**Status:** COMPLETE (<date>)`, issue links, the V-outcomes recorded.
+- [x] This document: `**Status:** COMPLETE (<date>)`, issue links, the V-outcomes recorded.
 
 ---
 
