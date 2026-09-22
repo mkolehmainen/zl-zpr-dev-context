@@ -137,6 +137,7 @@ Taken 2026-09-22 with the operator, recorded here so no issue re-opens them.
 | Identity keys on the wire | ZPR key names (`user.sub`, `device.zpr.adapter.cn`, `user.zpr.authority`) | Mirrors the `file` store JSON; no reverse mapping; the authority marker has no service-side name. |
 | SCHEMA use by the visa service | Fetch once at store build, `warn` on mismatch, never fail | Catches typos and the `user.email` keying mistake; keeps policy authoritative and installs independent of the service being up. |
 | SCHEMA format | SCIM 2.0 attribute definitions (RFC 7643 §7) inside a small envelope carrying `identityKeys` | Directories already speak SCIM, so a SCIM-backed service copies its `Schema.attributes` through; `canonicalValues` gives editors allowed-value lists for free. JSON Schema rejected for the schema itself: it describes JSON shapes, and single/multi/tag all travel as `values: [...]`. Reserved as a later per-value constraint. |
+| Credential scope | One bearer token per trusted-service declaration id; none per URL or per visa service; same-URL declarations under different ids are legal | RFC 19 §5–6: the delegating administrator sets the credentials a delegate's policy uses, each delegated policy has its own attribute cache, credential-scoped views sandbox delegates. Per-id tokens and per-id source stamps give all three now; `/schema` with the fragment's token is the RFC's compiler check. |
 | Machine-readable API description | `docs/zpr-attr-v1.openapi.yaml`, non-normative | Implementers (zipline first) get a document tools can consume; V3's contract tests hold the reference server to it. The spec stays normative so two sources cannot silently diverge. |
 | Where the contract lives | `docs/ATTRIBUTE_SERVICE.md`; this plan sequences | A completed plan is a frozen historical record; the contract must stay current. |
 
@@ -406,7 +407,9 @@ arm, the install-time schema check. Nothing in `connection_control.rs`,
       inside `build_services`, never fails the install.
 - [ ] `factory.rs`: `TS_API_ATTR_QUERY`; accept it in `trusted_service_definitions` (require
       `attr_query`, reject a missing record); build arm passing `ts_secrets_dir` and the
-      policy.
+      policy. **Do not** add a duplicate-`url` check: two declarations against one URL with
+      different ids and tokens are legal and are the delegation shape (spec, *Configuration*).
+      Test it: two ids, one mock URL, two tokens, each request carries its own.
 - [ ] Tests, using an in-process TLS mock on the `spawn_tls_jwks_server` pattern (a tiny
       `axum` router the test controls):
   - happy path: all three types, `expires_at` clamped both ways, unmapped names dropped;

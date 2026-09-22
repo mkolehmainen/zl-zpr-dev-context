@@ -304,7 +304,11 @@ need.
 The schema exists mainly for **policy editors** — an online editor can check a
 `returns_attributes` list as it is typed and offer `canonicalValues` as
 completions. The visa service also fetches it **once, when the store is built
-at policy install**, and:
+at policy install**. The response is **scoped to the credential that asked**:
+a service that serves different views to different tokens returns the
+vocabulary that token can see, which is exactly the check RFC 19 section 6
+asks the compiler to make for a delegated fragment — a `/schema` call with
+the fragment's own token, no new protocol. At install the visa service:
 
 - logs a `warn` for every mapped name the schema does not list;
 - logs a `warn` for every mapped name whose policy spelling (`{}`, `#`, plain)
@@ -420,6 +424,27 @@ whitespace, when it is built. A missing or empty file is a
 store whose JSON is absent — a store that cannot authenticate cannot answer,
 and a policy naming it cannot be run. Path anchoring follows `file_ts_dir`.
 
+**One credential per declaration, never per URL, never shared.** The token
+belongs to the trusted-service *id*, and the visa service holds no other
+credential toward an attribute service: it is never "root" there, only
+whatever the declaring administrator was granted. Two declarations may name
+the same `url` under different ids with different tokens; they are two
+stores, two clients, two source stamps, and the factory must **not** reject
+the pair (the OIDC factory's duplicate-issuer rule does not apply here). This
+is what ZPR policy delegation (RFC 19, sections 5 and 6) requires: the parent
+administrator "sets the credentials with which B's policy will access
+trusted services", each delegated policy keeps its own attribute cache, and a
+service that serves credential-scoped views sandboxes a delegate by what its
+token can see. A delegated fragment declaring the zipline service under its
+own id with its own token gets all three properties from this design without
+a protocol change. Only identity verification (the OIDC provider) uses
+credentials global to the visa service, as the RFC says it should.
+
+The remaining seam is the filename: `<service-id>.token` requires a plain
+filename, and a delegation scheme with hierarchical ids will need a safe
+mapping. It is the same change the `file` store's `<id>.json` needs, so the
+two move together when the time comes.
+
 ### Refresh, pruning and revocation
 
 Nothing changes. An attribute service's attributes carry its id as their
@@ -450,9 +475,11 @@ denies rather than permits.
   optional CA pin travels inside the signed policy, so changing it needs the
   policy signing key. Redirects are refused: a redirect is a way to move a
   request to a host the pin does not cover.
-- **Caller authentication.** A per-service bearer token, read from a file the
-  visa service operator controls. It is never written to the policy, never
-  logged, and never sent anywhere but the pinned `url`.
+- **Caller authentication.** A per-declaration bearer token, read from a file
+  the visa service operator controls. It is never written to the policy, never
+  logged, and never sent anywhere but the pinned `url`. There is no
+  visa-service-wide credential to an attribute service; see *Configuration*
+  for why that matters under delegation.
 - **Callback authentication.** The `changed` endpoint requires a visa-service
   API key with the `notify` permission, which cannot read or change anything.
 - **Bounded work.** Every call has a timeout (≤ 30 s) and a body cap (1 MiB).
