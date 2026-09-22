@@ -1,0 +1,486 @@
+# Attribute Services and the `zpr-attr/1` API
+
+How the visa service obtains actor attributes from a networked source, and the
+wire protocol such a source implements. The first implementer is **zipline**,
+the hosted-ZPRnet product, whose database of per-actor attributes the visa
+service must query. The protocol is deliberately small enough that an
+organisation can put it in front of any attribute source — an LDAP directory,
+Active Directory, Okta, a spreadsheet — and have the visa service consume it
+natively. Think of it as the reference adapter layer for attribute sources.
+
+Read this before changing an attribute store in the visa service, the
+`api = "zpr-attr/1"` trusted-service declaration, or anything that implements
+the protocol. Read it alongside [VISA_SERVICE.md](VISA_SERVICE.md) (how
+attributes are refreshed and when a visa is denied) and
+[SECURITY_MODEL.md](SECURITY_MODEL.md) (what an attribute's provenance means).
+
+**Status.** Design, sequenced by `docs/plans/2026-09-22-attr-query.md`. Nothing
+below is implemented yet; the `## Implementation status` section at the end is
+the record of what is.
+
+---
+
+## Sources
+
+| Source | Status |
+|---|---|
+| `docs/plans/2026-09-22-attr-query.md` | The master plan: ordering, issues, acceptance criteria. Wins over this document while it is in flight. |
+| `zl-zpr-visaservice/vs/src/trusted_services/` | The store trait and the two stores that exist today (`file`, `oidc`). |
+| internal RFC-13.1, *Authentication, Identity and Attributes* | Design intent for trusted services generally. This document departs from it in one place, recorded under *Security*. |
+
+---
+
+## The model
+
+A **trusted service** is anything policy names as a source of attributes.
+Today three kinds exist:
+
+| Kind | Declared as | Authenticates? | Vends attributes? |
+|---|---|---|---|
+| bootstrap | `[bootstrap]` | yes — RSA key challenge | the device CN only |
+| OIDC provider | `api = "oidc"` | yes — validated `id_token` | the token's claims |
+| file store | `api = "file"` | no | a local `<id>.json` |
+
+An **attribute service** — `api = "zpr-attr/1"` — is a fourth kind and belongs
+in the last row's column: it **never authenticates anyone**. It answers one
+question, *what do you know about this actor?*, for an actor named by the
+identities other services have already established. It therefore behaves
+exactly like a `file` store from the visa service's point of view — a
+*decorating* source, keyed on identity attributes it did not itself vend — and
+inherits every rule that already governs one:
+
+- **Queried by identity attributes only.** The lookup set is computed from the
+  authenticated claims before any store is consulted
+  (`vs/src/trusted_services/mod.rs`, `lookup_identities`), so an attribute
+  service can only be keyed on a declared identity attribute (`user.sub`, the
+  device CN) plus the reserved authority marker. See VISA_SERVICE.md,
+  *Authenticating actors*, for why that is structural.
+- **It cannot own `user.zpr.authority`.** `derive_user_authority` refuses to
+  mint an authority over one held by a different source; a decorating store
+  never displaces the credential verifier (SECURITY_MODEL.md, *The authority
+  marker belongs to the credential verifier*).
+- **It fails closed.** A store error makes the actor's claim set
+  *indeterminate* and the visa is denied; an unknown actor is an empty answer,
+  not an error; two matched identities that disagree on a value are an error,
+  never a coin flip.
+
+Every attribute is a tuple `(key, values, expiry)`. The visa service adds two
+things the service does not send: the **source** (the trusted-service id, so
+the refresh path can prune what a source stops vending) and the **type** —
+single-valued, multi-valued or tag — which comes from policy's
+`returns_attributes` mapping, not from the service. A service returns names
+and values; policy decides what they mean.
+
+### The four operations
+
+The plan names four things a visa service might want from an attribute source.
+`zpr-attr/1` specifies the first two, provides the third through the visa
+service's existing invalidation machinery, and reserves the fourth.
+
+| Operation | What it is | In `zpr-attr/1` |
+|---|---|---|
+| **QUERY** | "Give me everything you have for this actor", optionally narrowed to the keys policy cares about. | `POST {url}/query` |
+| **SCHEMA** | The attribute names and types the service can return. Useful to policy editors; the visa service uses it to catch a misspelt mapping at install time. | `GET {url}/schema` |
+| **STREAM** | "Tell me when this actor's attributes change." | Inverted: the service notifies the visa service over the admin API, which already knows how to re-query and revoke. See *Change notification*. |
+| **SATISFIES** | "Which actors satisfy `role=consultant, location=finland`?" — needed for policy assertions. | Reserved as `POST {url}/satisfies`. Not specified. |
+
+---
+
+## Declaring an attribute service in policy
+
+In the `.zplc` configuration:
+
+```toml
+[trusted_services.zipline]
+api = "zpr-attr/1"
+url = "https://attrs.zipline.example/tenant-7"   # base of the API; https required
+ca_cert_path = "zipline-ca.pem"                  # optional: PEM, embedded in the policy
+timeout_seconds = 5                               # optional: 1..=30, default 5
+expiration_seconds = 3600                         # required: how long returned attributes live
+returns_attributes = [
+  "dept -> user.dept",             # single-valued
+  "roles -> user.role{}",          # multi-valued
+  "contractor -> #user.contractor" # tag
+]
+```
+
+| Property | Rule |
+|---|---|
+| `url` | Required. `https` with a host, no query or fragment. May carry a path prefix; the visa service appends `/query` and `/schema`. A trailing slash is normalised away. |
+| `ca_cert_path` | Optional. Path, relative to the `.zplc`, of a PEM file holding one or more `CERTIFICATE` blocks. Its **contents** are embedded in the compiled policy, so the pin is signed along with everything else; the visa service adds them to its trust roots for this service. Absent means system roots. |
+| `timeout_seconds` | Optional. Whole-request timeout the visa service applies to every call. Default 5, maximum 30. |
+| `expiration_seconds` | Required and positive. Default lifetime of every attribute returned, and the ceiling on any lifetime the service asks for. The visa service enforces the same 60-second floor as the file store. |
+| `returns_attributes` | Required, at least one mapping. Service-side names on the left, ZPR names on the right, the usual `{}` and `#` markers. |
+
+Rejected, each with its own diagnostic: `identity_attributes` (a decorating
+store is keyed on other services' identities, the same rule as `api = "file"`),
+`provider`, `client`, `cert_path` and `prefix` (BAS-era `validation/2`
+machinery with no meaning here). **`service` is reserved**: it will one day name
+a ZPR service through which the visa service reaches an on-net attribute
+service, on the `jwks_proxy_service` pattern; in `zpr-attr/1` it is rejected
+with a message saying so. Reaching the service over ordinary IP is the only
+mode.
+
+The weaver treats an attribute service exactly like a `file` store: retained
+when a policy statement references one of its attributes, pruned otherwise. It
+declares no identity attributes, so the identity-vendor retention rule
+(ZPL.md) never applies.
+
+### Compiled form
+
+`policy.capnp` gains one struct and one field:
+
+```capnp
+struct TrustedService {
+  # ... existing fields @0-@4 ...
+  attrQuery @5 :AttrQueryConfig;   # populated only when api = "zpr-attr/1"
+}
+
+struct AttrQueryConfig {
+  url            @0 :Text;
+  caCertPem      @1 :Text;    # "" = system roots
+  timeoutSeconds @2 :UInt32;
+}
+```
+
+Mirrored in `zl-zpr-common` as `TrustedService.attr_query: Option<AttrQueryConfig>`;
+an unset pointer decodes as `None`, exactly as `oidc` does today. The bearer
+token the visa service presents is **not** in the policy — see *Configuration*.
+
+---
+
+## The wire protocol
+
+Every endpoint lives under the policy's `url`. All requests and responses are
+`application/json`, UTF-8. TLS is mandatory and is verified against system
+roots plus the policy's `ca_cert_path`, if any. Every request carries
+
+```
+Authorization: Bearer <token>
+```
+
+The token identifies the caller and, for a hosted multi-tenant service such as
+zipline, the tenant. **The protocol has no tenant parameter**: a service that
+serves several ZPRnets keys them off the credential, never off anything in the
+request body, so a visa service cannot ask about another tenant's actors by
+naming it.
+
+Redirects are not followed. Response bodies are read under a 1 MiB cap. The
+visa service does not retry within a request; the refresh path retries
+naturally on the actor's next visa request.
+
+### `POST {url}/query`
+
+Request:
+
+```json
+{
+  "identities": {
+    "user.sub": "10769150350006150715113082367",
+    "user.zpr.authority": "google",
+    "device.zpr.adapter.cn": "laptop.zpr.org"
+  },
+  "attributes": ["dept", "roles", "contractor"]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `identities` | The actor's lookup-identity set as **ZPR key names**, exactly what `lookup_identities` produces: every policy-declared identity attribute the actor carries, plus `user.zpr.authority` when it has one. Values are single strings — a multi-valued attribute can never name an identity. This is the same shape as the top two levels of a `file` store's JSON, so a service can key its records precisely as a file store does. `user.zpr.authority` is always included when present because identities such as an OIDC `sub` are unique only within their issuer; a service serving actors from two providers must scope on it. |
+| `attributes` | The service-side names from `returns_attributes` — the only names the visa service will keep. A hint: the service **may** use it to avoid fetching what will be discarded, and **may** ignore it. The visa service filters the response through the mapping regardless. |
+
+Response, `200 OK`:
+
+```json
+{
+  "attributes": {
+    "dept":       { "values": ["eng"] },
+    "roles":      { "values": ["a", "b"], "expires_at": "2026-09-22T15:00:00Z" },
+    "contractor": { "values": [] }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `attributes` | An object keyed by service-side attribute name. Names not in the policy mapping are ignored. An unknown actor is `{}` — a **successful, empty** answer, not an error, matching the file store. |
+| `values` | Required. An array of strings. For a **single-valued** mapping it must hold exactly one element. For a **multi-valued** mapping, any number. For a **tag**, the name's presence is the tag and `values` is ignored (`[]` is conventional). |
+| `expires_at` | Optional, RFC 3339. When this attribute stops being true as far as the service knows. The visa service uses `min(expires_at, now + expiration_seconds)`: **policy can shorten a lifetime but never extend one** (SECURITY_MODEL.md). Absent means the policy default. A value already in the past makes the attribute absent. |
+
+How the visa service reads the response, in order:
+
+1. Anything but `200` with a JSON body, a body over the cap, or a body that
+   does not parse to the shape above is an **error**. The actor becomes
+   indeterminate and the pending visa is denied. In particular a `404` means
+   the URL is wrong; it never means "unknown actor".
+2. Each returned name is mapped through `returns_attributes`. Unmapped names
+   are dropped silently (they were never going to become attributes).
+3. A single-valued mapping whose `values` has more than one element is an
+   **error** for the whole response: the service and the policy disagree about
+   what the attribute *is*, and picking the first element would make an
+   authorisation depend on the service's iteration order. (The `file` store is
+   lenient here and takes the first; that is a pre-existing divergence, out of
+   scope for this document.)
+4. A single- or multi-valued mapping with empty `values` is **absent** — the
+   service is saying it has no value — and the attribute is pruned from the
+   actor like any attribute a source stopped vending.
+5. Expiry is clamped as above; the attribute is stamped with this service's
+   id as its source.
+
+Status codes a service uses:
+
+| Code | Meaning |
+|---|---|
+| `200` | Answer follows, possibly `{"attributes": {}}`. |
+| `400` | Malformed request. |
+| `401` | Missing or unknown bearer token. |
+| `403` | Token valid, but not permitted to query. |
+| `409` | **Conflict.** The identities named resolve to records that disagree on some attribute's value. The service must not pick a winner; this is the fail-closed rule of the store trait, moved to the side that can see the records. |
+| `5xx` | Service failure. |
+
+Everything other than `200` is treated identically by the visa service — deny,
+log the status, retry on the next request — but the distinction is worth
+making for operators reading the service's logs.
+
+### `GET {url}/schema`
+
+Request has no body. Response, `200 OK`:
+
+```json
+{
+  "identity_keys": ["user.sub", "device.zpr.adapter.cn"],
+  "attributes": [
+    { "name": "dept",       "type": "single", "description": "Cost centre" },
+    { "name": "roles",      "type": "multi" },
+    { "name": "contractor", "type": "tag",    "description": "Not an employee" }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `identity_keys` | The ZPR identity keys this service can look up on. Empty or absent means "unspecified". |
+| `attributes[].name` | A service-side name, as it would appear on the left of `returns_attributes`. |
+| `attributes[].type` | `single`, `multi` or `tag`. |
+| `attributes[].description` | Optional, for editors. |
+
+The schema exists mainly for **policy editors** — an online editor can check a
+`returns_attributes` list as it is typed. The visa service also fetches it
+**once, when the store is built at policy install**, and:
+
+- logs a `warn` for every mapped name the schema does not list;
+- logs a `warn` for every mapped name whose policy type (`{}`, `#`, plain)
+  disagrees with the schema's;
+- logs a `warn` if `identity_keys` is non-empty and shares nothing with the
+  policy's lookup-identity keys — the classic misconfiguration of keying a
+  store on `user.email`;
+- logs one `info` line and moves on if the endpoint is missing or fails.
+
+**A schema disagreement never fails a policy install.** Policy is
+authoritative; the schema is advice. Coupling installation to a network call
+would let an attribute service outage block a policy fix.
+
+### Change notification
+
+STREAM is delivered by inverting the direction: the attribute service tells the
+visa service that something changed, and the visa service does what it already
+does when a store is flushed — re-query the affected actors, re-evaluate their
+live visas, revoke the ones that no longer hold (`VsEvent::TrustedServiceChange`
+in `vs/src/event_mgr.rs`). No standing connection, no replay protocol, no new
+worker.
+
+The service calls the visa service's admin API:
+
+```
+POST /admin/services/{id}/changed
+X-API-Key: <key with notify permission>
+```
+
+with one of two bodies:
+
+| Body | Effect |
+|---|---|
+| `{}` | **Everything changed.** Equivalent to today's `DELETE /admin/services/{id}/cache`: the store's revision is bumped, so every actor is stale for this source and is re-queried on its next visa request; actors behind live visas are re-queried now. |
+| `{"identities": [{"user.sub": "…"}, {"device.zpr.adapter.cn": "…"}]}` | **These actors changed.** Each entry is one identity pair. Every connected actor carrying that pair has its recorded revision for this source forgotten, which makes the source stale for that actor alone; the same reconcile pass follows. Other actors are untouched. |
+
+Responses: `202` accepted (reconcile queued; the outcome is logged, as for the
+cache flush), `400` malformed, `403` key lacks permission, `404` no such
+trusted service.
+
+The endpoint is gated by a new API-key permission level, **`notify`**, that can
+reach this endpoint and nothing else — the same least-privilege precedent as
+the `resolve` level the CoreDNS plugin uses. A hosted attribute service holds
+a visa-service credential; it should be one that can do exactly one thing.
+
+Since `{id}` is the trusted-service id from policy and the key is per visa
+service, a multi-tenant attribute service holds one `notify` key per ZPRnet it
+serves and posts to that ZPRnet's visa service. There is no rate limiting in
+`zpr-attr/1`; a chatty notifier costs a reconcile pass per call, which is the
+same cost an administrator flushing the cache would incur.
+
+### Reserved
+
+Two endpoints are named so that no implementer takes the paths for something
+else. Neither is specified, and a visa service running `zpr-attr/1` never
+calls them.
+
+- **`GET {url}/stream`** — a standing subscription (server-sent events) that
+  pushes `changed` notifications to the visa service instead of requiring the
+  service to hold a visa-service credential. Worth building when an attribute
+  service must sit somewhere it cannot reach the admin API from, or when the
+  reconcile-everything cost of the webhook is too coarse.
+- **`POST {url}/satisfies`** — an attribute expression in, a list of identity
+  pairs out. Needed by policy assertions ("no consultant in Finland may reach
+  Payroll") and by editors that want to preview who a rule matches. Waits on
+  the assertion work; the expression syntax is the open question.
+
+A batch form of `query` (several actors per call) is also deferred: the visa
+service refreshes one actor at a time today, so nothing would call it.
+
+---
+
+## The visa service side
+
+### Store
+
+`api = "zpr-attr/1"` is constructed by the factory
+(`vs/src/trusted_services/factory.rs`) into an `AttrQueryStore`
+(`vs/src/trusted_services/attr_query_store.rs`) implementing
+`TrustedServiceInterface`. The four trait methods map directly:
+
+| Method | Behaviour |
+|---|---|
+| `get_attributes_for_actor(identities)` | One `POST {url}/query`; map, validate and clamp the response as described above. |
+| `flush()` | Bump the store's revision counter (an `AtomicU64`, as the OIDC store does). There is no cache to drop. |
+| `current_revision()` | The counter. |
+| `get_source_id()` | The trusted-service id. |
+
+**The store holds no attribute cache.** The actor's own attribute expiry is the
+cache: `refresh_expired_attributes` (`vs/src/actor_attributes.rs`) re-queries a
+source only when one of its attributes has expired or its revision moved, and
+the visa request path consults it only then. A snapshot cache in the store
+would be a second TTL to reason about with nothing to buy.
+
+One `reqwest::Client` per store, built the way `KeySource` in
+`vs/src/oidc/jwks.rs` builds its JWKS client: no redirects, the pinned roots
+added, the policy timeout applied. A store whose `url` or pins change across a
+policy install is rebuilt; `TrustedServiceDefinition` already compares the
+whole policy record.
+
+### Configuration
+
+The bearer token lives with the visa service, never in the signed policy:
+
+```toml
+[core]
+ts_secrets_dir = "secrets"    # default "."; relative paths anchor at vs.toml
+```
+
+The store reads `<ts_secrets_dir>/<service-id>.token`, trimmed of surrounding
+whitespace, when it is built. A missing or empty file is a
+`TrustedServiceInit` error and the policy install fails, the same as a `file`
+store whose JSON is absent — a store that cannot authenticate cannot answer,
+and a policy naming it cannot be run. Path anchoring follows `file_ts_dir`.
+
+### Refresh, pruning and revocation
+
+Nothing changes. An attribute service's attributes carry its id as their
+source and the clamped expiry, so:
+
+- on expiry the actor is re-queried on its next visa request, and anything the
+  service no longer returns is pruned (`prune_from_source`);
+- on a revision bump — a `changed` notification or a cache flush — every actor
+  is re-queried, and the reconcile pass re-checks and revokes live visas;
+- on error the actor is indeterminate and denied, and the source stays stale
+  so the next request tries again (`REVISION_NEVER`).
+
+The new `changed` endpoint with identities adds one manager method,
+`TrustedServicesMgr::forget_source_revision(zpr_addr, source)`, the per-source
+sibling of `forget_actor_revisions`.
+
+---
+
+## Security
+
+Threat model, in the terms of SECURITY_MODEL.md: the attribute service is a
+**trusted source**, so its answers are as trustworthy as it is and no more;
+the controls below are about making sure the visa service is talking to the
+service policy named, that nobody else can, and that a failure anywhere
+denies rather than permits.
+
+- **Transport.** TLS is required; the compiler rejects a non-`https` URL. The
+  optional CA pin travels inside the signed policy, so changing it needs the
+  policy signing key. Redirects are refused: a redirect is a way to move a
+  request to a host the pin does not cover.
+- **Caller authentication.** A per-service bearer token, read from a file the
+  visa service operator controls. It is never written to the policy, never
+  logged, and never sent anywhere but the pinned `url`.
+- **Callback authentication.** The `changed` endpoint requires a visa-service
+  API key with the `notify` permission, which cannot read or change anything.
+- **Bounded work.** Every call has a timeout (≤ 30 s) and a body cap (1 MiB).
+  A slow or verbose service can deny its own actors' visas — the fail-closed
+  outcome — but cannot hold a request worker indefinitely.
+- **Fail closed everywhere.** Transport error, bad status, malformed body,
+  type disagreement on a single-valued attribute, `409` from the service: all
+  deny. The only non-denying outcomes are `200` with a well-formed body.
+- **Provenance intact.** The store stamps every attribute with its own id and
+  can neither mint nor displace `user.zpr.authority`. A compromised attribute
+  service can lie about `dept`; it cannot claim to have authenticated anyone.
+- **No values in logs above `debug`.** Attribute values are personal data in
+  most deployments.
+
+**Departure from RFC-13.1.** SECURITY_MODEL.md records the RFC's design for
+trusted-service calls: each signed with an HMAC over the function name, an RFC
+3339 timestamp and the canonically serialised arguments. `zpr-attr/1` does not
+adopt it. Over TLS to a pinned endpoint, a bearer token proves the caller and
+the channel proves integrity and freshness; the HMAC adds replay and
+canonicalisation machinery that every third-party implementer would have to get
+exactly right, which is the opposite of what a reference API is for. Should a
+deployment need the visa service to talk to an attribute service over a channel
+it does not trust, the right answer is the reserved `service` property and an
+on-net path, not a second signature. The RFC's HMAC remains the design of
+record for `validation/2`, which nothing implements.
+
+---
+
+## Implementation status
+
+**Nothing in this document is implemented** as of 2026-09-22. The visa
+service's factory accepts `api = "file"` and `api = "oidc"` only, and rejects
+every other value (`vs/src/trusted_services/factory.rs`,
+`trusted_service_definitions`). The build is sequenced by
+`docs/plans/2026-09-22-attr-query.md`; while that plan is in flight it wins
+over this document wherever they disagree, per the `docs/plans/` rule in
+`AGENTS.md`.
+
+Already in place and relied on, unchanged:
+
+- The store trait `TrustedServiceInterface` and the manager
+  `TrustedServicesMgr` (`vs/src/trusted_services/mod.rs`, `manager.rs`).
+- Identity-keyed lookups (`lookup_identities`) and the authority ownership
+  rule (`derive_user_authority`), both in `vs/src/trusted_services/mod.rs`.
+- Expiry- and revision-driven refresh with pruning and the indeterminate
+  outcome (`vs/src/actor_attributes.rs`).
+- Flush-triggered reconcile and visa revocation
+  (`DELETE /admin/services/{id}/cache` in `vs/src/admin_service.rs`,
+  `handle_trusted_service_change` in `vs/src/event_mgr.rs`).
+- The `OidcConfig` pattern for threading a per-kind configuration through
+  `policy.capnp`, `zl-zpr-common`, the compiler and the factory.
+
+Not built, and not planned in `zpr-attr/1`: `GET {url}/stream`,
+`POST {url}/satisfies`, batch query, on-net reach via `service`, request rate
+limiting on `changed`.
+
+## Where the code will live
+
+| Concern | Location |
+|---|---|
+| Schema | `zl-zpr-policy/policy.capnp` (`AttrQueryConfig`) |
+| Rust mirror | `zl-zpr-common/src/policy_types/trusted_service.rs` |
+| `.zplc` parsing | `zl-zpr-compiler/src/config/trusted_service.rs`, constant in `src/zpl.rs` |
+| Store | `zl-zpr-visaservice/vs/src/trusted_services/attr_query_store.rs` |
+| Factory arm, api constant | `zl-zpr-visaservice/vs/src/trusted_services/factory.rs` |
+| Secrets directory | `zl-zpr-visaservice/vs/src/config.rs` (`ts_secrets_dir`) |
+| `changed` endpoint, `notify` permission | `zl-zpr-visaservice/vs/src/admin_service.rs`, `admin_apikeys.rs`, `admin-http-api.txt` |
+| Reference server | `zl-zpr-visaservice/zpr-attr-server/` |
+| End-to-end test | `zl-zpr-core/integration-test/attr-query-test.sh` |
