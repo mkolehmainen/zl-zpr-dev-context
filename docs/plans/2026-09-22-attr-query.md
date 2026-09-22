@@ -1,6 +1,6 @@
 # Attribute Query — networked attribute sources and the `zpr-attr/1` API
 
-**Status:** IN FLIGHT — umbrella issue not yet filed. Spec: `docs/ATTRIBUTE_SERVICE.md`. While this plan is in flight it wins over the spec wherever they disagree.
+**Status:** IN FLIGHT — umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72); S1 merged (mkolehmainen/zl-zpr-dev-context#17). Spec: `docs/ATTRIBUTE_SERVICE.md`. While this plan is in flight it wins over the spec wherever they disagree.
 **Date:** 2026-09-22
 **Repo state this plan was written against:** `zl-zpr-dev-context` @ `53cc516`, `zl-zpr-policy` @ `434b276` (tag `v0.11.0`), `zl-zpr-common` @ `4b3ddf4` (tag `v0.28.0`; compiler and visa service both pin `v0.28.0`), `zl-zpr-compiler` @ `d4e306c` (package `0.18.1`), `zl-zpr-visaservice` @ `17ac0fd` (workspace `0.19.1`, `POLICY_MIN_COMPILER_MINOR = 18`), all on `zipline`.
 
@@ -274,21 +274,21 @@ as `R1`, so it must not start until `R1` has merged.
 
 ## Issue map
 
-Filed in `mkolehmainen/zipline`; each names its fork. The umbrella carries these as sub-issues
+Filed in `mkolehmainen/zipline` under umbrella [#72](https://github.com/mkolehmainen/zipline/issues/72); each names its fork. The umbrella carries these as sub-issues
 in this order.
 
 | ID | Repo | Title | Blocked by |
 |---|---|---|---|
-| S1 | zl-zpr-dev-context | `docs/ATTRIBUTE_SERVICE.md` and this master plan | — |
-| P1 | zl-zpr-policy | `AttrQueryConfig` and `TrustedService.attrQuery @5` | S1 |
-| C1 | zl-zpr-common | Mirror `AttrQueryConfig`; round-trip tests; bump the `zpr-policy` submodule; tag `v0.29.0` | P1 |
-| K1 | zl-zpr-compiler | Parse `api = "zpr-attr/1"`, emit `AttrQueryConfig`, fixtures, version `0.19.0` | C1 |
-| R1 | zl-zpr-core | Pin `zpr` `v0.29.0`; regenerate `Cargo.lock`; fix any `TrustedService` literals | C1 |
-| V1 | zl-zpr-visaservice | `AttrQueryStore`: query, schema check, `ts_secrets_dir`, factory arm, min-compiler `0.19.0` | C1 |
-| V2 | zl-zpr-visaservice | `POST /admin/services/{id}/changed` and `Permission::Notify` | V1 |
-| V3 | zl-zpr-visaservice | `zpr-attr-server` reference implementation and protocol contract tests | V2 |
-| E1 | zl-zpr-core | netns end-to-end test: OIDC login + `zpr-attr/1` decoration + `changed` revocation | K1, R1, V3 |
-| D1 | zl-zpr-dev-context | Docs status updates; `zpr-dev` stages `zpr-attr-server`; committed build set; plan COMPLETE | E1 |
+| S1 · [#73](https://github.com/mkolehmainen/zipline/issues/73) | zl-zpr-dev-context | `docs/ATTRIBUTE_SERVICE.md` and this master plan | — |
+| P1 · [#74](https://github.com/mkolehmainen/zipline/issues/74) | zl-zpr-policy | `AttrQueryConfig` and `TrustedService.attrQuery @5` | S1 |
+| C1 · [#75](https://github.com/mkolehmainen/zipline/issues/75) | zl-zpr-common | Mirror `AttrQueryConfig`; round-trip tests; bump the `zpr-policy` submodule; tag `v0.29.0` | P1 |
+| K1 · [#76](https://github.com/mkolehmainen/zipline/issues/76) | zl-zpr-compiler | Parse `api = "zpr-attr/1"`, emit `AttrQueryConfig`, fixtures, version `0.19.0` | C1 |
+| R1 · [#77](https://github.com/mkolehmainen/zipline/issues/77) | zl-zpr-core | Pin `zpr` `v0.29.0`; regenerate `Cargo.lock`; fix any `TrustedService` literals | C1 |
+| V1 · [#78](https://github.com/mkolehmainen/zipline/issues/78) | zl-zpr-visaservice | `AttrQueryStore`: query, schema check, `ts_secrets_dir`, factory arm, min-compiler `0.19.0` | C1 |
+| V2 · [#79](https://github.com/mkolehmainen/zipline/issues/79) | zl-zpr-visaservice | `POST /admin/services/{id}/changed` and `Permission::Notify` | V1 |
+| V3 · [#80](https://github.com/mkolehmainen/zipline/issues/80) | zl-zpr-visaservice | `zpr-attr-server` reference implementation and protocol contract tests | V2 |
+| E1 · [#81](https://github.com/mkolehmainen/zipline/issues/81) | zl-zpr-core | netns end-to-end test: OIDC login + `zpr-attr/1` decoration + `changed` revocation | K1, R1, V3 |
+| D1 · [#82](https://github.com/mkolehmainen/zipline/issues/82) | zl-zpr-dev-context | Docs status updates; `zpr-dev` stages `zpr-attr-server`; committed build set; plan COMPLETE | E1 |
 
 ---
 
@@ -303,7 +303,7 @@ section, this plan in the house format, and a required-reading row in `AGENTS.md
 - [x] Rewrite this document from the draft into the master-plan format.
 - [x] Add the `AGENTS.md` required-reading row.
 - [x] Write `docs/zpr-attr-v1.openapi.yaml` from the spec's wire-protocol section.
-- [ ] File the umbrella and S1–D1 in `mkolehmainen/zipline`, wire `blockedBy`, run
+- [x] File the umbrella and S1–D1 in `mkolehmainen/zipline`, wire `blockedBy`, run
       `scripts/board-sync.py --apply`, and record the issue numbers in the *Issue map* and the
       *Status* line.
 
