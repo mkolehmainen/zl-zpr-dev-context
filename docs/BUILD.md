@@ -546,6 +546,25 @@ checkout is the usual cause of a confusing failure.
 These tests create network namespaces and veth pairs with `sudo ip`, so they
 are Linux-only and need passwordless `sudo` to run unattended.
 
+**Without host `sudo`: run them in Docker.** `integration-test/Makefile` runs the
+same scripts as root inside a throwaway privileged container, so the only host
+prerequisite is a running Docker daemon and membership in the `docker` group.
+The binaries are still built on the host and bind-mounted in; the image
+(`integration-test/Dockerfile`, Ubuntu 26.04 by default so its glibc is at least
+as new as a current host's) only supplies the tooling and `valkey-server`:
+
+```bash
+make -C integration-test docker-test                        # every *-test.sh, PASS/FAIL summary
+make -C integration-test docker-test TEST=one-node-test.sh  # one script, args allowed
+make -C integration-test docker-shell                       # root shell for debugging
+```
+
+`make integration-test-docker` at the repository root is the same as the first
+line. The container runs `--privileged` because `ip netns`, `/dev/net/tun` and
+io_uring (which Docker's default seccomp profile blocks) all need it. If the
+host's glibc is newer than the image's, the binaries will not load; pass
+`BASE_IMAGE=ubuntu:<host release>` to `docker-image` / `docker-test`.
+
 ---
 
 ## What to build to run a ZPRnet
