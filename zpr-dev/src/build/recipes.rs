@@ -259,10 +259,10 @@ mod tests {
         assert_eq!(recipe_repos, super::super::BUILD_ORDER.to_vec());
     }
 
-    /// The staged names across all recipes are exactly the ten binaries of
+    /// The staged names across all recipes are exactly the eleven binaries of
     /// spec-003 §5, each staged once.
     #[test]
-    fn staged_names_are_exactly_the_ten_binaries() {
+    fn staged_names_are_exactly_the_eleven_binaries() {
         let mut names: Vec<&str> = RECIPES
             .iter()
             .flat_map(|r| r.staged.iter().map(|s| s.name))
@@ -277,6 +277,7 @@ mod tests {
             "vsapikey",
             "zpdump",
             "zplc",
+            "zpr-attr-server",
             "zpr-dashboard",
             "zpt",
         ];
@@ -312,7 +313,7 @@ mod tests {
                 .iter()
                 .all(|s| s.source.starts_with("build-release/"))
         );
-        assert_eq!(vs.staged.len(), 5);
+        assert_eq!(vs.staged.len(), 6);
 
         let core = by_repo("zl-zpr-core");
         assert_eq!(core.steps[0].program, "cargo");
