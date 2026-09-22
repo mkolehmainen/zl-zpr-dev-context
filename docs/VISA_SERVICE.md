@@ -85,7 +85,7 @@ background work.
 | `db_worker` | Renews the shared database lock that keeps exactly one visa service instance active, and terminates the process if it is lost. |
 | `signal_worker` | Emits policy-triggered signals. |
 | `deny_log` | A bounded in-memory window of recent denials (500 entries), collapsed on the 5-tuple so a chatty source cannot flush it. Not persisted. |
-| `trusted_services/` | Attribute sources and the mapping from their names onto ZPL attribute names. |
+| `trusted_services/` | Attribute sources and the mapping from their names onto ZPL attribute names. File-backed (`api = "file"`), OIDC (`api = "oidc"`), and networked `api = "zpr-attr/1"` stores — the latter query an external attribute service over HTTPS (see ATTRIBUTE_SERVICE.md). |
 | `db/` | State: actors, visas, nodes, links, policy. Valkey/Redis backed, with a fake for tests. |
 
 ---
@@ -304,9 +304,11 @@ compiled `.bin2` policy. TLS credentials for the admin API default to
 ### Configuration (`vs.toml`, `[core]`)
 
 `vs_addr`, `vsapi_port`, `admin_port`, `admin_cert`, `admin_key`, `vk_uri`,
-`identity` (ties this instance to its state in the database), `api_keys`, and
+`identity` (ties this instance to its state in the database), `api_keys`,
 `file_ts_dir` (where `<service-id>.json` files for `api = "file"` trusted
-services live). Unknown keys are rejected.
+services live), and `ts_secrets_dir` (where `<service-id>.token` bearer-token
+files for `api = "zpr-attr/1"` trusted services live). Unknown keys are
+rejected.
 
 ### Constants that must stay in sync with the compiler
 
@@ -330,12 +332,16 @@ timeout.
 ### Admin API
 
 HTTPS on port 8182, JSON in and out, TLS required. Every request carries an
-`X-API-Key` header; a missing or unknown key is 401. Keys carry either read or
-read/write permission, and write endpoints reject a read-only key with 403.
+`X-API-Key` header; a missing or unknown key is 401. Keys carry read,
+read/write, or notify permission; write endpoints reject a read-only key with
+403, and a notify key can call only `POST /admin/services/{id}/changed` for
+its own trusted-service id (it can neither read nor change anything else).
 Generate keys with `vsapikey`.
 
 Endpoints cover actors (`/admin/actors`, plus their visas), services and their
-caches, visas (including `/admin/visas/denies`), the network view, statistics,
+caches (including `POST /admin/services/{id}/changed`, the push-invalidation
+callback an attribute service uses to trigger a reconcile pass), visas
+(including `/admin/visas/denies`), the network view, statistics,
 policies (`GET`/`POST /admin/policies`, `/admin/policies/curr`), and
 authentication revocation. Actor endpoints are keyed by **ZPR address**, not
 CN: `GET /admin/actors` returns `{zpr_addr, cn}` entries where `cn` is a
@@ -374,11 +380,11 @@ instruction file, with `-j` for JSONL output.
   binary policy and the node APIs. The implementation uses Cap'n Proto
   throughout (see `zl-zpr-policy/policy.capnp`, `zl-zpr-vsapi/vs.capnp`); there is no
   Thrift anywhere in the tree.
-- **Trusted-service attribute stores are file-backed only.** The factory
-  accepts `api = "file"` — attributes loaded from a local `<service-id>.json`
-  — and rejects every other API with an error, so the networked `validation/2`
-  attribute source described in the compiler configuration is not yet
-  instantiated here. Authentication services are a separate service type.
+- **Trusted-service attribute stores were file-backed only** until 2026-09-22:
+  the factory accepted `api = "file"` and `api = "oidc"` and rejected
+  everything else. The networked `api = "zpr-attr/1"` store landed with
+  zipline#78 (see ATTRIBUTE_SERVICE.md); the RFC's `validation/2` API remains
+  unimplemented. Authentication services are a separate service type.
 - **Route-aware evaluation is a scaffold.** Stage 2 of `libeval` is defined but
   not implemented.
 - **Configuration moved to TOML.** `config-example.yaml` at the repository root

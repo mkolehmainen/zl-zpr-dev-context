@@ -520,13 +520,32 @@ record for `validation/2`, which nothing implements.
 
 ## Implementation status
 
-**Nothing in this document is implemented** as of 2026-09-22. The visa
-service's factory accepts `api = "file"` and `api = "oidc"` only, and rejects
-every other value (`vs/src/trusted_services/factory.rs`,
-`trusted_service_definitions`). The build is sequenced by
-`docs/plans/2026-09-22-attr-query.md`; while that plan is in flight it wins
-over this document wherever they disagree, per the `docs/plans/` rule in
-`AGENTS.md`.
+**Implemented** as of 2026-09-22, by zipline issues
+[#74](https://github.com/mkolehmainen/zipline/issues/74)–[#81](https://github.com/mkolehmainen/zipline/issues/81)
+under umbrella [#72](https://github.com/mkolehmainen/zipline/issues/72), with
+these version floors:
+
+- Policy schema: `AttrQueryConfig` in `zl-zpr-policy/policy.capnp`
+  ([#74](https://github.com/mkolehmainen/zipline/issues/74)).
+- `zpr` crate (`zl-zpr-common`) **v0.29.0**: Rust mirror types and the
+  submodule pointer bump
+  ([#75](https://github.com/mkolehmainen/zipline/issues/75)).
+- Compiler (`zl-zpr-compiler`) **0.19.0**: `api = "zpr-attr/1"` accepted and
+  woven ([#76](https://github.com/mkolehmainen/zipline/issues/76)).
+- `zl-zpr-core` pinned to `zpr` **v0.29.0**
+  ([#77](https://github.com/mkolehmainen/zipline/issues/77)).
+- Visa service: `AttrQueryStore` behind the factory plus the `ts_secrets_dir`
+  configuration key ([#78](https://github.com/mkolehmainen/zipline/issues/78)),
+  and `POST /admin/services/{id}/changed` with `Permission::Notify`
+  ([#79](https://github.com/mkolehmainen/zipline/issues/79)).
+- Reference server `zpr-attr-server`, staged by `make release`
+  ([#80](https://github.com/mkolehmainen/zipline/issues/80)).
+- Netns end-to-end test `zl-zpr-core/integration-test/attr-query-test.sh`
+  ([#81](https://github.com/mkolehmainen/zipline/issues/81)).
+
+The build was sequenced by `docs/plans/2026-09-22-attr-query.md`, now COMPLETE
+— read it for why, not for what the code does; this document and the code are
+current.
 
 Already in place and relied on, unchanged:
 
@@ -546,7 +565,7 @@ Not built, and not planned in `zpr-attr/1`: `GET {url}/stream`,
 `POST {url}/satisfies`, batch query, on-net reach via `service`, request rate
 limiting on `changed`.
 
-## Where the code will live
+## Where the code lives
 
 | Concern | Location |
 |---|---|
