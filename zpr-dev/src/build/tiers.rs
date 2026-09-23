@@ -176,6 +176,11 @@ pub struct Probes {
     pub docker: bool,
     /// `docker compose version` succeeded (the compose v2 plugin exists).
     pub docker_compose: bool,
+    /// `docker info` succeeded: the daemon is reachable, not merely the
+    /// client installed (zipline#92). Gathered only when `docker` is on
+    /// PATH, like `docker_compose` — a client-less host cannot have a
+    /// reachable daemon worth probing.
+    pub docker_daemon: bool,
     /// What `--prompt-for-sudo` achieved, when it was given: `None` when
     /// the flag was off (zipline#70). `NoTty` is handled by the caller as
     /// a hard error before any gate is read.
@@ -217,6 +222,10 @@ impl Probes {
             docker,
             // Only worth asking when docker itself exists.
             docker_compose: docker && command_succeeds("docker", &["compose", "version"]),
+            // Same guard: `docker info` answers only when the daemon is up,
+            // and asking without a client is a spawn failure, not a probe.
+            // Read-only, so legal under --dry-run (spec-003 §7.2).
+            docker_daemon: docker && command_succeeds("docker", &["info"]),
             sudo_prime,
         }
     }
@@ -282,17 +291,59 @@ pub enum TierGate {
     Skip(String),
 }
 
-/// Gates the netns tier: Linux, passwordless sudo, `valkey-server` (on PATH
-/// or `$VALKEY_SERVER_BIN`) and `python3`. Pure — probes are injected.
+/// Gates the netns tier: a thin match over [`select_netns_runner`], so the
+/// selection logic has one source of truth (zipline#92). `Host` runs.
+/// `Container` is refused **at the gate** until zipline#93 implements the
+/// runner — gate-time, deliberately, so an explicit `--test netns` /
+/// `--test all` still errors through `check_gate`; a run-time skip behind a
+/// `Run` gate would let an explicitly requested tier exit 0 without running,
+/// because skipped outcomes do not fail `execute_build` (operator amendment
+/// on zipline#92). No route at all skips with the selector's two-route
+/// reason. Pure — probes are injected.
 pub fn netns_gate(probes: &Probes) -> TierGate {
-    let mut missing: Vec<&str> = Vec::new();
-    if !probes.linux {
-        missing.push("linux");
+    match select_netns_runner(probes) {
+        Ok(NetnsRunner::Host(_)) => TierGate::Run,
+        Ok(NetnsRunner::Container { .. }) => TierGate::Skip(
+            "docker fallback selected but not implemented yet (zipline#93)".to_string(),
+        ),
+        Err(reason) => TierGate::Skip(reason),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The netns runner selection (zipline#92 step 2)
+// ---------------------------------------------------------------------------
+
+/// Which route the netns tier takes (zipline#92, master plan N2): the host
+/// when its own prerequisites hold, the privileged container of zipline#84's
+/// `make docker-test` when they do not but a Docker daemon answers. The
+/// no-route case is [`select_netns_runner`]'s `Err`, naming both gaps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetnsRunner {
+    /// The host route, carrying how its sudo was satisfied — the manifest's
+    /// provenance is derived from here (`nopasswd` / `primed`).
+    Host(SudoProvenance),
+    /// The container fallback. `host_reason` is the host route's own
+    /// missing-prerequisite text — the same words the host skip would have
+    /// used — because the container can be selected for a missing sudo *or*
+    /// a missing `valkey-server` / `python3`, and zipline#93's tier header
+    /// and coverage note must quote the real cause, never a fixed
+    /// "no passwordless sudo" (operator amendment on zipline#92).
+    Container { host_reason: String },
+}
+
+/// The host route's own missing-prerequisite text: `missing: <gaps>`, plus
+/// the credentials-did-not-cache diagnosis when `--prompt-for-sudo` ran and
+/// bought nothing (zipline#70 Step 3 — retained across the fallback, so the
+/// operator who typed a password still sees why it did not help). `None`
+/// when the host route can run. Linux is deliberately not listed here: the
+/// selector refuses a non-Linux host before routing, because neither route
+/// creates network namespaces elsewhere.
+fn host_route_reason(probes: &Probes) -> Option<String> {
+    let mut missing: Vec<&str> = Vec::new();
     if !probes.passwordless_sudo {
         // The parenthetical makes the remedy discoverable from the failure
-        // (zipline#70 acceptance): the flag is what you grep for when the
-        // netns tier skipped on a host where sudo prompts.
+        // (zipline#70 acceptance).
         missing.push("passwordless sudo (or pass --prompt-for-sudo)");
     }
     if probes.valkey_server.is_none() {
@@ -302,19 +353,60 @@ pub fn netns_gate(probes: &Probes) -> TierGate {
         missing.push("python3");
     }
     if missing.is_empty() {
-        TierGate::Run
-    } else {
-        let mut reason = format!("missing: {}", missing.join(", "));
-        // A prime that ran but bought nothing is diagnosed, not silent:
-        // without this note the operator typed their password and still
-        // got the generic skip (issue Step 3).
-        if probes.sudo_prime == Some(PrimeOutcome::CacheDisabled) {
-            reason.push_str(
-                "; sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)",
-            );
-        }
-        TierGate::Skip(reason)
+        return None;
     }
+    let mut reason = format!("missing: {}", missing.join(", "));
+    if probes.sudo_prime == Some(PrimeOutcome::CacheDisabled) {
+        reason.push_str("; sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)");
+    }
+    Some(reason)
+}
+
+/// Decides which route the netns tier takes (zipline#92, the *Decisions*
+/// rule of the master plan): the host route wins whenever it can run;
+/// otherwise the container is selected when a Docker daemon is reachable —
+/// a `docker` client on PATH with no daemon is not a usable fallback; and
+/// when neither route works the `Err` names both routes' gaps, e.g.
+/// `missing: passwordless sudo (or pass --prompt-for-sudo), valkey-server;
+/// docker fallback unavailable: docker daemon not reachable`. Pure — probes
+/// are injected — so every selection rule is testable without a live docker
+/// or sudo.
+pub fn select_netns_runner(probes: &Probes) -> Result<NetnsRunner, String> {
+    if !probes.linux {
+        // The netns scripts create network namespaces; neither the host
+        // route nor the docker fallback offers those off Linux.
+        return Err(
+            "missing: linux (neither the host route nor the docker fallback \
+             runs the netns scripts elsewhere)"
+                .to_string(),
+        );
+    }
+    let Some(host_reason) = host_route_reason(probes) else {
+        // The host route can run, so it wins outright — the fallback is a
+        // fallback, never a preference (approved decision: automatic, no
+        // flag). Primed credentials and a NOPASSWD host stay distinct
+        // provenances (zipline#70).
+        return Ok(NetnsRunner::Host(
+            if probes.sudo_prime == Some(PrimeOutcome::Primed) {
+                SudoProvenance::Primed
+            } else {
+                SudoProvenance::Nopasswd
+            },
+        ));
+    };
+    if probes.docker && probes.docker_daemon {
+        return Ok(NetnsRunner::Container { host_reason });
+    }
+    // Neither route: the reason names both gaps so the operator can fix
+    // either one. The docker wording matches the docker tier's own gate.
+    let docker_gap = if probes.docker {
+        "docker daemon not reachable"
+    } else {
+        "docker not found"
+    };
+    Err(format!(
+        "{host_reason}; docker fallback unavailable: {docker_gap}"
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -504,19 +596,27 @@ impl Drop for SudoRefresher {
 }
 
 /// The dry-run report's planned-tier annotation for netns (zipline#70
-/// Step 5). A dry run never prompts, so when `--prompt-for-sudo` was given
-/// and sudo is the reason netns would skip, say the real run would prompt —
+/// Step 5; zipline#92 step 5). A dry run never prompts, so when
+/// `--prompt-for-sudo` was given and sudo is the reason netns would take a
+/// different route, say what the real run would do about the password —
 /// without hiding any *other* missing prerequisite, which the prompt cannot
-/// buy. Pure, like the gates, so it is testable with injected probes.
+/// buy. A `Container` selection is reported as *selected and not implemented
+/// yet*: `would run in docker` is only true after zipline#93, and a dry run
+/// must never overstate (operator amendment). Pure, like the gates, so it
+/// is testable with injected probes.
 pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
     if !prompt_for_sudo || probes.passwordless_sudo {
-        // The flag changes nothing: report the gate verbatim.
-        return match netns_gate(probes) {
-            TierGate::Run => "prerequisites present".to_string(),
-            TierGate::Skip(reason) => reason,
+        // The flag changes nothing: report the selection verbatim.
+        return match select_netns_runner(probes) {
+            Ok(NetnsRunner::Host(_)) => "prerequisites present".to_string(),
+            Ok(NetnsRunner::Container { host_reason }) => format!(
+                "docker fallback selected (host route unavailable: {host_reason}); \
+                 not implemented yet (zipline#93)"
+            ),
+            Err(reason) => reason,
         };
     }
-    // The flag would buy sudo. Gate as if it already had, and append what
+    // The flag would buy sudo. Select as if it already had, and append what
     // the real run would do about the password.
     let primed = Probes {
         passwordless_sudo: true,
@@ -525,24 +625,49 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
         python3: probes.python3,
         docker: probes.docker,
         docker_compose: probes.docker_compose,
+        docker_daemon: probes.docker_daemon,
         sudo_prime: None,
     };
-    match netns_gate(&primed) {
-        TierGate::Run => "would prompt for sudo (--prompt-for-sudo)".to_string(),
-        TierGate::Skip(reason) => {
-            format!("would prompt for sudo (--prompt-for-sudo); {reason}")
+    match select_netns_runner(&primed) {
+        Ok(NetnsRunner::Host(_)) => {
+            // The prompt is what decides the route: a successful prime runs
+            // on the host, and a failed one falls to the container when the
+            // daemon answers — the flag stays an explicit host request
+            // (master plan N2, Decisions).
+            if probes.docker && probes.docker_daemon {
+                "would prompt for sudo (--prompt-for-sudo); \
+                 on failure would fall back to docker"
+                    .to_string()
+            } else {
+                "would prompt for sudo (--prompt-for-sudo)".to_string()
+            }
         }
+        // Sudo was not the only host gap: even primed, the selection is the
+        // container (or nothing). The prompt cannot change that route, so
+        // the primed selection's text is reported — quoting sudo as missing
+        // here would misstate what the prompt buys (zipline#70 Step 5).
+        Ok(NetnsRunner::Container { host_reason }) => format!(
+            "would prompt for sudo (--prompt-for-sudo); docker fallback selected \
+             (host route unavailable: {host_reason}); not implemented yet (zipline#93)"
+        ),
+        Err(reason) => format!("would prompt for sudo (--prompt-for-sudo); {reason}"),
     }
 }
 
-/// Gates the docker tier: `docker` and the compose v2 plugin. The missing-
-/// docker wording matches the issue's acceptance text (`docker not found`).
+/// Gates the docker tier: `docker`, the compose v2 plugin, and a reachable
+/// daemon (zipline#92 — a client whose daemon is down failed the tier
+/// mid-deploy before; the probe was free once the netns fallback needed it).
+/// The missing-docker wording matches the issue's acceptance text
+/// (`docker not found`).
 pub fn docker_gate(probes: &Probes) -> TierGate {
     if !probes.docker {
         return TierGate::Skip("docker not found".to_string());
     }
     if !probes.docker_compose {
         return TierGate::Skip("docker compose not found".to_string());
+    }
+    if !probes.docker_daemon {
+        return TierGate::Skip("docker daemon not reachable".to_string());
     }
     TierGate::Run
 }
@@ -1359,8 +1484,25 @@ mod tests {
             python3: true,
             docker: true,
             docker_compose: true,
+            docker_daemon: true,
             sudo_prime: None,
         }
+    }
+
+    /// The probe set carries whether the docker daemon answered `docker
+    /// info` (zipline#92 step 1) — gathered only when `docker` itself is on
+    /// PATH, mirroring the `docker_compose` guard in `Probes::gather`. The
+    /// injected constructors carry the field explicitly, so every selection
+    /// rule over it is testable without a live docker.
+    #[test]
+    fn probes_carry_docker_daemon_reachability() {
+        let probes = all_present();
+        assert!(probes.docker_daemon);
+        let probes = Probes {
+            docker_daemon: false,
+            ..all_present()
+        };
+        assert!(!probes.docker_daemon);
     }
 
     /// With every prerequisite present both tiers gate to `Run`.
@@ -1373,12 +1515,16 @@ mod tests {
 
     /// Each missing netns prerequisite lands in the skip reason by name, so
     /// the output and the manifest say exactly what to install (spec-003 §6:
-    /// never a silent skip).
+    /// never a silent skip). The daemon is out too — with a fallback
+    /// available this scenario now selects the container instead (see
+    /// `netns_gate_refuses_a_container_selection_until_93_lands`) — so the
+    /// reason is the selector's two-route text, host gaps first.
     #[test]
     fn netns_gate_names_each_missing_prerequisite() {
         let mut probes = all_present();
         probes.passwordless_sudo = false;
         probes.valkey_server = None;
+        probes.docker_daemon = false;
         let TierGate::Skip(reason) = netns_gate(&probes) else {
             panic!("netns must skip without sudo");
         };
@@ -1406,12 +1552,16 @@ mod tests {
     /// run never prompts, so when `--prompt-for-sudo` was given and sudo
     /// would prompt, the line says the real run would prompt instead of
     /// presenting sudo as missing — while any other missing prerequisite is
-    /// still reported, because the prompt only buys sudo.
+    /// still reported, because the prompt only buys sudo. Daemon out in
+    /// every case here: these are the no-fallback scenarios, unchanged from
+    /// zipline#70; the container-selected texts have their own test
+    /// (zipline#92 step 5).
     #[test]
     fn netns_dry_run_text_reports_the_prompt_instead_of_missing_sudo() {
         // Flag given, sudo is the only gap: the real run would prompt.
         let mut probes = all_present();
         probes.passwordless_sudo = false;
+        probes.docker_daemon = false;
         let text = netns_dry_run_text(&probes, true);
         assert_eq!(text, "would prompt for sudo (--prompt-for-sudo)");
 
@@ -1429,6 +1579,7 @@ mod tests {
         // No flag: the ordinary skip reason, prompt not mentioned.
         let mut probes = all_present();
         probes.passwordless_sudo = false;
+        probes.docker_daemon = false;
         let text = netns_dry_run_text(&probes, false);
         assert!(text.contains("passwordless sudo"), "{text}");
         assert!(!text.contains("would prompt"), "{text}");
@@ -1436,6 +1587,54 @@ mod tests {
         // Flag given but sudo already passwordless: nothing to prompt for.
         let text = netns_dry_run_text(&all_present(), true);
         assert_eq!(text, "prerequisites present");
+    }
+
+    /// The dry-run line when the container is selected (zipline#92 step 5,
+    /// as amended): under this issue the runner does not exist, so the text
+    /// must say the fallback was *selected* and is *not implemented yet* —
+    /// never `would run in docker`, which is only true after zipline#93.
+    /// The parenthetical quotes the host route's real gap, whichever it was.
+    #[test]
+    fn netns_dry_run_text_reports_a_container_selection_without_overstating() {
+        // Sudo is the host gap.
+        let probes = Probes {
+            passwordless_sudo: false,
+            ..all_present()
+        };
+        assert_eq!(
+            netns_dry_run_text(&probes, false),
+            "docker fallback selected (host route unavailable: missing: \
+             passwordless sudo (or pass --prompt-for-sudo)); not implemented yet (zipline#93)"
+        );
+
+        // valkey is the host gap: the text names it, not a fixed sudo cause.
+        let probes = Probes {
+            valkey_server: None,
+            ..all_present()
+        };
+        let text = netns_dry_run_text(&probes, false);
+        assert_eq!(
+            text,
+            "docker fallback selected (host route unavailable: missing: \
+             valkey-server); not implemented yet (zipline#93)"
+        );
+        assert!(!text.contains("would run in docker"), "{text}");
+    }
+
+    /// `--prompt-for-sudo` with the container as the fallback (zipline#92
+    /// step 5, as amended): the real run prompts first — the flag is an
+    /// explicit host request — and only a failed prompt falls to docker,
+    /// so the dry-run line says exactly that.
+    #[test]
+    fn netns_dry_run_text_prompt_flag_names_the_docker_fallback() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            ..all_present()
+        };
+        assert_eq!(
+            netns_dry_run_text(&probes, true),
+            "would prompt for sudo (--prompt-for-sudo); on failure would fall back to docker"
+        );
     }
 
     // -- the --prompt-for-sudo prime (zipline#70 steps 2-3) ----------------------
@@ -1603,12 +1802,15 @@ mod tests {
 
     /// `sudo -v` succeeded but nothing cached (`timestamp_timeout=0`): the
     /// netns skip reason carries a note diagnosing it, instead of letting
-    /// the prime silently buy nothing (issue Step 3).
+    /// the prime silently buy nothing (issue Step 3). No daemon here — with
+    /// one the container absorbs the miss and the note moves into
+    /// `host_reason` (see `selector_retains_the_cache_disabled_note`).
     #[test]
     fn netns_gate_notes_a_disabled_credential_cache() {
         let mut probes = all_present();
         probes.passwordless_sudo = false;
         probes.sudo_prime = Some(PrimeOutcome::CacheDisabled);
+        probes.docker_daemon = false;
         let TierGate::Skip(reason) = netns_gate(&probes) else {
             panic!("netns must still skip when the prime bought nothing");
         };
@@ -1637,6 +1839,19 @@ mod tests {
             panic!("docker must skip without compose");
         };
         assert!(reason.contains("docker compose"), "{reason}");
+    }
+
+    /// A `docker` client whose daemon does not answer fails the docker tier
+    /// mid-deploy today; with the daemon probe (zipline#92) the gate catches
+    /// it up front, with a reason naming the daemon rather than the client.
+    #[test]
+    fn docker_gate_requires_a_reachable_daemon() {
+        let mut probes = all_present();
+        probes.docker_daemon = false;
+        let TierGate::Skip(reason) = docker_gate(&probes) else {
+            panic!("docker must skip when the daemon is unreachable");
+        };
+        assert_eq!(reason, "docker daemon not reachable");
     }
 
     /// The PATH probe requires the candidate to be executable, not merely a
@@ -1679,6 +1894,187 @@ mod tests {
         std::fs::remove_file(&decoy).unwrap();
         std::fs::create_dir(&decoy).unwrap();
         assert_eq!(find_in_path_value(&both, "valkey-server"), Some(real));
+    }
+
+    // -- the netns runner selection (zipline#92 step 2) --------------------------
+
+    /// The host route wins whenever it can run: with every prerequisite
+    /// present the selection is `Host`, never the container — the fallback
+    /// is a fallback, not a preference (master plan N2, Decisions).
+    #[test]
+    fn selector_picks_the_host_when_both_routes_work() {
+        let runner = select_netns_runner(&all_present()).unwrap();
+        assert_eq!(runner, NetnsRunner::Host(SudoProvenance::Nopasswd));
+    }
+
+    /// A primed credential is a different provenance than a NOPASSWD host
+    /// (zipline#70) and the selection carries it, so the manifest can never
+    /// conflate the two.
+    #[test]
+    fn selector_carries_the_primed_provenance() {
+        let probes = Probes {
+            sudo_prime: Some(PrimeOutcome::Primed),
+            ..all_present()
+        };
+        let runner = select_netns_runner(&probes).unwrap();
+        assert_eq!(runner, NetnsRunner::Host(SudoProvenance::Primed));
+    }
+
+    /// Missing sudo alone falls to the container when the daemon answers,
+    /// and `host_reason` is the host route's own missing-prerequisite text —
+    /// the same words the skip would have used — so zipline#93's header and
+    /// coverage note can quote the real cause (operator amendment).
+    #[test]
+    fn selector_falls_to_the_container_when_sudo_is_missing() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            ..all_present()
+        };
+        let NetnsRunner::Container { host_reason } = select_netns_runner(&probes).unwrap() else {
+            panic!("missing sudo with a reachable daemon must select the container");
+        };
+        assert_eq!(
+            host_reason,
+            "missing: passwordless sudo (or pass --prompt-for-sudo)"
+        );
+    }
+
+    /// The fallback covers any host-route miss, not only sudo: a host with
+    /// sudo but no `valkey-server` also falls to the container, and the
+    /// reason names valkey, not a fixed "no passwordless sudo" (operator
+    /// amendment — a fixed text would record false provenance).
+    #[test]
+    fn selector_falls_to_the_container_when_valkey_is_missing() {
+        let probes = Probes {
+            valkey_server: None,
+            ..all_present()
+        };
+        let NetnsRunner::Container { host_reason } = select_netns_runner(&probes).unwrap() else {
+            panic!("missing valkey with a reachable daemon must select the container");
+        };
+        assert_eq!(host_reason, "missing: valkey-server");
+    }
+
+    /// `docker` on PATH with no reachable daemon is not a usable fallback:
+    /// the selection errors naming BOTH routes' gaps, so the operator sees
+    /// what to fix on either route (master plan N2).
+    #[test]
+    fn selector_requires_a_reachable_daemon_not_merely_a_client() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            docker_daemon: false,
+            ..all_present()
+        };
+        let reason = select_netns_runner(&probes).unwrap_err();
+        assert_eq!(
+            reason,
+            "missing: passwordless sudo (or pass --prompt-for-sudo); \
+             docker fallback unavailable: docker daemon not reachable"
+        );
+    }
+
+    /// No docker client at all is its own gap wording, matching the docker
+    /// tier's `docker not found`.
+    #[test]
+    fn selector_names_a_missing_docker_client() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            docker: false,
+            docker_compose: false,
+            docker_daemon: false,
+            ..all_present()
+        };
+        let reason = select_netns_runner(&probes).unwrap_err();
+        assert!(reason.contains("passwordless sudo"), "{reason}");
+        assert!(
+            reason.contains("docker fallback unavailable: docker not found"),
+            "{reason}"
+        );
+    }
+
+    /// A non-Linux host errors: the netns scripts create network namespaces,
+    /// which neither route offers off Linux (master plan N2).
+    #[test]
+    fn selector_errors_off_linux() {
+        let probes = Probes {
+            linux: false,
+            ..all_present()
+        };
+        let reason = select_netns_runner(&probes).unwrap_err();
+        assert!(reason.to_lowercase().contains("linux"), "{reason}");
+    }
+
+    /// A failed prompt (`sudo -v` refused) leaves the host route unusable,
+    /// so the container is selected when available — the flag asked for the
+    /// host, but a fallback beats a dead stop (master plan N2, Decisions).
+    #[test]
+    fn selector_falls_to_the_container_after_a_failed_prime() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            sudo_prime: Some(PrimeOutcome::PrimeFailed),
+            ..all_present()
+        };
+        let NetnsRunner::Container { host_reason } = select_netns_runner(&probes).unwrap() else {
+            panic!("a failed prime with a reachable daemon must select the container");
+        };
+        assert!(host_reason.contains("passwordless sudo"), "{host_reason}");
+    }
+
+    /// `timestamp_timeout=0` (the prime bought nothing) keeps its diagnostic
+    /// note in the host reason, both when the container absorbs the miss and
+    /// when nothing can run — the operator typed a password and must see why
+    /// it did not help (zipline#70 Step 3, retained by the amendment).
+    #[test]
+    fn selector_retains_the_cache_disabled_note() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            sudo_prime: Some(PrimeOutcome::CacheDisabled),
+            ..all_present()
+        };
+        let NetnsRunner::Container { host_reason } = select_netns_runner(&probes).unwrap() else {
+            panic!("CacheDisabled with a reachable daemon must select the container");
+        };
+        assert!(
+            host_reason
+                .contains("sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)"),
+            "{host_reason}"
+        );
+
+        let probes = Probes {
+            passwordless_sudo: false,
+            sudo_prime: Some(PrimeOutcome::CacheDisabled),
+            docker_daemon: false,
+            ..all_present()
+        };
+        let reason = select_netns_runner(&probes).unwrap_err();
+        assert!(reason.contains("credentials did not cache"), "{reason}");
+        assert!(reason.contains("docker daemon not reachable"), "{reason}");
+    }
+
+    /// Until zipline#93 lands, a `Container` selection is refused **at the
+    /// gate**: `netns_gate` maps it to a Skip with the exact reason below,
+    /// so an explicit `--test netns` / `--test all` still errors through
+    /// `check_gate` and a default selection skips visibly. It must NOT be a
+    /// run-time skip behind a `Run` gate — skipped outcomes do not fail
+    /// `execute_build`, which would let an explicitly requested tier exit 0
+    /// without running (operator amendment on zipline#92).
+    #[test]
+    fn netns_gate_refuses_a_container_selection_until_93_lands() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            ..all_present()
+        };
+        assert!(matches!(
+            select_netns_runner(&probes),
+            Ok(NetnsRunner::Container { .. })
+        ));
+        let TierGate::Skip(reason) = netns_gate(&probes) else {
+            panic!("a container selection must be refused at the gate until #93");
+        };
+        assert_eq!(
+            reason,
+            "docker fallback selected but not implemented yet (zipline#93)"
+        );
     }
 
     /// A failed probe on a default-selected (non-explicit) tier is a skip

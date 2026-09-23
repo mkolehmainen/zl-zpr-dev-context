@@ -1214,6 +1214,67 @@ fn build_tip_dry_run_resolves_and_creates_nothing() {
     );
 }
 
+/// The netns docker fallback under zipline#92 (fake probes: no sudo, a
+/// reachable docker daemon, valkey and python3 present — see
+/// `run_with_fake_probes`; no real sudo or docker is ever invoked). Two
+/// facts, both operator amendments to the plan: `--dry-run` reports the
+/// container as *selected and not implemented yet*, quoting the host
+/// route's real gap — never `would run in docker`, which is only true after
+/// zipline#93 — and an explicit `--test all` still exits 1 AT THE GATE with
+/// the not-implemented reason, because a Container selection is refused
+/// gate-time; a run-time skip would let the explicit request exit 0.
+#[test]
+fn build_test_all_refuses_the_container_selection_at_the_gate() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+
+    // --dry-run: the selection text, honestly hedged.
+    let out =
+        stdout_of(&fixture.run_with_fake_probes(&["build", "--tip", "--dry-run", "--test", "all"]));
+    assert!(
+        out.contains(
+            "docker fallback selected (host route unavailable: missing: \
+             passwordless sudo (or pass --prompt-for-sudo)); \
+             not implemented yet (zipline#93)"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("would run in docker"), "{out}");
+
+    // Explicit --test all: exit 1 at the gate, before anything builds.
+    let output = fixture.run_with_fake_probes(&["build", "--tip", "--test", "all"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        all.contains("--test netns was requested but cannot run"),
+        "{all}"
+    );
+    assert!(
+        all.contains("docker fallback selected but not implemented yet (zipline#93)"),
+        "{all}"
+    );
+    // At the gate means before any recipe ran: prepare_build_dir makes the
+    // empty tree, but no worktree was added and no manifest emitted.
+    assert!(
+        !fixture
+            .workspace
+            .join(".zpr-build/tip/dist/zpr-set-tip.yaml")
+            .exists(),
+        "the explicit request emitted a manifest before failing its gate"
+    );
+    assert!(
+        !fixture
+            .workspace
+            .join(".zpr-build/tip/src/zl-zpr-core")
+            .exists(),
+        "the explicit request created worktrees before failing its gate"
+    );
+}
+
 /// A build set with an unresolvable ref exits 1 naming repository and ref —
 /// a gate-style failure, not a usage error (spec-003 §7.1).
 #[test]

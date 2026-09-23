@@ -229,6 +229,44 @@ impl Fixture {
             .expect("cannot run the zpr-dev binary")
     }
 
+    /// [`Fixture::run`] with the tier probes faked through PATH (zipline#92):
+    /// a directory of stub executables is prepended to this process's own
+    /// PATH, so `sudo` fails (`sudo -n true` exits 1 — no passwordless
+    /// sudo), while `docker` (both `info` and `compose version`),
+    /// `valkey-server` and `python3` succeed. Real git and sh still resolve
+    /// through the inherited tail. `VALKEY_SERVER_BIN` is removed so a
+    /// developer's own override cannot leak into the probe. No real sudo or
+    /// docker is ever invoked — the stubs shadow them.
+    pub fn run_with_fake_probes(&self, args: &[&str]) -> Output {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fake_bin = self.root.join("fake-bin");
+        std::fs::create_dir_all(&fake_bin).unwrap();
+        for (name, body) in [
+            ("sudo", "#!/bin/sh\nexit 1\n"),
+            ("docker", "#!/bin/sh\nexit 0\n"),
+            ("valkey-server", "#!/bin/sh\nexit 0\n"),
+            ("python3", "#!/bin/sh\nexit 0\n"),
+        ] {
+            let path = fake_bin.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![fake_bin];
+        dirs.extend(std::env::split_paths(&inherited));
+        let path = std::env::join_paths(dirs).unwrap();
+        sanitized(env!("CARGO_BIN_EXE_zpr-dev"))
+            .current_dir(&self.root)
+            .env("HOME", &self.home)
+            .env("PATH", path)
+            .env_remove("VALKEY_SERVER_BIN")
+            .arg("--workspace")
+            .arg(&self.workspace)
+            .args(args)
+            .output()
+            .expect("cannot run the zpr-dev binary")
+    }
+
     /// Reads a workspace-relative file, panicking if it is absent.
     pub fn read(&self, rel: &str) -> String {
         let path = self.workspace.join(rel);
