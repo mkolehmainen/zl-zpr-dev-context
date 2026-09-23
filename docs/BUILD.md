@@ -444,7 +444,7 @@ tracks the blind spot and whether to widen the gate.
 | Tier | What runs | Prerequisites | Probe-gated |
 |---|---|---|---|
 | `unit` | `make test` per built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | no |
-| `netns` | the seven `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, passwordless `sudo`, `valkey-server`, `python3` | yes |
+| `netns` | the seven `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, and either (passwordless `sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | yes |
 | `docker` | `dns-demo` deploy + `test-dns.sh` + `docker compose down -v` | `docker`, `docker compose` | yes |
 
 `--test` selects: `none`, `default` (the flag absent means the same), `all`,
@@ -556,7 +556,13 @@ checkout is the usual cause of a confusing failure.
 These tests create network namespaces and veth pairs with `sudo ip`, so they
 are Linux-only and need passwordless `sudo` to run unattended.
 
-**Without host `sudo`: run them in Docker.** `integration-test/Makefile` runs the
+**Without host `sudo`: run them in Docker.** `zpr-dev build` does this
+automatically: when the host route's prerequisites are missing but a Docker
+daemon is reachable, it runs the netns tier through `make docker-test` per
+script and records the provenance as `sudo: container` in the emitted
+manifest, with a coverage note naming the real host gap (see
+`zpr-dev/docs/specs/spec-003-build.md` §6). For runs outside a build, the
+same route is available by hand: `integration-test/Makefile` runs the
 same scripts as root inside a throwaway privileged container, so the only host
 prerequisite is a running Docker daemon and membership in the `docker` group.
 The binaries are still built on the host and bind-mounted in; the image
