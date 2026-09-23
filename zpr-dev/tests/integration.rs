@@ -1532,7 +1532,15 @@ fn build_note_conflicts_with_clean_and_repeats() {
     // Parses: two notes reach the dry run, which lists them. Nothing is
     // built.
     let out = stdout_of(&fixture.run(&[
-        "build", "--tip", "--dry-run", "--test", "none", "--note", "one", "--note", "two",
+        "build",
+        "--tip",
+        "--dry-run",
+        "--test",
+        "none",
+        "--note",
+        "one",
+        "--note",
+        "two",
     ]));
     assert!(out.contains("note: one"), "{out}");
     assert!(out.contains("note: two"), "{out}");

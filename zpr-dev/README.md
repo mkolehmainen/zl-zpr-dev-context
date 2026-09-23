@@ -266,6 +266,8 @@ zpr-dev build --tip --gates-only             # just the gates, read-only, second
                     netns tier can run without a NOPASSWD sudoers entry
                     (needs a terminal; a background sudo -n -v keeps the
                     credential alive until the tier finishes)
+--note <text>       append this sentence to the emitted manifest's notes;
+                    repeatable, e.g. why a tier was deliberately left out
 --clean             remove the build directory (--build-dir, or the whole
                     <workspace>/.zpr-build tree) and clear its worktree
                     registrations, then exit; resolves and fetches nothing
@@ -280,7 +282,11 @@ and stops before compiling anything if a gate errors; builds each repository
 in a detached worktree, staging binaries into `dist/`; runs the selected test
 tiers against those exact binaries; and writes `dist/zpr-set-<name>.yaml`, an
 emitted manifest that pins every sha and records pins, versions, toolchain,
-binary digests, and tier results — including recorded skips. Re-running with
+binary digests, and tier results — including recorded skips. The manifest
+also states what was *not* covered: `tests_requested` is the literal `--test`
+value, `tests_skipped` names every tier that did not run and why (left out of
+the selection, probe-skipped, or build failed), and `notes` spells each
+shortcoming out in a sentence, with any `--note` text appended. Re-running with
 `--manifest dist/zpr-set-<name>.yaml` (or a copy committed under
 `build-sets/`) rebuilds the same set.
 

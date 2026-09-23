@@ -36,6 +36,10 @@ const KNOWN: &[&str] = &["unit", "netns", "docker"];
 pub struct Selection {
     /// Tier names in run order, deduplicated, each with its explicitness.
     tiers: Vec<(&'static str, bool)>,
+    /// The literal `--test` text, `default` for the absent flag: what the
+    /// emitted manifest reports as `tests_requested`, so a reader can see
+    /// a set was gated on `unit` alone (zipline#87).
+    requested: String,
 }
 
 impl Selection {
@@ -53,15 +57,22 @@ impl Selection {
             "default" => {
                 return Ok(Selection {
                     tiers: IMPLEMENTED.iter().map(|tier| (*tier, false)).collect(),
+                    requested: text.to_string(),
                 });
             }
-            "none" => return Ok(Selection { tiers: Vec::new() }),
+            "none" => {
+                return Ok(Selection {
+                    tiers: Vec::new(),
+                    requested: text.to_string(),
+                });
+            }
             // `all` asks for every known tier by name, so each is explicit:
             // an asked-for tier that cannot run is an error, never a silent
             // skip (spec-003 §6).
             "all" => {
                 return Ok(Selection {
                     tiers: KNOWN.iter().map(|tier| (*tier, true)).collect(),
+                    requested: text.to_string(),
                 });
             }
             _ => {}
@@ -90,7 +101,16 @@ impl Selection {
         // `unit,docker` are the same request, and unit failures should
         // surface before the slower end-to-end tiers run.
         tiers.sort_by_key(|(tier, _)| KNOWN.iter().position(|known| known == tier));
-        Ok(Selection { tiers })
+        Ok(Selection {
+            tiers,
+            requested: text.to_string(),
+        })
+    }
+
+    /// The `--test` text as given (`default` when the flag was absent), for
+    /// the emitted manifest's `tests_requested` (zipline#87).
+    pub fn requested(&self) -> &str {
+        &self.requested
     }
 
     /// True when no tier was selected (`--test none`).
@@ -111,6 +131,25 @@ impl Selection {
         self.tiers
             .iter()
             .any(|(name, explicit)| *name == tier && *explicit)
+    }
+}
+
+/// Every tier spec-003 §6 names, in run order — the set the emitted
+/// manifest's coverage summary must account for (zipline#87).
+pub fn known() -> &'static [&'static str] {
+    KNOWN
+}
+
+/// A tier's human label for the manifest's `notes`: the reader should see
+/// "integration tests did NOT run", not a bare tier name (zipline#87).
+pub fn label(tier: &str) -> &'static str {
+    match tier {
+        "unit" => "unit tests",
+        "netns" => "netns integration tests",
+        "docker" => "docker end-to-end tests",
+        // KNOWN is the only source of tier names; a new tier must add its
+        // label here, and the test `every_known_tier_has_a_label` says so.
+        _ => "tests",
     }
 }
 
