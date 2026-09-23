@@ -291,38 +291,22 @@ pub enum TierGate {
     Skip(String),
 }
 
-/// Gates the netns tier: Linux, passwordless sudo, `valkey-server` (on PATH
-/// or `$VALKEY_SERVER_BIN`) and `python3`. Pure — probes are injected.
+/// Gates the netns tier: a thin match over [`select_netns_runner`], so the
+/// selection logic has one source of truth (zipline#92). `Host` runs.
+/// `Container` is refused **at the gate** until zipline#93 implements the
+/// runner — gate-time, deliberately, so an explicit `--test netns` /
+/// `--test all` still errors through `check_gate`; a run-time skip behind a
+/// `Run` gate would let an explicitly requested tier exit 0 without running,
+/// because skipped outcomes do not fail `execute_build` (operator amendment
+/// on zipline#92). No route at all skips with the selector's two-route
+/// reason. Pure — probes are injected.
 pub fn netns_gate(probes: &Probes) -> TierGate {
-    let mut missing: Vec<&str> = Vec::new();
-    if !probes.linux {
-        missing.push("linux");
-    }
-    if !probes.passwordless_sudo {
-        // The parenthetical makes the remedy discoverable from the failure
-        // (zipline#70 acceptance): the flag is what you grep for when the
-        // netns tier skipped on a host where sudo prompts.
-        missing.push("passwordless sudo (or pass --prompt-for-sudo)");
-    }
-    if probes.valkey_server.is_none() {
-        missing.push("valkey-server");
-    }
-    if !probes.python3 {
-        missing.push("python3");
-    }
-    if missing.is_empty() {
-        TierGate::Run
-    } else {
-        let mut reason = format!("missing: {}", missing.join(", "));
-        // A prime that ran but bought nothing is diagnosed, not silent:
-        // without this note the operator typed their password and still
-        // got the generic skip (issue Step 3).
-        if probes.sudo_prime == Some(PrimeOutcome::CacheDisabled) {
-            reason.push_str(
-                "; sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)",
-            );
-        }
-        TierGate::Skip(reason)
+    match select_netns_runner(probes) {
+        Ok(NetnsRunner::Host(_)) => TierGate::Run,
+        Ok(NetnsRunner::Container { .. }) => TierGate::Skip(
+            "docker fallback selected but not implemented yet (zipline#93)".to_string(),
+        ),
+        Err(reason) => TierGate::Skip(reason),
     }
 }
 
@@ -1499,12 +1483,16 @@ mod tests {
 
     /// Each missing netns prerequisite lands in the skip reason by name, so
     /// the output and the manifest say exactly what to install (spec-003 §6:
-    /// never a silent skip).
+    /// never a silent skip). The daemon is out too — with a fallback
+    /// available this scenario now selects the container instead (see
+    /// `netns_gate_refuses_a_container_selection_until_93_lands`) — so the
+    /// reason is the selector's two-route text, host gaps first.
     #[test]
     fn netns_gate_names_each_missing_prerequisite() {
         let mut probes = all_present();
         probes.passwordless_sudo = false;
         probes.valkey_server = None;
+        probes.docker_daemon = false;
         let TierGate::Skip(reason) = netns_gate(&probes) else {
             panic!("netns must skip without sudo");
         };
@@ -1532,12 +1520,16 @@ mod tests {
     /// run never prompts, so when `--prompt-for-sudo` was given and sudo
     /// would prompt, the line says the real run would prompt instead of
     /// presenting sudo as missing — while any other missing prerequisite is
-    /// still reported, because the prompt only buys sudo.
+    /// still reported, because the prompt only buys sudo. Daemon out in
+    /// every case here: these are the no-fallback scenarios, unchanged from
+    /// zipline#70; the container-selected texts have their own test
+    /// (zipline#92 step 5).
     #[test]
     fn netns_dry_run_text_reports_the_prompt_instead_of_missing_sudo() {
         // Flag given, sudo is the only gap: the real run would prompt.
         let mut probes = all_present();
         probes.passwordless_sudo = false;
+        probes.docker_daemon = false;
         let text = netns_dry_run_text(&probes, true);
         assert_eq!(text, "would prompt for sudo (--prompt-for-sudo)");
 
@@ -1555,6 +1547,7 @@ mod tests {
         // No flag: the ordinary skip reason, prompt not mentioned.
         let mut probes = all_present();
         probes.passwordless_sudo = false;
+        probes.docker_daemon = false;
         let text = netns_dry_run_text(&probes, false);
         assert!(text.contains("passwordless sudo"), "{text}");
         assert!(!text.contains("would prompt"), "{text}");
@@ -1729,12 +1722,15 @@ mod tests {
 
     /// `sudo -v` succeeded but nothing cached (`timestamp_timeout=0`): the
     /// netns skip reason carries a note diagnosing it, instead of letting
-    /// the prime silently buy nothing (issue Step 3).
+    /// the prime silently buy nothing (issue Step 3). No daemon here — with
+    /// one the container absorbs the miss and the note moves into
+    /// `host_reason` (see `selector_retains_the_cache_disabled_note`).
     #[test]
     fn netns_gate_notes_a_disabled_credential_cache() {
         let mut probes = all_present();
         probes.passwordless_sudo = false;
         probes.sudo_prime = Some(PrimeOutcome::CacheDisabled);
+        probes.docker_daemon = false;
         let TierGate::Skip(reason) = netns_gate(&probes) else {
             panic!("netns must still skip when the prime bought nothing");
         };
@@ -1960,6 +1956,32 @@ mod tests {
         let reason = select_netns_runner(&probes).unwrap_err();
         assert!(reason.contains("credentials did not cache"), "{reason}");
         assert!(reason.contains("docker daemon not reachable"), "{reason}");
+    }
+
+    /// Until zipline#93 lands, a `Container` selection is refused **at the
+    /// gate**: `netns_gate` maps it to a Skip with the exact reason below,
+    /// so an explicit `--test netns` / `--test all` still errors through
+    /// `check_gate` and a default selection skips visibly. It must NOT be a
+    /// run-time skip behind a `Run` gate — skipped outcomes do not fail
+    /// `execute_build`, which would let an explicitly requested tier exit 0
+    /// without running (operator amendment on zipline#92).
+    #[test]
+    fn netns_gate_refuses_a_container_selection_until_93_lands() {
+        let probes = Probes {
+            passwordless_sudo: false,
+            ..all_present()
+        };
+        assert!(matches!(
+            select_netns_runner(&probes),
+            Ok(NetnsRunner::Container { .. })
+        ));
+        let TierGate::Skip(reason) = netns_gate(&probes) else {
+            panic!("a container selection must be refused at the gate until #93");
+        };
+        assert_eq!(
+            reason,
+            "docker fallback selected but not implemented yet (zipline#93)"
+        );
     }
 
     /// A failed probe on a default-selected (non-explicit) tier is a skip
