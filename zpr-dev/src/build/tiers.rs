@@ -176,6 +176,11 @@ pub struct Probes {
     pub docker: bool,
     /// `docker compose version` succeeded (the compose v2 plugin exists).
     pub docker_compose: bool,
+    /// `docker info` succeeded: the daemon is reachable, not merely the
+    /// client installed (zipline#92). Gathered only when `docker` is on
+    /// PATH, like `docker_compose` — a client-less host cannot have a
+    /// reachable daemon worth probing.
+    pub docker_daemon: bool,
     /// What `--prompt-for-sudo` achieved, when it was given: `None` when
     /// the flag was off (zipline#70). `NoTty` is handled by the caller as
     /// a hard error before any gate is read.
@@ -217,6 +222,10 @@ impl Probes {
             docker,
             // Only worth asking when docker itself exists.
             docker_compose: docker && command_succeeds("docker", &["compose", "version"]),
+            // Same guard: `docker info` answers only when the daemon is up,
+            // and asking without a client is a spawn failure, not a probe.
+            // Read-only, so legal under --dry-run (spec-003 §7.2).
+            docker_daemon: docker && command_succeeds("docker", &["info"]),
             sudo_prime,
         }
     }
@@ -525,6 +534,7 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
         python3: probes.python3,
         docker: probes.docker,
         docker_compose: probes.docker_compose,
+        docker_daemon: probes.docker_daemon,
         sudo_prime: None,
     };
     match netns_gate(&primed) {
@@ -1359,8 +1369,25 @@ mod tests {
             python3: true,
             docker: true,
             docker_compose: true,
+            docker_daemon: true,
             sudo_prime: None,
         }
+    }
+
+    /// The probe set carries whether the docker daemon answered `docker
+    /// info` (zipline#92 step 1) — gathered only when `docker` itself is on
+    /// PATH, mirroring the `docker_compose` guard in `Probes::gather`. The
+    /// injected constructors carry the field explicitly, so every selection
+    /// rule over it is testable without a live docker.
+    #[test]
+    fn probes_carry_docker_daemon_reachability() {
+        let probes = all_present();
+        assert!(probes.docker_daemon);
+        let probes = Probes {
+            docker_daemon: false,
+            ..all_present()
+        };
+        assert!(!probes.docker_daemon);
     }
 
     /// With every prerequisite present both tiers gate to `Run`.
