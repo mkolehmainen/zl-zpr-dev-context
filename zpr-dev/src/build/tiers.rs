@@ -493,9 +493,11 @@ pub fn prime_sudo(runner: &dyn SudoRunner, stdin_is_tty: bool) -> PrimeOutcome {
 }
 
 /// How the netns tier's sudo was satisfied, recorded in the emitted
-/// manifest (zipline#70 Step 6; approved Q1): a run on primed credentials
-/// is not the same provenance as one on a NOPASSWD host, and the manifest
-/// is the audit record. Serializes lowercase: `nopasswd` / `primed`.
+/// manifest (zipline#70 Step 6, approved Q1; zipline#93): a run on primed
+/// credentials is not the same provenance as one on a NOPASSWD host, and a
+/// run as root inside a privileged container is a third — the manifest is
+/// the audit record, and the three are never conflated. Serializes
+/// lowercase: `nopasswd` / `primed` / `container`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SudoProvenance {
@@ -503,6 +505,10 @@ pub enum SudoProvenance {
     Nopasswd,
     /// `--prompt-for-sudo` prompted and primed the credential cache.
     Primed,
+    /// The docker fallback (zipline#93): the scripts ran as root inside the
+    /// privileged container of `make docker-test`, so their `sudo` calls
+    /// were satisfied by already being root — no host credential existed.
+    Container,
 }
 
 /// Keeps a primed sudo credential alive across a run that outlives sudo's
@@ -646,6 +652,19 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
              would run in docker (host route unavailable: {host_reason})"
         ),
         Err(reason) => format!("would prompt for sudo (--prompt-for-sudo); {reason}"),
+    }
+}
+
+/// The netns tier's stdout header (zipline#93 step 5): the host route keeps
+/// the plain `netns tier:`; the container route names the docker fallback
+/// and quotes the host route's real failure, so an operator watching the
+/// run sees the cause without opening the manifest.
+pub fn netns_tier_header(runner: &NetnsRunner) -> String {
+    match runner {
+        NetnsRunner::Host(_) => "netns tier:".to_string(),
+        NetnsRunner::Container { host_reason } => {
+            format!("netns tier (docker fallback; host route unavailable: {host_reason}):")
+        }
     }
 }
 
@@ -2180,6 +2199,24 @@ mod tests {
         assert_eq!(check_gate("docker", TierGate::Run, false).unwrap(), None);
     }
 
+    /// The stdout tier header (zipline#93 step 5): the host route keeps the
+    /// plain `netns tier:`, and the container route names the fallback and
+    /// quotes the host route's real failure, so an operator watching the run
+    /// sees the cause without opening the manifest.
+    #[test]
+    fn netns_tier_header_names_the_docker_fallback_with_the_host_reason() {
+        assert_eq!(
+            netns_tier_header(&NetnsRunner::Host(SudoProvenance::Nopasswd)),
+            "netns tier:"
+        );
+        assert_eq!(
+            netns_tier_header(&NetnsRunner::Container {
+                host_reason: "missing: valkey-server".to_string()
+            }),
+            "netns tier (docker fallback; host route unavailable: missing: valkey-server):"
+        );
+    }
+
     // -- the Makefile floor for the container route (zipline#93 step 2) ---------
 
     /// A worktree whose `integration-test/Makefile` defines `FORWARD_ENV`
@@ -2331,6 +2368,32 @@ mod tests {
             env_of(&plan.scripts[0], "VALKEY_SERVER_BIN"),
             Some("/usr/bin/valkey-server")
         );
+    }
+
+    /// `--verbose` on the container route still exports `ZPR_TEST_VERBOSE=1`
+    /// (zipline#93 step 6): the Makefile's `FORWARD_ENV` forwards it into
+    /// the container, so the child env must carry it exactly as on the host.
+    #[test]
+    fn netns_plan_container_route_keeps_verbose_export() {
+        let runner = NetnsRunner::Container {
+            host_reason: "missing: valkey-server".to_string(),
+        };
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            true,
+            &runner,
+            Path::new("/b"),
+        );
+        for script in &plan.scripts {
+            assert_eq!(
+                env_of(script, "ZPR_TEST_VERBOSE"),
+                Some("1"),
+                "{} missing ZPR_TEST_VERBOSE under --verbose on the container route",
+                script.script
+            );
+        }
     }
 
     /// The plan runs exactly the seven blessed scripts, in order — an

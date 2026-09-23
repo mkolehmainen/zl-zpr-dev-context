@@ -1294,9 +1294,10 @@ pub struct Tier {
     /// Repository → `passed`, `failed at ...`, or `skipped: ...`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, String>,
-    /// netns only: how sudo was satisfied — `nopasswd` or `primed`
-    /// (zipline#70 Step 6). Absent for skipped tiers and for every other
-    /// tier; the two provenances are never conflated (issue constraint).
+    /// netns only: how sudo was satisfied — `nopasswd`, `primed`, or
+    /// `container` (zipline#70 Step 6; zipline#93). Absent for skipped
+    /// tiers and for every other tier; the three provenances are never
+    /// conflated (issue constraint).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sudo: Option<tiers::SudoProvenance>,
 }
@@ -1314,9 +1315,10 @@ impl Tier {
         }
     }
 
-    /// Attaches the netns tier's sudo provenance (zipline#70 Step 6).
-    /// Builder-style so the docker/unit call sites stay untouched — only
-    /// the netns run path claims one.
+    /// Attaches the netns tier's sudo provenance (zipline#70 Step 6;
+    /// zipline#93): `nopasswd`, `primed`, or `container`. Builder-style so
+    /// the docker/unit call sites stay untouched — only the netns run path
+    /// claims one.
     pub fn with_sudo(mut self, sudo: tiers::SudoProvenance) -> Tier {
         self.sudo = Some(sudo);
         self
@@ -1360,6 +1362,7 @@ pub fn coverage_summary(
     tier_results: &BTreeMap<String, Tier>,
     build_failed: bool,
     pin_drift_downgraded: bool,
+    netns_container_note: Option<&str>,
     operator_notes: &[String],
 ) -> Coverage {
     let requested = selection.requested();
@@ -1408,6 +1411,14 @@ pub fn coverage_summary(
                 tiers::label(tier)
             ));
         }
+    }
+
+    // The netns docker-fallback note (zipline#93): present iff the
+    // container route actually ran, after the tier-status lines and before
+    // the pin-drift and operator notes — it is generated provenance, not
+    // operator commentary.
+    if let Some(note) = netns_container_note {
+        coverage.notes.push(note.to_string());
     }
 
     if pin_drift_downgraded {
@@ -1637,6 +1648,9 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
     // tier is recorded `skipped: <reason>` and never presented as coverage.
     let mut tier_results: BTreeMap<String, Tier> = BTreeMap::new();
     let mut tier_failed = false;
+    // Set iff the netns tier ran through the docker fallback (zipline#93):
+    // becomes the generated coverage note in the emitted manifest.
+    let mut netns_container_note: Option<String> = None;
     if failure.is_none() && inputs.selection.contains("unit") {
         if !inputs.quiet {
             println!("unit tier:");
@@ -1729,7 +1743,9 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                     }
                 } else {
                     if !inputs.quiet {
-                        println!("netns tier:");
+                        // The container header names the fallback and quotes
+                        // the host route's real failure (zipline#93 step 5).
+                        println!("{}", tiers::netns_tier_header(&runner));
                     }
                     // The probe passed, so valkey was found; the fallback name
                     // only defends against an inconsistent caller.
@@ -1747,12 +1763,24 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                     let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
                     tier_failed = tier_failed || !outcome.passed;
                     // A tier that ran carries how its sudo was satisfied —
-                    // derived from the Host runner (zipline#92): nopasswd host
-                    // or primed credentials, never conflated (zipline#70).
-                    let mut tier = Tier::from_outcome(&outcome);
-                    if let Some(Ok(tiers::NetnsRunner::Host(sudo))) = &inputs.netns_runner {
-                        tier = tier.with_sudo(*sudo);
-                    }
+                    // derived from the runner (zipline#92): nopasswd host or
+                    // primed credentials, or root inside the privileged
+                    // container (zipline#93) — never conflated (zipline#70).
+                    let tier = match &runner {
+                        tiers::NetnsRunner::Host(sudo) => {
+                            Tier::from_outcome(&outcome).with_sudo(*sudo)
+                        }
+                        tiers::NetnsRunner::Container { host_reason } => {
+                            // The coverage note exists iff the container
+                            // route actually ran, quoting the real host gap
+                            // (zipline#93, contract 2).
+                            netns_container_note = Some(format!(
+                                "netns integration tests ran in a privileged Docker container, \
+                                 not on the host (host route unavailable: {host_reason})"
+                            ));
+                            Tier::from_outcome(&outcome).with_sudo(tiers::SudoProvenance::Container)
+                        }
+                    };
                     tier_results.insert("netns".to_string(), tier);
                 }
             }
@@ -1836,6 +1864,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         &tier_results,
         failure.is_some(),
         outcome.pin_drift_downgraded > 0,
+        netns_container_note.as_deref(),
         inputs.notes,
     );
     emitted.resolved.tests_requested = inputs.selection.requested().to_string();
@@ -3268,6 +3297,15 @@ allow_pin_drift:
         assert!(yaml.contains("sudo: primed"), "{yaml}");
         assert!(!yaml.contains("nopasswd"), "{yaml}");
 
+        // The container route is a third provenance (zipline#93): a run as
+        // root inside --privileged is neither a NOPASSWD host nor primed
+        // credentials, and the manifest must say so.
+        let container = Tier::from_outcome(&outcome).with_sudo(tiers::SudoProvenance::Container);
+        let yaml = serde_yaml_ng::to_string(&container).unwrap();
+        assert!(yaml.contains("sudo: container"), "{yaml}");
+        assert!(!yaml.contains("nopasswd"), "{yaml}");
+        assert!(!yaml.contains("primed"), "{yaml}");
+
         // No provenance claimed: the field is absent, not defaulted — a
         // skipped tier and the docker tier must never carry one.
         let unclaimed = Tier::skipped("missing: passwordless sudo");
@@ -3413,6 +3451,101 @@ allow_pin_drift:
         assert!(text.contains("netns:"), "{text}");
         assert!(text.contains("status: failed"), "{text}");
         assert!(text.contains("sudo: primed"), "{text}");
+        // A host-route run carries no container note (zipline#93): the note
+        // exists only when the fallback actually ran.
+        assert!(
+            !text.contains("privileged Docker container"),
+            "a host run must not claim the container route: {text}"
+        );
+    }
+
+    /// [`workspace_with_repo`] whose committed repository also carries an
+    /// `integration-test/Makefile` defining `FORWARD_ENV` and a fake
+    /// `docker-test` target — enough for the container route to pass the
+    /// floor and "run" each script without a live docker (zipline#93).
+    fn workspace_with_docker_runner_repo() -> (tempfile::TempDir, PathBuf, String) {
+        let (tmp, workspace, _seed) =
+            workspace_with_repo_and_makefile("test:\n\t@echo unit tested\n");
+        let repo = workspace.join("zl-zpr-core");
+        let dir = repo.join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Makefile"),
+            "FORWARD_ENV := PH_BIN PH_DEBUG_BIN VS_BIN VS_ADMIN_BIN VALKEY_SERVER_BIN\n\
+             docker-test:\n\t@echo container ran $(TEST) in $(WORKSPACE)\n",
+        )
+        .unwrap();
+        setup_git(&repo, &["config", "user.name", "zpr-dev tests"]);
+        setup_git(&repo, &["config", "user.email", "tests@example.invalid"]);
+        setup_git(&repo, &["config", "commit.gpgsign", "false"]);
+        setup_git(&repo, &["add", "-A"]);
+        setup_git(&repo, &["commit", "-m", "docker runner"]);
+        setup_git(&repo, &["push", "origin", "HEAD:main"]);
+        let sha = setup_git(&repo, &["rev-parse", "HEAD"]);
+        (tmp, workspace, sha)
+    }
+
+    /// The container route end to end through `execute_build` (zipline#93
+    /// step 5, zipline#87 test style): with a worktree that passes the
+    /// Makefile floor, a stored `Container` runner runs every script through
+    /// `make docker-test`, the manifest records `sudo: container`, and
+    /// `resolved.notes` carries the generated coverage note quoting the real
+    /// host-route failure. The fake `docker-test` target echoes instead of
+    /// running docker, so the test needs no daemon.
+    #[test]
+    fn execute_build_container_run_records_provenance_and_coverage_note() {
+        let (_tmp, workspace, _sha) = workspace_with_docker_runner_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("netns")).unwrap();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.netns_runner = Some(Ok(tiers::NetnsRunner::Container {
+            host_reason: "missing: passwordless sudo (or pass --prompt-for-sudo)".to_string(),
+        }));
+        let ok = execute_build(&in_).unwrap();
+        assert!(
+            !ok,
+            "a2a's prep build has no cargo project in the fixture, so the tier must fail — \
+             which also proves a failed container run still records its provenance"
+        );
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("netns:"), "{text}");
+        assert!(text.contains("status: failed"), "{text}");
+        assert!(text.contains("sudo: container"), "{text}");
+        // The six prep-less scripts went through make and passed; a2a failed
+        // at its host-side prep build (no cargo project in the fixture) —
+        // recorded per script, exactly as on the host route.
+        assert!(text.contains("one-node-test.sh: passed"), "{text}");
+        assert!(text.contains("fake-idp-smoke-test.sh: passed"), "{text}");
+        assert!(text.contains("a2a-pubkey-test.sh"), "{text}");
+        assert!(text.contains("security-ph"), "{text}");
+        // The generated coverage note quotes the actual host-route failure.
+        assert!(
+            text.contains(
+                "netns integration tests ran in a privileged Docker container, \
+                 not on the host (host route unavailable: missing: passwordless \
+                 sudo (or pass --prompt-for-sudo))"
+            ),
+            "{text}"
+        );
+        // The scripts ran through make: the per-script log carries the fake
+        // target's output, proving the invocation shape end to end.
+        let log =
+            std::fs::read_to_string(build_dir.join("logs").join("netns-one-node-test.sh.log"))
+                .unwrap();
+        assert!(
+            log.contains("container ran one-node-test.sh"),
+            "make docker-test did not run: {log}"
+        );
     }
 
     /// A tier whose repository is not in the set is skipped naming it: the
@@ -3548,7 +3681,7 @@ allow_pin_drift:
             ("netns", passed()),
             ("docker", passed()),
         ]);
-        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, None, &[]);
         assert!(coverage.skipped.is_empty(), "{coverage:?}");
         assert!(coverage.notes.is_empty(), "{coverage:?}");
     }
@@ -3560,7 +3693,7 @@ allow_pin_drift:
     fn coverage_marks_unselected_tiers_not_selected() {
         let selection = tiers::Selection::parse(Some("unit")).unwrap();
         let tiers = results(&[("unit", passed())]);
-        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, None, &[]);
         assert_eq!(
             coverage.skipped,
             BTreeMap::from([
@@ -3588,7 +3721,7 @@ allow_pin_drift:
     #[test]
     fn coverage_test_none_is_a_single_note() {
         let selection = tiers::Selection::parse(Some("none")).unwrap();
-        let coverage = coverage_summary(&selection, &BTreeMap::new(), false, false, &[]);
+        let coverage = coverage_summary(&selection, &BTreeMap::new(), false, false, None, &[]);
         assert_eq!(coverage.skipped.len(), 3, "{coverage:?}");
         assert_eq!(coverage.skipped["unit"], "not selected (--test none)");
         assert_eq!(coverage.notes, vec!["no tests ran (--test none)"]);
@@ -3607,7 +3740,7 @@ allow_pin_drift:
             ),
             ("docker", passed()),
         ]);
-        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, None, &[]);
         assert_eq!(
             coverage.skipped,
             BTreeMap::from([(
@@ -3627,7 +3760,7 @@ allow_pin_drift:
     fn coverage_notes_a_failed_tier_after_the_not_run_lines() {
         let selection = tiers::Selection::parse(Some("unit")).unwrap();
         let tiers = results(&[("unit", failed())]);
-        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, None, &[]);
         assert!(!coverage.skipped.contains_key("unit"), "{coverage:?}");
         assert_eq!(
             coverage.notes,
@@ -3645,7 +3778,7 @@ allow_pin_drift:
     #[test]
     fn coverage_build_failure_marks_selected_tiers_not_run() {
         let selection = tiers::Selection::parse(Some("unit,netns")).unwrap();
-        let coverage = coverage_summary(&selection, &BTreeMap::new(), true, false, &[]);
+        let coverage = coverage_summary(&selection, &BTreeMap::new(), true, false, None, &[]);
         assert_eq!(coverage.skipped["unit"], "not run: build failed");
         assert_eq!(coverage.skipped["netns"], "not run: build failed");
         assert_eq!(
@@ -3653,6 +3786,31 @@ allow_pin_drift:
             "not selected (--test unit,netns)"
         );
         assert_eq!(coverage.notes.len(), 3, "{coverage:?}");
+    }
+
+    /// The netns container note (zipline#93): present iff the fallback ran,
+    /// placed after the tier-status lines and before the pin-drift and
+    /// operator notes, quoting the host reason verbatim.
+    #[test]
+    fn coverage_places_the_container_note_before_pin_drift_and_operator_notes() {
+        let selection = tiers::Selection::parse(None).unwrap();
+        let tiers = results(&[
+            ("unit", passed()),
+            ("netns", passed()),
+            ("docker", passed()),
+        ]);
+        let note = "netns integration tests ran in a privileged Docker container, \
+                    not on the host (host route unavailable: missing: valkey-server)";
+        let operator = vec!["operator text".to_string()];
+        let coverage = coverage_summary(&selection, &tiers, false, true, Some(note), &operator);
+        assert_eq!(
+            coverage.notes,
+            vec![
+                note,
+                "gate 1 pin disagreements were downgraded to warnings (--allow-pin-drift)",
+                "operator text",
+            ]
+        );
     }
 
     /// A gate-1 downgrade and the operator's own notes close the list, in
@@ -3666,7 +3824,7 @@ allow_pin_drift:
             ("docker", passed()),
         ]);
         let operator = vec!["first".to_string(), "second: with punctuation!".to_string()];
-        let coverage = coverage_summary(&selection, &tiers, false, true, &operator);
+        let coverage = coverage_summary(&selection, &tiers, false, true, None, &operator);
         assert!(coverage.skipped.is_empty());
         assert_eq!(
             coverage.notes,
