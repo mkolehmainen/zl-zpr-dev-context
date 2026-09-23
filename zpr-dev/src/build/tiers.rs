@@ -914,12 +914,20 @@ pub struct PrepStep {
     pub dir: PathBuf,
 }
 
-/// One planned script: its name (relative to the plan's `dir`), the
-/// environment overrides it runs under, the inherited variables to strip
-/// from the child, and an optional prep build.
+/// One planned script: its name, the command that runs it, the environment
+/// overrides it runs under, the inherited variables to strip from the
+/// child, and an optional prep build. On the host route the command is the
+/// script itself; on the container route it is `make docker-test` in the
+/// worktree's `integration-test/` (zipline#93).
 #[derive(Debug)]
 pub struct NetnsScript {
     pub script: &'static str,
+    /// What to execute: the script's own path (host) or `make` (container).
+    pub program: String,
+    /// Arguments to `program`: empty on the host route; the
+    /// `-C .. docker-test TEST=.. WORKSPACE=..` invocation on the container
+    /// route (contract 1).
+    pub args: Vec<String>,
     /// `KEY=value` pairs set on the child only — never the tool's own env.
     pub env: Vec<(String, String)>,
     /// Inherited variables removed from the child's environment before it
@@ -943,13 +951,35 @@ pub struct NetnsPlan {
 
 /// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
 /// the seven blessed scripts in order, each with the `*_BIN` overrides the
-/// scripts already honour pointed at `dist/` and the system valkey — nothing
-/// is copied into `integration-test/`. `a2a-pubkey-test.sh` alone runs the
-/// worktree-local `enable-security-testing` `ph` (a debug build that must
-/// never reach `dist/` — see [`dist_ph_is_clean`]). `verbose` exports
-/// `ZPR_TEST_VERBOSE=1`; `DEBUG_TARGETS` is left at the scripts' default.
-pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: bool) -> NetnsPlan {
+/// scripts already honour pointed at `dist/` — nothing is copied into
+/// `integration-test/`. `a2a-pubkey-test.sh` alone runs the worktree-local
+/// `enable-security-testing` `ph` (a debug build that must never reach
+/// `dist/` — see [`dist_ph_is_clean`]); its prep build runs on the host on
+/// both routes, and the debug binary is under the container's mount either
+/// way (Finding 3). `verbose` exports `ZPR_TEST_VERBOSE=1`; `DEBUG_TARGETS`
+/// is left at the scripts' default.
+///
+/// The `runner` decides the route (zipline#93, contract 1):
+/// - `Host`: each script runs directly from `integration-test/` with
+///   `VALKEY_SERVER_BIN` pointing at the host's `valkey` — byte-identical to
+///   the pre-#93 plan.
+/// - `Container`: each script becomes `make -C <core>/integration-test
+///   docker-test TEST=<script> WORKSPACE=<build_dir>` in the worktree, and
+///   `VALKEY_SERVER_BIN` is neither set nor inherited (`env_remove`): the
+///   image ships its own valkey, a host path would not resolve inside the
+///   container, and the Makefile's `FORWARD_ENV` would forward an operator's
+///   exported value.
+pub fn netns_plan(
+    core_worktree: &Path,
+    dist: &Path,
+    valkey: &Path,
+    verbose: bool,
+    runner: &NetnsRunner,
+    build_dir: &Path,
+) -> NetnsPlan {
     let display = |path: PathBuf| path.display().to_string();
+    let container = matches!(runner, NetnsRunner::Container { .. });
+    let integration = core_worktree.join("integration-test");
     let scripts = NETNS_SCRIPTS
         .iter()
         .map(|script| {
@@ -966,21 +996,39 @@ pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: boo
                 ("PH_DEBUG_BIN".to_string(), display(dist.join("ph-cli"))),
                 ("VS_BIN".to_string(), display(dist.join("vs"))),
                 ("VS_ADMIN_BIN".to_string(), display(dist.join("vs-admin"))),
-                (
+            ];
+            if !container {
+                // Host route only: the container's image ships its own
+                // valkey and a host path would not exist inside it.
+                env.push((
                     "VALKEY_SERVER_BIN".to_string(),
                     valkey.display().to_string(),
-                ),
-            ];
+                ));
+            }
             if verbose {
                 env.push(("ZPR_TEST_VERBOSE".to_string(), "1".to_string()));
             }
+            let (program, args, env_remove) = if container {
+                (
+                    "make".to_string(),
+                    vec![
+                        "-C".to_string(),
+                        integration.display().to_string(),
+                        "docker-test".to_string(),
+                        format!("TEST={script}"),
+                        format!("WORKSPACE={}", build_dir.display()),
+                    ],
+                    vec!["VALKEY_SERVER_BIN"],
+                )
+            } else {
+                (display(integration.join(script)), vec![], vec![])
+            };
             NetnsScript {
                 script,
+                program,
+                args,
                 env,
-                // The host route strips nothing: the field exists for the
-                // container route (zipline#93), and an empty list keeps this
-                // route byte-identical to its pre-#93 behaviour.
-                env_remove: vec![],
+                env_remove,
                 prep: a2a.then(|| PrepStep {
                     name: "security-ph",
                     program: "cargo",
@@ -994,7 +1042,14 @@ pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: boo
         })
         .collect();
     NetnsPlan {
-        dir: core_worktree.join("integration-test"),
+        // The container invocation runs `make` from the worktree (`-C`
+        // names the Makefile's directory); the host route keeps running
+        // the scripts from integration-test/ as before.
+        dir: if container {
+            core_worktree.to_path_buf()
+        } else {
+            integration
+        },
         scripts,
     }
 }
@@ -1035,12 +1090,12 @@ pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
                 continue;
             }
         }
-        let program = plan.dir.join(script.script).display().to_string();
+        let program = &script.program;
         match run_env_command(
             "netns",
             script.script,
-            &program,
-            &[] as &[&str],
+            program,
+            &script.args,
             &script.env,
             &script.env_remove,
             &plan.dir,
@@ -2194,6 +2249,104 @@ mod tests {
             .map(|(_, value)| value.as_str())
     }
 
+    /// The container route's plan (zipline#93 step 3, contract 1): every
+    /// script becomes one `make -C <core>/integration-test docker-test
+    /// TEST=<script> WORKSPACE=<build-dir>` invocation in the worktree, the
+    /// env keeps the `*_BIN` overrides but drops `VALKEY_SERVER_BIN` — the
+    /// image ships its own valkey, and a host path would not exist inside
+    /// the container — and `VALKEY_SERVER_BIN` is also in `env_remove` so an
+    /// operator's exported value cannot leak through the Makefile's
+    /// `FORWARD_ENV`. The a2a prep build is unchanged: it runs on the host
+    /// and its debug `ph` is under the mount (Finding 3).
+    #[test]
+    fn netns_plan_container_route_runs_make_docker_test_per_script() {
+        let runner = NetnsRunner::Container {
+            host_reason: "missing: passwordless sudo (or pass --prompt-for-sudo)".to_string(),
+        };
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+            &runner,
+            Path::new("/b"),
+        );
+        // The workdir is the worktree; `-C` names the Makefile's directory.
+        assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core"));
+        for script in &plan.scripts {
+            assert_eq!(script.program, "make", "{}", script.script);
+            assert_eq!(
+                script.args,
+                [
+                    "-C",
+                    "/wt/zl-zpr-core/integration-test",
+                    "docker-test",
+                    &format!("TEST={}", script.script),
+                    "WORKSPACE=/b",
+                ],
+                "{}",
+                script.script
+            );
+            // The container carries its own valkey: never set, and stripped
+            // from the inherited environment too.
+            assert_eq!(
+                env_of(script, "VALKEY_SERVER_BIN"),
+                None,
+                "{}",
+                script.script
+            );
+            assert!(
+                script.env_remove.contains(&"VALKEY_SERVER_BIN"),
+                "{} must remove VALKEY_SERVER_BIN",
+                script.script
+            );
+            // The *_BIN overrides still point at the build's dist/.
+            assert_eq!(env_of(script, "PH_DEBUG_BIN"), Some("/b/dist/ph-cli"));
+            assert_eq!(env_of(script, "VS_BIN"), Some("/b/dist/vs"));
+            assert_eq!(env_of(script, "VS_ADMIN_BIN"), Some("/b/dist/vs-admin"));
+            if script.script == "a2a-pubkey-test.sh" {
+                let prep = script.prep.as_ref().expect("a2a needs a prep build");
+                assert_eq!(prep.program, "cargo");
+                assert_eq!(
+                    env_of(script, "PH_BIN"),
+                    Some("/wt/zl-zpr-core/target/debug/ph")
+                );
+            } else {
+                assert!(script.prep.is_none(), "{} must not prep", script.script);
+                assert_eq!(env_of(script, "PH_BIN"), Some("/b/dist/ph"));
+            }
+        }
+    }
+
+    /// The host route's plan is unchanged by the runner parameter
+    /// (zipline#93 step 3): direct script invocation from the
+    /// integration-test directory, `VALKEY_SERVER_BIN` set, nothing removed
+    /// — the exact shape the pre-#93 plan had.
+    #[test]
+    fn netns_plan_host_route_shape_is_unchanged() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
+        );
+        assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));
+        for script in &plan.scripts {
+            assert_eq!(
+                script.program,
+                format!("/wt/zl-zpr-core/integration-test/{}", script.script)
+            );
+            assert!(script.args.is_empty(), "{}", script.script);
+            assert!(script.env_remove.is_empty(), "{}", script.script);
+        }
+        assert_eq!(
+            env_of(&plan.scripts[0], "VALKEY_SERVER_BIN"),
+            Some("/usr/bin/valkey-server")
+        );
+    }
+
     /// The plan runs exactly the seven blessed scripts, in order — an
     /// explicit list, not a glob: `unused_or_outdated/` and any new script
     /// stay out until reviewed in (master plan B5).
@@ -2204,6 +2357,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         let names: Vec<&str> = plan.scripts.iter().map(|script| script.script).collect();
         assert_eq!(
@@ -2231,6 +2386,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         // Every script except a2a runs the dist/ ph.
         let one_node = &plan.scripts[0];
@@ -2256,6 +2413,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         for script in &plan.scripts {
             assert!(
@@ -2323,6 +2482,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             true,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         for script in &plan.scripts {
             assert_eq!(
@@ -2345,6 +2506,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         for script in &plan.scripts {
             if script.script == "a2a-pubkey-test.sh" {
@@ -2445,18 +2608,24 @@ mod tests {
             scripts: vec![
                 NetnsScript {
                     script: "ok.sh",
+                    program: dir.join("ok.sh").display().to_string(),
+                    args: vec![],
                     env: vec![],
                     env_remove: vec![],
                     prep: None,
                 },
                 NetnsScript {
                     script: "bad.sh",
+                    program: dir.join("bad.sh").display().to_string(),
+                    args: vec![],
                     env: vec![],
                     env_remove: vec![],
                     prep: None,
                 },
                 NetnsScript {
                     script: "prepped.sh",
+                    program: dir.join("prepped.sh").display().to_string(),
+                    args: vec![],
                     env: vec![],
                     env_remove: vec![],
                     prep: Some(PrepStep {

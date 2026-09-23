@@ -1699,7 +1699,21 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                 let valkey = valkey
                     .clone()
                     .unwrap_or_else(|| PathBuf::from("valkey-server"));
-                let plan = tiers::netns_plan(&core, &dist, &valkey, inputs.verbose);
+                // skip_reason is None only when the stored runner is
+                // Some(Ok(Host(..))); the defensive default cannot be
+                // reached while that invariant holds.
+                let runner = match &inputs.netns_runner {
+                    Some(Ok(runner)) => runner.clone(),
+                    _ => tiers::NetnsRunner::Host(tiers::SudoProvenance::Nopasswd),
+                };
+                let plan = tiers::netns_plan(
+                    &core,
+                    &dist,
+                    &valkey,
+                    inputs.verbose,
+                    &runner,
+                    inputs.build_dir,
+                );
                 let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
                 tier_failed = tier_failed || !outcome.passed;
                 // A tier that ran carries how its sudo was satisfied —
