@@ -628,14 +628,20 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
     }
 }
 
-/// Gates the docker tier: `docker` and the compose v2 plugin. The missing-
-/// docker wording matches the issue's acceptance text (`docker not found`).
+/// Gates the docker tier: `docker`, the compose v2 plugin, and a reachable
+/// daemon (zipline#92 — a client whose daemon is down failed the tier
+/// mid-deploy before; the probe was free once the netns fallback needed it).
+/// The missing-docker wording matches the issue's acceptance text
+/// (`docker not found`).
 pub fn docker_gate(probes: &Probes) -> TierGate {
     if !probes.docker {
         return TierGate::Skip("docker not found".to_string());
     }
     if !probes.docker_compose {
         return TierGate::Skip("docker compose not found".to_string());
+    }
+    if !probes.docker_daemon {
+        return TierGate::Skip("docker daemon not reachable".to_string());
     }
     TierGate::Run
 }
@@ -1759,6 +1765,19 @@ mod tests {
             panic!("docker must skip without compose");
         };
         assert!(reason.contains("docker compose"), "{reason}");
+    }
+
+    /// A `docker` client whose daemon does not answer fails the docker tier
+    /// mid-deploy today; with the daemon probe (zipline#92) the gate catches
+    /// it up front, with a reason naming the daemon rather than the client.
+    #[test]
+    fn docker_gate_requires_a_reachable_daemon() {
+        let mut probes = all_present();
+        probes.docker_daemon = false;
+        let TierGate::Skip(reason) = docker_gate(&probes) else {
+            panic!("docker must skip when the daemon is unreachable");
+        };
+        assert_eq!(reason, "docker daemon not reachable");
     }
 
     /// The PATH probe requires the candidate to be executable, not merely a
