@@ -1731,15 +1731,30 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                     tiers::NetnsRunner::Host(_) => Ok(()),
                 };
                 if let Err(reason) = floor {
-                    if let Some(reason) = tiers::check_gate(
+                    match tiers::check_gate(
                         "netns",
                         tiers::TierGate::Skip(reason),
                         inputs.selection.is_explicit("netns"),
-                    )? {
-                        if !inputs.quiet {
-                            println!("netns tier: skipped ({reason})");
+                    ) {
+                        Ok(Some(reason)) => {
+                            if !inputs.quiet {
+                                println!("netns tier: skipped ({reason})");
+                            }
+                            tier_results.insert("netns".to_string(), Tier::skipped(&reason));
                         }
-                        tier_results.insert("netns".to_string(), Tier::skipped(&reason));
+                        // check_gate on a Skip never returns Ok(None).
+                        Ok(None) => unreachable!("check_gate mapped a Skip to Run"),
+                        Err(error) => {
+                            // An explicit request that cannot run is a
+                            // gate-style finding: exit 1 through the tier
+                            // failure path, not a `?`-propagated exit 2 —
+                            // and the manifest still records the tier as
+                            // skipped, with the reason (spec-003 §3/§6).
+                            eprintln!("error: {error:#}");
+                            tier_failed = true;
+                            let reason = error.to_string();
+                            tier_results.insert("netns".to_string(), Tier::skipped(&reason));
+                        }
                     }
                 } else {
                     if !inputs.quiet {
@@ -3358,10 +3373,11 @@ allow_pin_drift:
         assert!(!text.contains("sudo:"), "{text}");
     }
 
-    /// The same floor failure on an *explicitly requested* netns tier is an
-    /// error through `check_gate` (zipline#93 step 2), never a silent
-    /// exit-0 skip — the explicitness rule of spec-003 §6 holds at the
-    /// execution-time floor exactly as it does at the gate.
+    /// The same floor failure on an *explicitly requested* netns tier fails
+    /// the run through `check_gate` (zipline#93 step 2) — exit 1, never a
+    /// silent exit-0 skip — while the manifest still records the tier as
+    /// skipped with the reason: the explicitness rule of spec-003 §6 holds
+    /// at the execution-time floor exactly as it does at the gate.
     #[test]
     fn execute_build_errors_an_explicit_container_request_that_fails_the_floor() {
         let (_tmp, workspace, _sha) = workspace_with_repo();
@@ -3380,9 +3396,16 @@ allow_pin_drift:
         in_.netns_runner = Some(Ok(tiers::NetnsRunner::Container {
             host_reason: "missing: passwordless sudo (or pass --prompt-for-sudo)".to_string(),
         }));
-        let error = execute_build(&in_).unwrap_err().to_string();
-        assert!(error.contains("--test netns was requested"), "{error}");
-        assert!(error.contains("predates the Docker runner"), "{error}");
+        let ok = execute_build(&in_).unwrap();
+        assert!(!ok, "an explicit request that cannot run must fail the run");
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("status: skipped"), "{text}");
+        assert!(
+            text.contains("--test netns was requested but cannot run"),
+            "{text}"
+        );
+        assert!(text.contains("predates the Docker runner"), "{text}");
     }
 
     /// A stored no-route selection (`Err`) is recorded `skipped` with the
