@@ -292,20 +292,16 @@ pub enum TierGate {
 }
 
 /// Gates the netns tier: a thin match over [`select_netns_runner`], so the
-/// selection logic has one source of truth (zipline#92). `Host` runs.
-/// `Container` is refused **at the gate** until zipline#93 implements the
-/// runner — gate-time, deliberately, so an explicit `--test netns` /
-/// `--test all` still errors through `check_gate`; a run-time skip behind a
-/// `Run` gate would let an explicitly requested tier exit 0 without running,
-/// because skipped outcomes do not fail `execute_build` (operator amendment
-/// on zipline#92). No route at all skips with the selector's two-route
-/// reason. Pure — probes are injected.
+/// selection logic has one source of truth (zipline#92). `Host` and
+/// `Container` both run — the container route executes through `make
+/// docker-test` since zipline#93; its remaining prerequisite, the worktree's
+/// Makefile floor, is checked against the actual worktree at execution time
+/// (`docker_runner_floor`), because no worktree exists at gate time. No
+/// route at all skips with the selector's two-route reason. Pure — probes
+/// are injected.
 pub fn netns_gate(probes: &Probes) -> TierGate {
     match select_netns_runner(probes) {
-        Ok(NetnsRunner::Host(_)) => TierGate::Run,
-        Ok(NetnsRunner::Container { .. }) => TierGate::Skip(
-            "docker fallback selected but not implemented yet (zipline#93)".to_string(),
-        ),
+        Ok(_) => TierGate::Run,
         Err(reason) => TierGate::Skip(reason),
     }
 }
@@ -497,9 +493,11 @@ pub fn prime_sudo(runner: &dyn SudoRunner, stdin_is_tty: bool) -> PrimeOutcome {
 }
 
 /// How the netns tier's sudo was satisfied, recorded in the emitted
-/// manifest (zipline#70 Step 6; approved Q1): a run on primed credentials
-/// is not the same provenance as one on a NOPASSWD host, and the manifest
-/// is the audit record. Serializes lowercase: `nopasswd` / `primed`.
+/// manifest (zipline#70 Step 6, approved Q1; zipline#93): a run on primed
+/// credentials is not the same provenance as one on a NOPASSWD host, and a
+/// run as root inside a privileged container is a third — the manifest is
+/// the audit record, and the three are never conflated. Serializes
+/// lowercase: `nopasswd` / `primed` / `container`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SudoProvenance {
@@ -507,6 +505,10 @@ pub enum SudoProvenance {
     Nopasswd,
     /// `--prompt-for-sudo` prompted and primed the credential cache.
     Primed,
+    /// The docker fallback (zipline#93): the scripts ran as root inside the
+    /// privileged container of `make docker-test`, so their `sudo` calls
+    /// were satisfied by already being root — no host credential existed.
+    Container,
 }
 
 /// Keeps a primed sudo credential alive across a run that outlives sudo's
@@ -609,10 +611,9 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
         // The flag changes nothing: report the selection verbatim.
         return match select_netns_runner(probes) {
             Ok(NetnsRunner::Host(_)) => "prerequisites present".to_string(),
-            Ok(NetnsRunner::Container { host_reason }) => format!(
-                "docker fallback selected (host route unavailable: {host_reason}); \
-                 not implemented yet (zipline#93)"
-            ),
+            Ok(NetnsRunner::Container { host_reason }) => {
+                format!("would run in docker (host route unavailable: {host_reason})")
+            }
             Err(reason) => reason,
         };
     }
@@ -647,11 +648,45 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
         // the primed selection's text is reported — quoting sudo as missing
         // here would misstate what the prompt buys (zipline#70 Step 5).
         Ok(NetnsRunner::Container { host_reason }) => format!(
-            "would prompt for sudo (--prompt-for-sudo); docker fallback selected \
-             (host route unavailable: {host_reason}); not implemented yet (zipline#93)"
+            "would prompt for sudo (--prompt-for-sudo); \
+             would run in docker (host route unavailable: {host_reason})"
         ),
         Err(reason) => format!("would prompt for sudo (--prompt-for-sudo); {reason}"),
     }
+}
+
+/// The netns tier's stdout header (zipline#93 step 5): the host route keeps
+/// the plain `netns tier:`; the container route names the docker fallback
+/// and quotes the host route's real failure, so an operator watching the
+/// run sees the cause without opening the manifest.
+pub fn netns_tier_header(runner: &NetnsRunner) -> String {
+    match runner {
+        NetnsRunner::Host(_) => "netns tier:".to_string(),
+        NetnsRunner::Container { host_reason } => {
+            format!("netns tier (docker fallback; host route unavailable: {host_reason}):")
+        }
+    }
+}
+
+/// The container route's floor check (zipline#93, contract 1): the
+/// `zl-zpr-core` worktree must carry `integration-test/Makefile` defining
+/// `FORWARD_ENV` — added by `c163628`, the commit that forwards the caller's
+/// `*_BIN` overrides into the container. An older worktree would run the
+/// scripts against the image's own defaults and silently test the wrong
+/// binaries, so the route is refused with a reason naming the worktree's sha
+/// and the floor commit. Pure over the filesystem: no git, no docker.
+pub fn docker_runner_floor(core_worktree: &Path, head_sha: &str) -> Result<(), String> {
+    let makefile = core_worktree.join("integration-test").join("Makefile");
+    let defines_forward_env = std::fs::read_to_string(&makefile)
+        .map(|text| text.contains("FORWARD_ENV"))
+        .unwrap_or(false);
+    if defines_forward_env {
+        return Ok(());
+    }
+    Err(format!(
+        "zl-zpr-core @ {head_sha} predates the Docker runner \
+         (integration-test/Makefile with FORWARD_ENV, zl-zpr-core c163628)"
+    ))
 }
 
 /// Gates the docker tier: `docker`, the compose v2 plugin, and a reachable
@@ -893,13 +928,29 @@ pub struct PrepStep {
     pub dir: PathBuf,
 }
 
-/// One planned script: its name (relative to the plan's `dir`), the
-/// environment overrides it runs under, and an optional prep build.
+/// One planned script: its name, the command that runs it, the environment
+/// overrides it runs under, the inherited variables to strip from the
+/// child, and an optional prep build. On the host route the command is the
+/// script itself; on the container route it is `make docker-test` in the
+/// worktree's `integration-test/` (zipline#93).
 #[derive(Debug)]
 pub struct NetnsScript {
     pub script: &'static str,
+    /// What to execute: the script's own path (host) or `make` (container).
+    pub program: String,
+    /// Arguments to `program`: empty on the host route; the
+    /// `-C .. docker-test TEST=.. WORKSPACE=..` invocation on the container
+    /// route (contract 1).
+    pub args: Vec<String>,
     /// `KEY=value` pairs set on the child only — never the tool's own env.
     pub env: Vec<(String, String)>,
+    /// Inherited variables removed from the child's environment before it
+    /// runs (zipline#93): `run_env_command` inherits this process's
+    /// environment and only adds `env`, so an operator's exported
+    /// `VALKEY_SERVER_BIN` would otherwise reach the container through the
+    /// Makefile's `FORWARD_ENV`. Empty on the host route — its behaviour is
+    /// byte-identical to before the field existed.
+    pub env_remove: Vec<&'static str>,
     pub prep: Option<PrepStep>,
 }
 
@@ -914,13 +965,35 @@ pub struct NetnsPlan {
 
 /// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
 /// the seven blessed scripts in order, each with the `*_BIN` overrides the
-/// scripts already honour pointed at `dist/` and the system valkey — nothing
-/// is copied into `integration-test/`. `a2a-pubkey-test.sh` alone runs the
-/// worktree-local `enable-security-testing` `ph` (a debug build that must
-/// never reach `dist/` — see [`dist_ph_is_clean`]). `verbose` exports
-/// `ZPR_TEST_VERBOSE=1`; `DEBUG_TARGETS` is left at the scripts' default.
-pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: bool) -> NetnsPlan {
+/// scripts already honour pointed at `dist/` — nothing is copied into
+/// `integration-test/`. `a2a-pubkey-test.sh` alone runs the worktree-local
+/// `enable-security-testing` `ph` (a debug build that must never reach
+/// `dist/` — see [`dist_ph_is_clean`]); its prep build runs on the host on
+/// both routes, and the debug binary is under the container's mount either
+/// way (Finding 3). `verbose` exports `ZPR_TEST_VERBOSE=1`; `DEBUG_TARGETS`
+/// is left at the scripts' default.
+///
+/// The `runner` decides the route (zipline#93, contract 1):
+/// - `Host`: each script runs directly from `integration-test/` with
+///   `VALKEY_SERVER_BIN` pointing at the host's `valkey` — byte-identical to
+///   the pre-#93 plan.
+/// - `Container`: each script becomes `make -C <core>/integration-test
+///   docker-test TEST=<script> WORKSPACE=<build_dir>` in the worktree, and
+///   `VALKEY_SERVER_BIN` is neither set nor inherited (`env_remove`): the
+///   image ships its own valkey, a host path would not resolve inside the
+///   container, and the Makefile's `FORWARD_ENV` would forward an operator's
+///   exported value.
+pub fn netns_plan(
+    core_worktree: &Path,
+    dist: &Path,
+    valkey: &Path,
+    verbose: bool,
+    runner: &NetnsRunner,
+    build_dir: &Path,
+) -> NetnsPlan {
     let display = |path: PathBuf| path.display().to_string();
+    let container = matches!(runner, NetnsRunner::Container { .. });
+    let integration = core_worktree.join("integration-test");
     let scripts = NETNS_SCRIPTS
         .iter()
         .map(|script| {
@@ -937,17 +1010,39 @@ pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: boo
                 ("PH_DEBUG_BIN".to_string(), display(dist.join("ph-cli"))),
                 ("VS_BIN".to_string(), display(dist.join("vs"))),
                 ("VS_ADMIN_BIN".to_string(), display(dist.join("vs-admin"))),
-                (
+            ];
+            if !container {
+                // Host route only: the container's image ships its own
+                // valkey and a host path would not exist inside it.
+                env.push((
                     "VALKEY_SERVER_BIN".to_string(),
                     valkey.display().to_string(),
-                ),
-            ];
+                ));
+            }
             if verbose {
                 env.push(("ZPR_TEST_VERBOSE".to_string(), "1".to_string()));
             }
+            let (program, args, env_remove) = if container {
+                (
+                    "make".to_string(),
+                    vec![
+                        "-C".to_string(),
+                        integration.display().to_string(),
+                        "docker-test".to_string(),
+                        format!("TEST={script}"),
+                        format!("WORKSPACE={}", build_dir.display()),
+                    ],
+                    vec!["VALKEY_SERVER_BIN"],
+                )
+            } else {
+                (display(integration.join(script)), vec![], vec![])
+            };
             NetnsScript {
                 script,
+                program,
+                args,
                 env,
+                env_remove,
                 prep: a2a.then(|| PrepStep {
                     name: "security-ph",
                     program: "cargo",
@@ -961,7 +1056,14 @@ pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: boo
         })
         .collect();
     NetnsPlan {
-        dir: core_worktree.join("integration-test"),
+        // The container invocation runs `make` from the worktree (`-C`
+        // names the Makefile's directory); the host route keeps running
+        // the scripts from integration-test/ as before.
+        dir: if container {
+            core_worktree.to_path_buf()
+        } else {
+            integration
+        },
         scripts,
     }
 }
@@ -986,6 +1088,7 @@ pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
                 prep.program,
                 &prep.args,
                 &[],
+                &[],
                 &prep.dir,
                 logs,
                 quiet,
@@ -1001,13 +1104,14 @@ pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
                 continue;
             }
         }
-        let program = plan.dir.join(script.script).display().to_string();
+        let program = &script.program;
         match run_env_command(
             "netns",
             script.script,
-            &program,
-            &[] as &[&str],
+            program,
+            &script.args,
             &script.env,
+            &script.env_remove,
             &plan.dir,
             logs,
             quiet,
@@ -1067,6 +1171,9 @@ pub fn dist_ph_is_clean(dist: &Path) -> Result<()> {
 /// [`recipes::run_command`] with per-child environment overrides: same
 /// working-directory, log shape (`logs/<label>-<name>.log`), failure echo
 /// and error wording. The env touches the child only, never this process.
+/// `env_remove` strips inherited variables from the child before `env` is
+/// applied (zipline#93): the child otherwise inherits this process's whole
+/// environment, and an operator's exported value must not leak through.
 #[allow(clippy::too_many_arguments)]
 fn run_env_command(
     label: &str,
@@ -1074,6 +1181,7 @@ fn run_env_command(
     program: &str,
     args: &[impl AsRef<std::ffi::OsStr>],
     env: &[(String, String)],
+    env_remove: &[&str],
     dir: &Path,
     logs: &Path,
     quiet: bool,
@@ -1083,6 +1191,9 @@ fn run_env_command(
     let log_path = logs.join(format!("{label}-{name}.log"));
     let mut command = std::process::Command::new(program);
     command.args(args).current_dir(dir);
+    for key in env_remove {
+        command.env_remove(key);
+    }
     for (key, value) in env {
         command.env(key, value);
     }
@@ -1250,6 +1361,7 @@ pub fn run_docker(plan: &DockerPlan, logs: &Path, quiet: bool) -> TierOutcome {
             step.name,
             &step.program,
             &step.args,
+            &[],
             &[],
             &step.dir,
             logs,
@@ -1589,11 +1701,10 @@ mod tests {
         assert_eq!(text, "prerequisites present");
     }
 
-    /// The dry-run line when the container is selected (zipline#92 step 5,
-    /// as amended): under this issue the runner does not exist, so the text
-    /// must say the fallback was *selected* and is *not implemented yet* —
-    /// never `would run in docker`, which is only true after zipline#93.
-    /// The parenthetical quotes the host route's real gap, whichever it was.
+    /// The dry-run line when the container is selected (zipline#92 step 5;
+    /// zipline#93 step 4): the runner exists now, so the text says what the
+    /// real run would do — `would run in docker` — and its parenthetical
+    /// quotes the host route's real gap, whichever it was.
     #[test]
     fn netns_dry_run_text_reports_a_container_selection_without_overstating() {
         // Sudo is the host gap.
@@ -1603,8 +1714,8 @@ mod tests {
         };
         assert_eq!(
             netns_dry_run_text(&probes, false),
-            "docker fallback selected (host route unavailable: missing: \
-             passwordless sudo (or pass --prompt-for-sudo)); not implemented yet (zipline#93)"
+            "would run in docker (host route unavailable: missing: \
+             passwordless sudo (or pass --prompt-for-sudo))"
         );
 
         // valkey is the host gap: the text names it, not a fixed sudo cause.
@@ -1615,10 +1726,8 @@ mod tests {
         let text = netns_dry_run_text(&probes, false);
         assert_eq!(
             text,
-            "docker fallback selected (host route unavailable: missing: \
-             valkey-server); not implemented yet (zipline#93)"
+            "would run in docker (host route unavailable: missing: valkey-server)"
         );
-        assert!(!text.contains("would run in docker"), "{text}");
     }
 
     /// `--prompt-for-sudo` with the container as the fallback (zipline#92
@@ -2051,15 +2160,15 @@ mod tests {
         assert!(reason.contains("docker daemon not reachable"), "{reason}");
     }
 
-    /// Until zipline#93 lands, a `Container` selection is refused **at the
-    /// gate**: `netns_gate` maps it to a Skip with the exact reason below,
-    /// so an explicit `--test netns` / `--test all` still errors through
-    /// `check_gate` and a default selection skips visibly. It must NOT be a
-    /// run-time skip behind a `Run` gate — skipped outcomes do not fail
-    /// `execute_build`, which would let an explicitly requested tier exit 0
-    /// without running (operator amendment on zipline#92).
+    /// Since zipline#93 a `Container` selection runs through the gate: the
+    /// docker fallback is implemented, so `netns_gate` maps it to `Run` —
+    /// the run-time floor check (`docker_runner_floor`) is the only
+    /// remaining refusal, and it goes through `check_gate` in
+    /// `execute_build` so an explicit request still errors. This replaces
+    /// zipline#92's placeholder gate-skip test; its RED failure was the
+    /// proof the behaviour changed.
     #[test]
-    fn netns_gate_refuses_a_container_selection_until_93_lands() {
+    fn netns_gate_runs_a_container_selection() {
         let probes = Probes {
             passwordless_sudo: false,
             ..all_present()
@@ -2068,13 +2177,7 @@ mod tests {
             select_netns_runner(&probes),
             Ok(NetnsRunner::Container { .. })
         ));
-        let TierGate::Skip(reason) = netns_gate(&probes) else {
-            panic!("a container selection must be refused at the gate until #93");
-        };
-        assert_eq!(
-            reason,
-            "docker fallback selected but not implemented yet (zipline#93)"
-        );
+        assert!(matches!(netns_gate(&probes), TierGate::Run));
     }
 
     /// A failed probe on a default-selected (non-explicit) tier is a skip
@@ -2096,6 +2199,68 @@ mod tests {
         assert_eq!(check_gate("docker", TierGate::Run, false).unwrap(), None);
     }
 
+    /// The stdout tier header (zipline#93 step 5): the host route keeps the
+    /// plain `netns tier:`, and the container route names the fallback and
+    /// quotes the host route's real failure, so an operator watching the run
+    /// sees the cause without opening the manifest.
+    #[test]
+    fn netns_tier_header_names_the_docker_fallback_with_the_host_reason() {
+        assert_eq!(
+            netns_tier_header(&NetnsRunner::Host(SudoProvenance::Nopasswd)),
+            "netns tier:"
+        );
+        assert_eq!(
+            netns_tier_header(&NetnsRunner::Container {
+                host_reason: "missing: valkey-server".to_string()
+            }),
+            "netns tier (docker fallback; host route unavailable: missing: valkey-server):"
+        );
+    }
+
+    // -- the Makefile floor for the container route (zipline#93 step 2) ---------
+
+    /// A worktree whose `integration-test/Makefile` defines `FORWARD_ENV`
+    /// meets the container route's floor (`zl-zpr-core` @ `c163628`, the
+    /// commit that forwards the environment into the container).
+    #[test]
+    fn docker_runner_floor_passes_a_makefile_with_forward_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Makefile"),
+            "FORWARD_ENV := PH_BIN VS_BIN\ndocker-test:\n\ttrue\n",
+        )
+        .unwrap();
+        assert_eq!(docker_runner_floor(tmp.path(), "c0ffee1"), Ok(()));
+    }
+
+    /// A worktree without the Makefile — or with one that predates
+    /// `FORWARD_ENV` — fails the floor with a reason naming the sha and the
+    /// commit that introduced the runner, so the operator knows what to
+    /// update (zipline#93 step 2).
+    #[test]
+    fn docker_runner_floor_names_the_sha_and_the_floor_commit() {
+        let expected = "zl-zpr-core @ c0ffee1 predates the Docker runner \
+                        (integration-test/Makefile with FORWARD_ENV, zl-zpr-core c163628)";
+
+        // No integration-test/Makefile at all.
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            docker_runner_floor(tmp.path(), "c0ffee1"),
+            Err(expected.to_string())
+        );
+
+        // A Makefile from before c163628: no FORWARD_ENV.
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Makefile"), "docker-test:\n\ttrue\n").unwrap();
+        assert_eq!(
+            docker_runner_floor(tmp.path(), "c0ffee1"),
+            Err(expected.to_string())
+        );
+    }
+
     // -- the netns tier's plan (issue62 step 3) ---------------------------------
 
     /// One env lookup in a planned script.
@@ -2105,6 +2270,130 @@ mod tests {
             .iter()
             .find(|(name, _)| name == key)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// The container route's plan (zipline#93 step 3, contract 1): every
+    /// script becomes one `make -C <core>/integration-test docker-test
+    /// TEST=<script> WORKSPACE=<build-dir>` invocation in the worktree, the
+    /// env keeps the `*_BIN` overrides but drops `VALKEY_SERVER_BIN` — the
+    /// image ships its own valkey, and a host path would not exist inside
+    /// the container — and `VALKEY_SERVER_BIN` is also in `env_remove` so an
+    /// operator's exported value cannot leak through the Makefile's
+    /// `FORWARD_ENV`. The a2a prep build is unchanged: it runs on the host
+    /// and its debug `ph` is under the mount (Finding 3).
+    #[test]
+    fn netns_plan_container_route_runs_make_docker_test_per_script() {
+        let runner = NetnsRunner::Container {
+            host_reason: "missing: passwordless sudo (or pass --prompt-for-sudo)".to_string(),
+        };
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+            &runner,
+            Path::new("/b"),
+        );
+        // The workdir is the worktree; `-C` names the Makefile's directory.
+        assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core"));
+        for script in &plan.scripts {
+            assert_eq!(script.program, "make", "{}", script.script);
+            assert_eq!(
+                script.args,
+                [
+                    "-C",
+                    "/wt/zl-zpr-core/integration-test",
+                    "docker-test",
+                    &format!("TEST={}", script.script),
+                    "WORKSPACE=/b",
+                ],
+                "{}",
+                script.script
+            );
+            // The container carries its own valkey: never set, and stripped
+            // from the inherited environment too.
+            assert_eq!(
+                env_of(script, "VALKEY_SERVER_BIN"),
+                None,
+                "{}",
+                script.script
+            );
+            assert!(
+                script.env_remove.contains(&"VALKEY_SERVER_BIN"),
+                "{} must remove VALKEY_SERVER_BIN",
+                script.script
+            );
+            // The *_BIN overrides still point at the build's dist/.
+            assert_eq!(env_of(script, "PH_DEBUG_BIN"), Some("/b/dist/ph-cli"));
+            assert_eq!(env_of(script, "VS_BIN"), Some("/b/dist/vs"));
+            assert_eq!(env_of(script, "VS_ADMIN_BIN"), Some("/b/dist/vs-admin"));
+            if script.script == "a2a-pubkey-test.sh" {
+                let prep = script.prep.as_ref().expect("a2a needs a prep build");
+                assert_eq!(prep.program, "cargo");
+                assert_eq!(
+                    env_of(script, "PH_BIN"),
+                    Some("/wt/zl-zpr-core/target/debug/ph")
+                );
+            } else {
+                assert!(script.prep.is_none(), "{} must not prep", script.script);
+                assert_eq!(env_of(script, "PH_BIN"), Some("/b/dist/ph"));
+            }
+        }
+    }
+
+    /// The host route's plan is unchanged by the runner parameter
+    /// (zipline#93 step 3): direct script invocation from the
+    /// integration-test directory, `VALKEY_SERVER_BIN` set, nothing removed
+    /// — the exact shape the pre-#93 plan had.
+    #[test]
+    fn netns_plan_host_route_shape_is_unchanged() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
+        );
+        assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));
+        for script in &plan.scripts {
+            assert_eq!(
+                script.program,
+                format!("/wt/zl-zpr-core/integration-test/{}", script.script)
+            );
+            assert!(script.args.is_empty(), "{}", script.script);
+            assert!(script.env_remove.is_empty(), "{}", script.script);
+        }
+        assert_eq!(
+            env_of(&plan.scripts[0], "VALKEY_SERVER_BIN"),
+            Some("/usr/bin/valkey-server")
+        );
+    }
+
+    /// `--verbose` on the container route still exports `ZPR_TEST_VERBOSE=1`
+    /// (zipline#93 step 6): the Makefile's `FORWARD_ENV` forwards it into
+    /// the container, so the child env must carry it exactly as on the host.
+    #[test]
+    fn netns_plan_container_route_keeps_verbose_export() {
+        let runner = NetnsRunner::Container {
+            host_reason: "missing: valkey-server".to_string(),
+        };
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            true,
+            &runner,
+            Path::new("/b"),
+        );
+        for script in &plan.scripts {
+            assert_eq!(
+                env_of(script, "ZPR_TEST_VERBOSE"),
+                Some("1"),
+                "{} missing ZPR_TEST_VERBOSE under --verbose on the container route",
+                script.script
+            );
+        }
     }
 
     /// The plan runs exactly the seven blessed scripts, in order — an
@@ -2117,6 +2406,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         let names: Vec<&str> = plan.scripts.iter().map(|script| script.script).collect();
         assert_eq!(
@@ -2144,6 +2435,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         // Every script except a2a runs the dist/ ph.
         let one_node = &plan.scripts[0];
@@ -2159,6 +2452,120 @@ mod tests {
         assert_eq!(env_of(one_node, "ZPR_TEST_VERBOSE"), None);
     }
 
+    /// The host route never removes anything from the child's environment:
+    /// `env_remove` exists for the container route (zipline#93), and an empty
+    /// list keeps the host route byte-identical to today's behaviour.
+    #[test]
+    fn netns_plan_host_route_removes_nothing_from_the_environment() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
+        );
+        for script in &plan.scripts {
+            assert!(
+                script.env_remove.is_empty(),
+                "{} must not remove environment variables on the host route",
+                script.script
+            );
+        }
+    }
+
+    /// `run_env_command` must be able to *remove* a variable from the child's
+    /// inherited environment (zipline#93, contract 1): it inherits this
+    /// process's environment and only adds the listed pairs, so an operator's
+    /// exported `VALKEY_SERVER_BIN` would otherwise be forwarded into the
+    /// container by the Makefile's `FORWARD_ENV` (Codex review of PR #23).
+    /// The child is executed, not planned: the assertion is the variable's
+    /// absence in the running child's environment.
+    ///
+    /// The exported variable must be present in the environment of the
+    /// process that calls `run_env_command`, but mutating THIS process's
+    /// environment with `set_var` is unsound under the multithreaded test
+    /// harness (Codex review of PR #25): other tests spawn commands and may
+    /// read the environment concurrently, and the value would leak into
+    /// later tests. So the call happens one process down: this test re-runs
+    /// the test binary filtered to the `#[ignore]`d helper below, injecting
+    /// `VALKEY_SERVER_BIN` through `Command::env` — the helper process is
+    /// born with the variable, and no environment is ever mutated.
+    #[test]
+    fn run_env_command_removes_named_variables_from_the_executed_child() {
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "build::tiers::tests::run_env_command_removal_helper",
+                "--include-ignored",
+            ])
+            .env("VALKEY_SERVER_BIN", "/host/valkey-server")
+            .output()
+            .expect("re-running the test binary");
+        assert!(
+            output.status.success(),
+            "removal helper failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The filter must have matched exactly one test: a renamed or
+        // deleted helper would otherwise make this test pass vacuously.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("1 passed"),
+            "the removal helper did not run:\n{stdout}"
+        );
+    }
+
+    /// The executing half of
+    /// [`run_env_command_removes_named_variables_from_the_executed_child`]:
+    /// ignored so the normal suite never runs it, driven by that test in a
+    /// child process whose environment carries `VALKEY_SERVER_BIN` from
+    /// birth (`Command::env`, no `set_var`).
+    #[test]
+    #[ignore = "helper: driven by run_env_command_removes_named_variables_from_the_executed_child"]
+    fn run_env_command_removal_helper() {
+        assert!(
+            std::env::var_os("VALKEY_SERVER_BIN").is_some(),
+            "this helper asserts nothing without VALKEY_SERVER_BIN in its \
+             environment; it is driven by \
+             run_env_command_removes_named_variables_from_the_executed_child, \
+             which injects the variable via Command::env"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+
+        // Without the removal the child inherits it: the fixture is real.
+        run_env_command(
+            "netns",
+            "inherited",
+            "sh",
+            &["-c", "test -n \"$VALKEY_SERVER_BIN\""],
+            &[],
+            &[],
+            tmp.path(),
+            &logs,
+            true,
+        )
+        .expect("the child must inherit the exported variable");
+
+        // With the removal it is gone from the executed child's environment.
+        run_env_command(
+            "netns",
+            "removed",
+            "sh",
+            &["-c", "test -z \"$VALKEY_SERVER_BIN\""],
+            &[],
+            &["VALKEY_SERVER_BIN"],
+            tmp.path(),
+            &logs,
+            true,
+        )
+        .expect("env_remove must reach the executed child");
+    }
+
     /// `--verbose` exports `ZPR_TEST_VERBOSE=1` to every script; the default
     /// leaves it unset (the scripts' own default is quiet).
     #[test]
@@ -2168,6 +2575,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             true,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         for script in &plan.scripts {
             assert_eq!(
@@ -2190,6 +2599,8 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
         );
         for script in &plan.scripts {
             if script.script == "a2a-pubkey-test.sh" {
@@ -2290,17 +2701,26 @@ mod tests {
             scripts: vec![
                 NetnsScript {
                     script: "ok.sh",
+                    program: dir.join("ok.sh").display().to_string(),
+                    args: vec![],
                     env: vec![],
+                    env_remove: vec![],
                     prep: None,
                 },
                 NetnsScript {
                     script: "bad.sh",
+                    program: dir.join("bad.sh").display().to_string(),
+                    args: vec![],
                     env: vec![],
+                    env_remove: vec![],
                     prep: None,
                 },
                 NetnsScript {
                     script: "prepped.sh",
+                    program: dir.join("prepped.sh").display().to_string(),
+                    args: vec![],
                     env: vec![],
+                    env_remove: vec![],
                     prep: Some(PrepStep {
                         name: "security-ph",
                         program: "sh",

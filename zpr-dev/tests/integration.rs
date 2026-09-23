@@ -1214,64 +1214,35 @@ fn build_tip_dry_run_resolves_and_creates_nothing() {
     );
 }
 
-/// The netns docker fallback under zipline#92 (fake probes: no sudo, a
+/// The netns docker fallback through the binary (fake probes: no sudo, a
 /// reachable docker daemon, valkey and python3 present — see
-/// `run_with_fake_probes`; no real sudo or docker is ever invoked). Two
-/// facts, both operator amendments to the plan: `--dry-run` reports the
-/// container as *selected and not implemented yet*, quoting the host
-/// route's real gap — never `would run in docker`, which is only true after
-/// zipline#93 — and an explicit `--test all` still exits 1 AT THE GATE with
-/// the not-implemented reason, because a Container selection is refused
-/// gate-time; a run-time skip would let the explicit request exit 0.
+/// `run_with_fake_probes`; no real sudo or docker is ever invoked). Since
+/// zipline#93 the container route is implemented, so `--dry-run` under
+/// `--test all` reports `would run in docker`, quoting the host route's
+/// real gap — and the run is a dry run, so nothing is created. The
+/// execution-time Makefile floor (skip when default-selected, exit-1 when
+/// explicit) is covered by the `execute_build` tests in `build::mod`, where
+/// the worktree contents can be controlled.
 #[test]
-fn build_test_all_refuses_the_container_selection_at_the_gate() {
+fn build_dry_run_reports_the_container_route_as_would_run_in_docker() {
     let fixture = Fixture::new();
     fixture.clone_repos();
 
-    // --dry-run: the selection text, honestly hedged.
     let out =
         stdout_of(&fixture.run_with_fake_probes(&["build", "--tip", "--dry-run", "--test", "all"]));
     assert!(
         out.contains(
-            "docker fallback selected (host route unavailable: missing: \
-             passwordless sudo (or pass --prompt-for-sudo)); \
-             not implemented yet (zipline#93)"
+            "would run in docker (host route unavailable: missing: \
+             passwordless sudo (or pass --prompt-for-sudo))"
         ),
         "{out}"
     );
-    assert!(!out.contains("would run in docker"), "{out}");
+    assert!(!out.contains("not implemented yet"), "{out}");
 
-    // Explicit --test all: exit 1 at the gate, before anything builds.
-    let output = fixture.run_with_fake_probes(&["build", "--tip", "--test", "all"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let all = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    // A dry run creates nothing, whatever route it reports.
     assert!(
-        all.contains("--test netns was requested but cannot run"),
-        "{all}"
-    );
-    assert!(
-        all.contains("docker fallback selected but not implemented yet (zipline#93)"),
-        "{all}"
-    );
-    // At the gate means before any recipe ran: prepare_build_dir makes the
-    // empty tree, but no worktree was added and no manifest emitted.
-    assert!(
-        !fixture
-            .workspace
-            .join(".zpr-build/tip/dist/zpr-set-tip.yaml")
-            .exists(),
-        "the explicit request emitted a manifest before failing its gate"
-    );
-    assert!(
-        !fixture
-            .workspace
-            .join(".zpr-build/tip/src/zl-zpr-core")
-            .exists(),
-        "the explicit request created worktrees before failing its gate"
+        !fixture.workspace.join(".zpr-build").exists(),
+        "dry-run created the build directory"
     );
 }
 
