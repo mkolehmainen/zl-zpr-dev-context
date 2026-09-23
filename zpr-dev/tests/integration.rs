@@ -1520,6 +1520,24 @@ fn build_clean_with_tip_is_a_usage_error() {
     assert!(err.contains("--tip"), "{err}");
 }
 
+/// `--note` is a build-shaping flag like `--test` (zipline#87): under
+/// `--clean` there is no manifest to carry it, so the pair is a usage
+/// error, and the flag repeats — one note per occurrence.
+#[test]
+fn build_note_conflicts_with_clean_and_repeats() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    let err = error_with_code(&fixture.run(&["build", "--clean", "--note", "x"]), 2);
+    assert!(err.contains("--note"), "{err}");
+    // Parses: two notes reach the dry run, which lists them. Nothing is
+    // built.
+    let out = stdout_of(&fixture.run(&[
+        "build", "--tip", "--dry-run", "--test", "none", "--note", "one", "--note", "two",
+    ]));
+    assert!(out.contains("note: one"), "{out}");
+    assert!(out.contains("note: two"), "{out}");
+}
+
 /// `--build-dir` scopes the clean: the named directory goes, an unrelated
 /// build directory under the default tree stays.
 #[test]

@@ -1229,6 +1229,32 @@ mod tests {
         );
     }
 
+    /// The literal `--test` text is kept for the emitted manifest's
+    /// `tests_requested` (zipline#87): a reader must be able to see that a
+    /// set was gated on `unit` alone. The absent flag reads `default`.
+    #[test]
+    fn selection_records_the_requested_text() {
+        assert_eq!(Selection::parse(None).unwrap().requested(), "default");
+        assert_eq!(Selection::parse(Some("unit")).unwrap().requested(), "unit");
+        assert_eq!(Selection::parse(Some("all")).unwrap().requested(), "all");
+        assert_eq!(Selection::parse(Some("none")).unwrap().requested(), "none");
+        assert_eq!(
+            Selection::parse(Some("unit,docker")).unwrap().requested(),
+            "unit,docker"
+        );
+    }
+
+    /// Every known tier has a human label for the manifest's `notes`
+    /// (zipline#87), so a reader sees "integration tests did NOT run"
+    /// rather than a bare tier name.
+    #[test]
+    fn every_known_tier_has_a_label() {
+        assert_eq!(known(), &["unit", "netns", "docker"]);
+        assert_eq!(label("unit"), "unit tests");
+        assert_eq!(label("netns"), "netns integration tests");
+        assert_eq!(label("docker"), "docker end-to-end tests");
+    }
+
     /// `none` selects nothing: build only, byte-identical to B3 behaviour.
     #[test]
     fn none_selects_nothing() {

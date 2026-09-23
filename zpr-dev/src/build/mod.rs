@@ -2920,6 +2920,76 @@ allow_pin_drift:
         let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
         assert!(!text.contains("tiers:"), "{text}");
         assert!(!build_dir.join("src").join("zl-zpr-core").exists());
+        // ...but never silently (zipline#87): the request and the gap are
+        // spelled out for the reader.
+        assert!(text.contains("tests_requested: none"), "{text}");
+        assert!(text.contains("no tests ran (--test none)"), "{text}");
+    }
+
+    /// A set gated on `--test unit` alone must say so (zipline#87): the
+    /// request is recorded, every unselected tier lands in `tests_skipped`
+    /// with the reason, and `notes` spells out for a human that the
+    /// integration tiers never ran. `tiers:` itself is unchanged.
+    #[test]
+    fn execute_build_unit_only_records_unselected_tiers() {
+        let (_tmp, workspace, _sha) = workspace_with_repo_and_makefile("test:\n\t@echo ok\n");
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        ))
+        .unwrap();
+        assert!(ok);
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("tests_requested: unit"), "{text}");
+        assert!(text.contains("tests_skipped:"), "{text}");
+        assert!(text.contains("netns: not selected (--test unit)"), "{text}");
+        assert!(text.contains("docker: not selected (--test unit)"), "{text}");
+        assert!(
+            text.contains("netns integration tests did NOT run: not selected (--test unit)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("docker end-to-end tests did NOT run: not selected (--test unit)"),
+            "{text}"
+        );
+        // The unit tier itself ran and is not listed as skipped.
+        assert!(!text.contains("unit: not selected"), "{text}");
+        assert!(!text.contains("unit tests did NOT run"), "{text}");
+    }
+
+    /// Operator context from `--note` lands in `notes` after the generated
+    /// lines, verbatim (zipline#87).
+    #[test]
+    fn execute_build_appends_operator_notes() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let notes = vec!["netns run by hand; see zipline#82".to_string()];
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &no_tiers(),
+        );
+        in_.notes = &notes;
+        assert!(execute_build(&in_).unwrap());
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        let generated = text.find("no tests ran (--test none)").expect(&text);
+        let operator = text.find("netns run by hand; see zipline#82").expect(&text);
+        assert!(generated < operator, "operator note must come last: {text}");
     }
 
     // -- the netns and docker tiers in the manifest (task B5, zipline#62) -------
@@ -3018,5 +3088,148 @@ allow_pin_drift:
         assert!(text.contains("docker:"), "{text}");
         assert!(text.contains("status: skipped"), "{text}");
         assert!(text.contains("zl-zpr-demo"), "{text}");
+    }
+
+    // -- coverage summary: tests_skipped and notes (zipline#87) ----------------
+
+    fn passed() -> Tier {
+        Tier::from_outcome(&tiers::TierOutcome {
+            passed: true,
+            repos: BTreeMap::new(),
+        })
+    }
+
+    fn failed() -> Tier {
+        Tier::from_outcome(&tiers::TierOutcome {
+            passed: false,
+            repos: BTreeMap::new(),
+        })
+    }
+
+    fn results(entries: &[(&str, Tier)]) -> BTreeMap<String, Tier> {
+        entries
+            .iter()
+            .map(|(name, tier)| (name.to_string(), tier.clone()))
+            .collect()
+    }
+
+    /// A run that selected everything and passed everything has nothing to
+    /// confess: both fields are empty, so they are omitted from the YAML.
+    #[test]
+    fn coverage_is_silent_on_a_clean_full_run() {
+        let selection = tiers::Selection::parse(None).unwrap();
+        let tiers = results(&[("unit", passed()), ("netns", passed()), ("docker", passed())]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert!(coverage.skipped.is_empty(), "{coverage:?}");
+        assert!(coverage.notes.is_empty(), "{coverage:?}");
+    }
+
+    /// `--test unit` leaves the two end-to-end tiers unselected: each is
+    /// recorded with the request that left it out, and the notes say in
+    /// plain words that the integration tests did not run — in tier order.
+    #[test]
+    fn coverage_marks_unselected_tiers_not_selected() {
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let tiers = results(&[("unit", passed())]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert_eq!(
+            coverage.skipped,
+            BTreeMap::from([
+                ("netns".to_string(), "not selected (--test unit)".to_string()),
+                ("docker".to_string(), "not selected (--test unit)".to_string()),
+            ])
+        );
+        assert_eq!(
+            coverage.notes,
+            vec![
+                "netns integration tests did NOT run: not selected (--test unit)",
+                "docker end-to-end tests did NOT run: not selected (--test unit)",
+            ]
+        );
+    }
+
+    /// `--test none` is one note, not three: the reader needs the fact, not
+    /// the enumeration. `tests_skipped` still lists every tier.
+    #[test]
+    fn coverage_test_none_is_a_single_note() {
+        let selection = tiers::Selection::parse(Some("none")).unwrap();
+        let coverage = coverage_summary(&selection, &BTreeMap::new(), false, false, &[]);
+        assert_eq!(coverage.skipped.len(), 3, "{coverage:?}");
+        assert_eq!(coverage.skipped["unit"], "not selected (--test none)");
+        assert_eq!(coverage.notes, vec!["no tests ran (--test none)"]);
+    }
+
+    /// A probe-skipped tier keeps the probe's reason — the same text as
+    /// `tiers.<name>.reason` — so the two never disagree.
+    #[test]
+    fn coverage_reuses_a_probe_skip_reason() {
+        let selection = tiers::Selection::parse(None).unwrap();
+        let tiers = results(&[
+            ("unit", passed()),
+            ("netns", Tier::skipped("missing: passwordless sudo, valkey-server")),
+            ("docker", passed()),
+        ]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert_eq!(
+            coverage.skipped,
+            BTreeMap::from([(
+                "netns".to_string(),
+                "missing: passwordless sudo, valkey-server".to_string()
+            )])
+        );
+        assert_eq!(
+            coverage.notes,
+            vec!["netns integration tests did NOT run: missing: passwordless sudo, valkey-server"]
+        );
+    }
+
+    /// A failed tier is not "skipped" — it ran — but it is a shortcoming the
+    /// notes must name, after the not-run lines.
+    #[test]
+    fn coverage_notes_a_failed_tier_after_the_not_run_lines() {
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let tiers = results(&[("unit", failed())]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert!(!coverage.skipped.contains_key("unit"), "{coverage:?}");
+        assert_eq!(
+            coverage.notes,
+            vec![
+                "netns integration tests did NOT run: not selected (--test unit)",
+                "docker end-to-end tests did NOT run: not selected (--test unit)",
+                "unit tests FAILED; see tiers.unit.repos",
+            ]
+        );
+    }
+
+    /// When the build itself failed no tier ran, whatever was selected: the
+    /// selected tiers are recorded not run for that reason, and the
+    /// unselected ones keep their own.
+    #[test]
+    fn coverage_build_failure_marks_selected_tiers_not_run() {
+        let selection = tiers::Selection::parse(Some("unit,netns")).unwrap();
+        let coverage = coverage_summary(&selection, &BTreeMap::new(), true, false, &[]);
+        assert_eq!(coverage.skipped["unit"], "not run: build failed");
+        assert_eq!(coverage.skipped["netns"], "not run: build failed");
+        assert_eq!(coverage.skipped["docker"], "not selected (--test unit,netns)");
+        assert_eq!(coverage.notes.len(), 3, "{coverage:?}");
+    }
+
+    /// A gate-1 downgrade and the operator's own notes close the list, in
+    /// that order, the operator's text verbatim.
+    #[test]
+    fn coverage_ends_with_pin_drift_then_operator_notes() {
+        let selection = tiers::Selection::parse(None).unwrap();
+        let tiers = results(&[("unit", passed()), ("netns", passed()), ("docker", passed())]);
+        let operator = vec!["first".to_string(), "second: with punctuation!".to_string()];
+        let coverage = coverage_summary(&selection, &tiers, false, true, &operator);
+        assert!(coverage.skipped.is_empty());
+        assert_eq!(
+            coverage.notes,
+            vec![
+                "gate 1 pin disagreements were downgraded to warnings (--allow-pin-drift)",
+                "first",
+                "second: with punctuation!",
+            ]
+        );
     }
 }
