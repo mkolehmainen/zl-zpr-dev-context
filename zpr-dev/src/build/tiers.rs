@@ -654,6 +654,27 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
     }
 }
 
+/// The container route's floor check (zipline#93, contract 1): the
+/// `zl-zpr-core` worktree must carry `integration-test/Makefile` defining
+/// `FORWARD_ENV` — added by `c163628`, the commit that forwards the caller's
+/// `*_BIN` overrides into the container. An older worktree would run the
+/// scripts against the image's own defaults and silently test the wrong
+/// binaries, so the route is refused with a reason naming the worktree's sha
+/// and the floor commit. Pure over the filesystem: no git, no docker.
+pub fn docker_runner_floor(core_worktree: &Path, head_sha: &str) -> Result<(), String> {
+    let makefile = core_worktree.join("integration-test").join("Makefile");
+    let defines_forward_env = std::fs::read_to_string(&makefile)
+        .map(|text| text.contains("FORWARD_ENV"))
+        .unwrap_or(false);
+    if defines_forward_env {
+        return Ok(());
+    }
+    Err(format!(
+        "zl-zpr-core @ {head_sha} predates the Docker runner \
+         (integration-test/Makefile with FORWARD_ENV, zl-zpr-core c163628)"
+    ))
+}
+
 /// Gates the docker tier: `docker`, the compose v2 plugin, and a reachable
 /// daemon (zipline#92 — a client whose daemon is down failed the tier
 /// mid-deploy before; the probe was free once the netns fallback needed it).
@@ -2116,6 +2137,50 @@ mod tests {
         // A passing gate runs either way.
         assert_eq!(check_gate("docker", TierGate::Run, true).unwrap(), None);
         assert_eq!(check_gate("docker", TierGate::Run, false).unwrap(), None);
+    }
+
+    // -- the Makefile floor for the container route (zipline#93 step 2) ---------
+
+    /// A worktree whose `integration-test/Makefile` defines `FORWARD_ENV`
+    /// meets the container route's floor (`zl-zpr-core` @ `c163628`, the
+    /// commit that forwards the environment into the container).
+    #[test]
+    fn docker_runner_floor_passes_a_makefile_with_forward_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Makefile"),
+            "FORWARD_ENV := PH_BIN VS_BIN\ndocker-test:\n\ttrue\n",
+        )
+        .unwrap();
+        assert_eq!(docker_runner_floor(tmp.path(), "c0ffee1"), Ok(()));
+    }
+
+    /// A worktree without the Makefile — or with one that predates
+    /// `FORWARD_ENV` — fails the floor with a reason naming the sha and the
+    /// commit that introduced the runner, so the operator knows what to
+    /// update (zipline#93 step 2).
+    #[test]
+    fn docker_runner_floor_names_the_sha_and_the_floor_commit() {
+        let expected = "zl-zpr-core @ c0ffee1 predates the Docker runner \
+                        (integration-test/Makefile with FORWARD_ENV, zl-zpr-core c163628)";
+
+        // No integration-test/Makefile at all.
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            docker_runner_floor(tmp.path(), "c0ffee1"),
+            Err(expected.to_string())
+        );
+
+        // A Makefile from before c163628: no FORWARD_ENV.
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Makefile"), "docker-test:\n\ttrue\n").unwrap();
+        assert_eq!(
+            docker_runner_floor(tmp.path(), "c0ffee1"),
+            Err(expected.to_string())
+        );
     }
 
     // -- the netns tier's plan (issue62 step 3) ---------------------------------
