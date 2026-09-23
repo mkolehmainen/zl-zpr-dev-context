@@ -887,12 +887,12 @@ renewed `id_token` with an advancing `iat`, a fixed `auth_time` and no
 `nonce` claim (§12.2's SHOULD NOT, which is also what Google does), and
 `--revoke-refresh` models the user withdrawing the application's access.
 
-That is deliberately **not** the whole loop. Until the node can reach the
-adapter-side `AuthAgent` (see `## Implementation status`), no credential
-crosses the missing hop, so nothing reaches `reauthorize` and the renewal
-cannot complete. `one-node-oidc-renewal-test.sh` is written to exercise the
-whole loop and currently fails at that point by design — it is the acceptance
-criterion for the missing hop, not evidence that renewal works.
+That is now the **whole loop**: with the node→adapter credential hop in place
+(zipline#66) and `authorize_connect` returning the real authentication expiry
+as `authExpires` (zipline#86 — it previously returned the ZPR-address
+attribute's ~100-year default, so the node never scheduled a renewal),
+`one-node-oidc-renewal-test.sh` exercises login, silent renewal and
+revocation end to end, and passes.
 
 **What CI cannot cover.** Real Google. This needs a manual release checklist: a
 real Workspace domain for the happy path, a consumer gmail account to verify
@@ -1078,6 +1078,21 @@ section where they differ**, per the `docs/plans/` rule in `AGENTS.md`.
   (`renewal_in_flight`, cleared on success and on failure, and bounded so a
   hung agent cannot pin it past expiry), and the link stays Active
   throughout.
+- **`authorize_connect` returns the authentication expiry as `authExpires`** —
+  zipline#86 (`zl-zpr-visaservice` PR #31). Root cause of the renewal never
+  firing even with every hop in place: `authorize_connect` answered with the
+  **ZPR-address attribute's** expiry — the ~100-year `NEVER_EXPIRES` default —
+  so the node computed a renewal deadline a century out and never scheduled
+  silent renewal; `reauthorize` separately computed a `USER_AUTHORITY`-only
+  expiry that came out `UNIX_EPOCH` for device-only actors. Both
+  `Connection::new` sites now share `connect_auth_expires(actor)`:
+  `get_authentication_expiration()` (the minimum over both authorities and the
+  identity keys) with the address expiry only as the no-authentication
+  fallback. With this fix `one-node-oidc-renewal-test.sh` was observed passing
+  end to end (2026-09-23, Docker harness): leg 2 logged
+  `link 6: silently re-authenticated; new expiry ...` with the VS-side
+  `reauthorize from Some("node")`, and leg 3's grant revocation disconnected
+  the actor within one sweep (`auth sweep: checked 3 actors, revoked 1`).
 
 **Superseded:**
 
@@ -1097,13 +1112,12 @@ section where they differ**, per the `docs/plans/` rule in `AGENTS.md`.
   forks, and a netns run needs root, so it is pending the operator's
   environment (`zl-zpr-core` 02b730d records what was run locally for the
   interplay test — fixture compile, `bash -n`, the fake-IdP smoke test, and
-  the C1-revert `zpdump` RED). `one-node-oidc-renewal-test.sh` is in the same
-  position: R8 removed the `if: false` that gated its job, and it was not run
-  in the environment that implemented R8 (no passwordless sudo there), so the
-  renewal loop is proven by unit tests and by inspection, not by an observed
-  end-to-end run. Its in-script banner, `ph-cli auth-agent --help` and
-  `adapter/cli/README` all still claim renewal does not work — stale since
-  zipline#66, tracked on zipline#67.
+  the C1-revert `zpdump` RED). `one-node-oidc-renewal-test.sh` has now been
+  observed passing locally in the Docker harness (zipline#86, 2026-09-23 —
+  see the silent re-authentication list above), but still not in CI. Its
+  in-script banner, `ph-cli auth-agent --help` and `adapter/cli/README` all
+  still claim renewal does not work — stale since zipline#66, tracked on
+  zipline#67.
 - **The renewal ZDP messages are not in the RFC.**
   `RenewAuthenticationRequest = 142` and `RenewAuthenticationResponse = 143`
   are implemented and unit-tested but carry a `TODO: add to RFC 6`
