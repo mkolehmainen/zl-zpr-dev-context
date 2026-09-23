@@ -455,6 +455,15 @@ manifest, so a green run never overstates coverage. The same failure on an
 explicitly requested tier (named in a list, or via `--test all`) is an error:
 the machine cannot run what was asked.
 
+A tier left *out* of the selection is stated too. The emitted manifest
+records the literal request as `tests_requested`, lists every tier that did
+not run under `tests_skipped` with its reason (`not selected (--test unit)`,
+the probe's reason, or `not run: build failed`), and spells each gap out as a
+sentence under `notes` — so a set cut with `--test unit` says in its own
+words that the integration tiers never ran. `--note "<text>"` (repeatable)
+appends operator context to those notes, e.g. why a tier was run by hand
+instead.
+
 ### Cutting a new set
 
 1. Fetch everything the set will pin: `zpr-dev update --all` (resolution
@@ -463,8 +472,9 @@ the machine cannot run what was asked.
    `origin/<default_branch>` everywhere (`zipline`; `main` for
    `zl-zpr-coredns`). On a machine that cannot run a tier, drop it from the
    list and let the skip be recorded instead.
-3. Review `dist/zpr-set-<name>.yaml`: the resolved shas, the `pins:` block,
-   the tier results including recorded skips.
+3. Review `dist/zpr-set-<name>.yaml`: the `notes:` first — they name every
+   tier that did not run and why — then the resolved shas, the `pins:` block,
+   and the tier results.
 4. Copy it into `build-sets/<date>.yaml` and commit it. There is no separate
    authoring step; the emitted manifest *is* the set.
 5. Reproduce before relying on it: `zpr-dev build --manifest

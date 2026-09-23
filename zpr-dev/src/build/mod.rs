@@ -235,6 +235,9 @@ pub struct BuildArgs {
     /// run, so the netns tier can run without a NOPASSWD sudoers entry
     /// (zipline#70). Opt-in, and refused when stdin is not a terminal.
     pub prompt_for_sudo: bool,
+    /// `--note <text>`, repeatable: operator sentences appended verbatim to
+    /// the emitted manifest's `notes` after the generated ones (zipline#87).
+    pub note: Vec<String>,
     /// `--clean`: remove the build directory and clear its worktree
     /// registrations, then exit — a mode, not a modifier (zipline#71). It
     /// resolves nothing and fetches nothing, so it works on a workspace too
@@ -445,16 +448,13 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     if ctx.dry_run {
         // The manifest a real run would write: built here so the shape is
         // exercised end to end, printed under --verbose, never written.
-        let emitted = emit(&set, &resolved, args.tip)?;
-        report_dry_run(
-            ctx,
-            &set.name,
-            &resolved,
-            &skipped,
-            args.build_dir.as_deref(),
-            &selection,
-            args.prompt_for_sudo,
-        );
+        let mut emitted = emit(&set, &resolved, args.tip)?;
+        // The preview carries what the run already knows: the request and
+        // the operator's notes. The generated notes and tests_skipped need
+        // tier results a dry run does not have (PR #22 Codex P2).
+        emitted.resolved.tests_requested = selection.requested().to_string();
+        emitted.resolved.notes = args.note.clone();
+        report_dry_run(ctx, &set.name, &resolved, &skipped, args, &selection);
         if ctx.verbose && !ctx.quiet {
             println!();
             println!("emitted manifest (would be written on a real run):");
@@ -578,6 +578,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         verbose: ctx.verbose,
         sudo_refresher: std::cell::Cell::new(sudo_refresher),
         netns_sudo,
+        notes: &args.note,
     })?;
     if !ctx.quiet {
         println!("dist: {}", build_dir.join("dist").display());
@@ -822,6 +823,11 @@ struct GateOutcome {
     zplc_version: Option<String>,
     /// `POLICY_MIN_COMPILER_*` from the visa service's `vs/src/config.rs`.
     vs_policy_min_compiler: Option<String>,
+    /// How many gate-1 disagreements `--allow-pin-drift` turned from errors
+    /// into warnings — zero when the pins agreed, whatever the flag said.
+    /// The manifest's pin-drift note keys off this, not the flag, so it
+    /// never claims a downgrade that did not happen (PR #22 Codex P2).
+    pin_drift_downgraded: usize,
 }
 
 /// Extracts every captured pin from `scan` — pairs of display name and the
@@ -900,7 +906,15 @@ fn collect_gate_findings(
     let (pins, mut findings) = extract_scan_pins(scan)?;
 
     // -- gate 1: agreement ---------------------------------------------------
-    findings.extend(gates::gate_pin_agreement(&pins, drift, downgrade));
+    let agreement = gates::gate_pin_agreement(&pins, drift, downgrade);
+    // Gate 1 emits a warning only for a disagreement the flag downgraded
+    // (agreement is OK, an allowed drift is INFO, and without the flag a
+    // disagreement is an ERROR), so the warning count is the downgrade count.
+    let pin_drift_downgraded = agreement
+        .iter()
+        .filter(|f| f.severity == gates::Severity::Warn)
+        .count();
+    findings.extend(agreement);
 
     // -- gate 1 lock scan: post-resolution dual versions (zipline#69) --------
     // Manifest pins cannot see a pin made inside a tagged git dependency, so
@@ -1017,6 +1031,7 @@ fn collect_gate_findings(
         pins,
         zplc_version,
         vs_policy_min_compiler,
+        pin_drift_downgraded,
     })
 }
 
@@ -1072,20 +1087,22 @@ fn print_findings(quiet: bool, set_name: &str, findings: &[gates::Finding]) -> u
 /// Prints the §7.2 dry-run report: resolved shas, planned build order, planned
 /// tiers with probe results, and the dist/ target. Read-only by construction —
 /// the only processes it may spawn are the read-only tier probes. In
-/// particular it never prompts: `prompt_for_sudo` only changes what the netns
-/// line *says* the real run would do (zipline#70 Step 5).
+/// particular it never prompts: `--prompt-for-sudo` only changes what the
+/// netns line *says* the real run would do (zipline#70 Step 5).
 fn report_dry_run(
     ctx: &crate::Ctx,
     name: &str,
     resolved: &[Resolved],
     skipped: &[&str],
-    build_dir: Option<&Path>,
+    args: &BuildArgs,
     selection: &tiers::Selection,
-    prompt_for_sudo: bool,
 ) {
     if ctx.quiet {
         return;
     }
+    let build_dir = args.build_dir.as_deref();
+    let prompt_for_sudo = args.prompt_for_sudo;
+    let notes = &args.note;
     println!("build set {name} (dry-run)");
     println!();
     println!("resolved refs:");
@@ -1161,6 +1178,11 @@ fn report_dry_run(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| ctx.workspace.join(".zpr-build").join(name));
     println!("dist: {}", build_dir.join("dist").display());
+    // The operator's --note lines as the manifest would carry them; the
+    // generated notes need tier results, which a dry run does not have.
+    for note in notes {
+        println!("note: {note}");
+    }
     println!("dry-run: nothing was created, and nothing was fetched");
 }
 
@@ -1205,6 +1227,19 @@ pub struct ResolvedBlock {
     pub versions: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub binaries: Vec<Binary>,
+    /// The literal `--test` value (`default` when absent): what was asked
+    /// for, so a set gated on `unit` alone says so (zipline#87).
+    pub tests_requested: String,
+    /// Every known tier that did not execute, with the reason — whether it
+    /// was left out of the selection, probe-skipped, or never reached
+    /// because the build failed. Absent means every tier ran (zipline#87).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tests_skipped: BTreeMap<String, String>,
+    /// Plain sentences naming each shortcoming of the run, generated first
+    /// and the operator's `--note` text last. Absent means a clean, full
+    /// run. This is the block a human reads first (zipline#87).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tiers: BTreeMap<String, Tier>,
 }
@@ -1245,7 +1280,7 @@ pub struct Binary {
 /// `repos` breakdown records each repository's result (approved Q3 on
 /// zipline#61), skip-serialized when empty so the #59/#60 shape is
 /// unchanged for tiers that carry no breakdown.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Tier {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1293,6 +1328,90 @@ impl Tier {
             sudo: None,
         }
     }
+}
+
+/// What the run did *not* cover (zipline#87): the `tests_skipped` map and the
+/// `notes` list of the emitted manifest's `resolved:` block.
+#[derive(Debug, Default, PartialEq)]
+pub struct Coverage {
+    /// Tier → reason, for every known tier that did not execute.
+    pub skipped: BTreeMap<String, String>,
+    /// Human sentences, generated in tier order then operator text verbatim.
+    pub notes: Vec<String>,
+}
+
+/// Summarizes a run's coverage gaps for the emitted manifest (zipline#87).
+/// Pure: it reads the selection, the tier results as they will be written,
+/// whether the build failed before any tier could run, whether gate 1
+/// actually downgraded a disagreement under `--allow-pin-drift` (not merely
+/// whether the flag was passed), and the operator's `--note` text. A known tier is *skipped*
+/// when it has no result (not selected, or build failed) or a `skipped`
+/// result (probe or repository-missing skip, whose reason is reused so the
+/// two records can never disagree). A tier that ran and failed is not
+/// skipped — it ran — but it is a shortcoming the notes name.
+pub fn coverage_summary(
+    selection: &tiers::Selection,
+    tier_results: &BTreeMap<String, Tier>,
+    build_failed: bool,
+    pin_drift_downgraded: bool,
+    operator_notes: &[String],
+) -> Coverage {
+    let requested = selection.requested();
+    let mut coverage = Coverage::default();
+
+    // Not-run tiers first, in run order, so the notes read unit → netns →
+    // docker whatever the map's own ordering.
+    let mut not_run: Vec<(&str, String)> = Vec::new();
+    for tier in tiers::known() {
+        let reason = match tier_results.get(*tier) {
+            Some(result) if result.status == "skipped" => result
+                .reason
+                .clone()
+                .unwrap_or_else(|| "skipped".to_string()),
+            Some(_) => continue, // ran: passed or failed
+            None if !selection.contains(tier) => format!("not selected (--test {requested})"),
+            None if build_failed => "not run: build failed".to_string(),
+            // Selected, build succeeded, yet no result: the run stopped
+            // before this tier for a reason the caller did not record.
+            None => "not run".to_string(),
+        };
+        coverage.skipped.insert(tier.to_string(), reason.clone());
+        not_run.push((tier, reason));
+    }
+
+    // `--test none` is one fact, not three enumerated absences.
+    if selection.is_empty() {
+        coverage
+            .notes
+            .push(format!("no tests ran (--test {requested})"));
+    } else {
+        for (tier, reason) in &not_run {
+            coverage
+                .notes
+                .push(format!("{} did NOT run: {reason}", tiers::label(tier)));
+        }
+    }
+
+    for tier in tiers::known() {
+        if tier_results
+            .get(*tier)
+            .is_some_and(|result| result.status == "failed")
+        {
+            coverage.notes.push(format!(
+                "{} FAILED; see tiers.{tier}.repos",
+                tiers::label(tier)
+            ));
+        }
+    }
+
+    if pin_drift_downgraded {
+        coverage.notes.push(
+            "gate 1 pin disagreements were downgraded to warnings (--allow-pin-drift)".to_string(),
+        );
+    }
+
+    coverage.notes.extend(operator_notes.iter().cloned());
+    coverage
 }
 
 /// Builds the emitted manifest for a resolution (spec-003 §3): the input set's
@@ -1367,6 +1486,9 @@ struct BuildInputs<'a> {
     valkey: Option<PathBuf>,
     /// `--verbose`: the netns scripts get `ZPR_TEST_VERBOSE=1`.
     verbose: bool,
+    /// The operator's `--note` text, appended verbatim to the manifest's
+    /// `notes` after the generated lines (zipline#87).
+    notes: &'a [String],
     /// The credential refresher, present when `--prompt-for-sudo` actually
     /// primed (zipline#70 Step 4). The netns tier takes and stops it when
     /// it returns; `SudoRefresher`'s Drop covers every earlier exit, so no
@@ -1637,12 +1759,29 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
             .insert("vs_policy_min_compiler".to_string(), minimum.clone());
     }
     emitted.resolved.binaries = digest_binaries(&dist, &worktrees)?;
+    // What the run did not cover, spelled out for the reader (zipline#87):
+    // a green manifest must never leave the tiers it skipped to inference.
+    let coverage = coverage_summary(
+        inputs.selection,
+        &tier_results,
+        failure.is_some(),
+        outcome.pin_drift_downgraded > 0,
+        inputs.notes,
+    );
+    emitted.resolved.tests_requested = inputs.selection.requested().to_string();
+    emitted.resolved.tests_skipped = coverage.skipped;
+    emitted.resolved.notes = coverage.notes;
     emitted.resolved.tiers = tier_results;
     let manifest_file = dist.join(format!("zpr-set-{}.yaml", inputs.set.name));
     std::fs::write(&manifest_file, emitted_yaml(&emitted)?)
         .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", manifest_file.display()))?;
     if !inputs.quiet {
         println!("emitted manifest: {}", manifest_file.display());
+        // The same notes on the terminal, so the run's summary and the
+        // file it wrote never disagree about coverage.
+        for note in &emitted.resolved.notes {
+            println!("note: {note}");
+        }
     }
 
     if let Some(failure) = failure {
@@ -2518,6 +2657,7 @@ allow_pin_drift:
             verbose: false,
             sudo_refresher: std::cell::Cell::new(None),
             netns_sudo: None,
+            notes: &[],
         }
     }
 
@@ -2920,6 +3060,80 @@ allow_pin_drift:
         let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
         assert!(!text.contains("tiers:"), "{text}");
         assert!(!build_dir.join("src").join("zl-zpr-core").exists());
+        // ...but never silently (zipline#87): the request and the gap are
+        // spelled out for the reader.
+        assert!(text.contains("tests_requested: none"), "{text}");
+        assert!(text.contains("no tests ran (--test none)"), "{text}");
+    }
+
+    /// A set gated on `--test unit` alone must say so (zipline#87): the
+    /// request is recorded, every unselected tier lands in `tests_skipped`
+    /// with the reason, and `notes` spells out for a human that the
+    /// integration tiers never ran. `tiers:` itself is unchanged.
+    #[test]
+    fn execute_build_unit_only_records_unselected_tiers() {
+        let (_tmp, workspace, _sha) = workspace_with_repo_and_makefile("test:\n\t@echo ok\n");
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let ok = execute_build(&inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        ))
+        .unwrap();
+        assert!(ok);
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("tests_requested: unit"), "{text}");
+        assert!(text.contains("tests_skipped:"), "{text}");
+        assert!(text.contains("netns: not selected (--test unit)"), "{text}");
+        assert!(
+            text.contains("docker: not selected (--test unit)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("netns integration tests did NOT run: not selected (--test unit)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("docker end-to-end tests did NOT run: not selected (--test unit)"),
+            "{text}"
+        );
+        // The unit tier itself ran and is not listed as skipped.
+        assert!(!text.contains("unit: not selected"), "{text}");
+        assert!(!text.contains("unit tests did NOT run"), "{text}");
+    }
+
+    /// Operator context from `--note` lands in `notes` after the generated
+    /// lines, verbatim (zipline#87).
+    #[test]
+    fn execute_build_appends_operator_notes() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let notes = vec!["netns run by hand; see zipline#82".to_string()];
+        let selection = no_tiers();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.notes = &notes;
+        assert!(execute_build(&in_).unwrap());
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        let generated = text.find("no tests ran (--test none)").expect(&text);
+        let operator = text.find("netns run by hand; see zipline#82").expect(&text);
+        assert!(generated < operator, "operator note must come last: {text}");
     }
 
     // -- the netns and docker tiers in the manifest (task B5, zipline#62) -------
@@ -3018,5 +3232,240 @@ allow_pin_drift:
         assert!(text.contains("docker:"), "{text}");
         assert!(text.contains("status: skipped"), "{text}");
         assert!(text.contains("zl-zpr-demo"), "{text}");
+    }
+
+    // -- coverage summary: tests_skipped and notes (zipline#87) ----------------
+
+    /// A scan directory whose `Cargo.toml` pins `zpr` at `tag`.
+    fn pinned_dir(root: &Path, name: &str, tag: &str) -> (String, PathBuf) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+                 zpr = {{ git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
+            ),
+        )
+        .unwrap();
+        (name.to_string(), dir)
+    }
+
+    /// The gate outcome counts the disagreements `--allow-pin-drift`
+    /// actually downgraded — not whether the flag was passed (PR #22 Codex
+    /// P2): agreeing pins under the flag downgrade nothing, a disagreement
+    /// under the flag downgrades one, and without the flag it is an error.
+    #[test]
+    fn gate_outcome_counts_only_real_downgrades() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agree = vec![
+            pinned_dir(tmp.path(), "a", "v0.26.0"),
+            pinned_dir(tmp.path(), "b", "v0.26.0"),
+        ];
+        let outcome = collect_gate_findings(&agree, &[], true, tmp.path()).unwrap();
+        assert_eq!(outcome.pin_drift_downgraded, 0, "{:#?}", outcome.findings);
+
+        let disagree = vec![
+            pinned_dir(tmp.path(), "c", "v0.26.0"),
+            pinned_dir(tmp.path(), "d", "v0.27.0"),
+        ];
+        let outcome = collect_gate_findings(&disagree, &[], true, tmp.path()).unwrap();
+        assert_eq!(outcome.pin_drift_downgraded, 1, "{:#?}", outcome.findings);
+
+        let outcome = collect_gate_findings(&disagree, &[], false, tmp.path()).unwrap();
+        assert_eq!(outcome.pin_drift_downgraded, 0, "{:#?}", outcome.findings);
+        assert!(
+            outcome
+                .findings
+                .iter()
+                .any(|f| f.severity == gates::Severity::Error),
+            "{:#?}",
+            outcome.findings
+        );
+    }
+
+    /// `--allow-pin-drift` on a set whose pins already agree must not make
+    /// the manifest claim disagreements were downgraded (PR #22 Codex P2).
+    #[test]
+    fn execute_build_allow_pin_drift_without_drift_adds_no_note() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = no_tiers();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.downgrade_pin_drift = true;
+        assert!(execute_build(&in_).unwrap());
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(!text.contains("allow-pin-drift"), "{text}");
+    }
+
+    fn passed() -> Tier {
+        Tier::from_outcome(&tiers::TierOutcome {
+            passed: true,
+            repos: BTreeMap::new(),
+        })
+    }
+
+    fn failed() -> Tier {
+        Tier::from_outcome(&tiers::TierOutcome {
+            passed: false,
+            repos: BTreeMap::new(),
+        })
+    }
+
+    fn results(entries: &[(&str, Tier)]) -> BTreeMap<String, Tier> {
+        entries
+            .iter()
+            .map(|(name, tier)| (name.to_string(), tier.clone()))
+            .collect()
+    }
+
+    /// A run that selected everything and passed everything has nothing to
+    /// confess: both fields are empty, so they are omitted from the YAML.
+    #[test]
+    fn coverage_is_silent_on_a_clean_full_run() {
+        let selection = tiers::Selection::parse(None).unwrap();
+        let tiers = results(&[
+            ("unit", passed()),
+            ("netns", passed()),
+            ("docker", passed()),
+        ]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert!(coverage.skipped.is_empty(), "{coverage:?}");
+        assert!(coverage.notes.is_empty(), "{coverage:?}");
+    }
+
+    /// `--test unit` leaves the two end-to-end tiers unselected: each is
+    /// recorded with the request that left it out, and the notes say in
+    /// plain words that the integration tests did not run — in tier order.
+    #[test]
+    fn coverage_marks_unselected_tiers_not_selected() {
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let tiers = results(&[("unit", passed())]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert_eq!(
+            coverage.skipped,
+            BTreeMap::from([
+                (
+                    "netns".to_string(),
+                    "not selected (--test unit)".to_string()
+                ),
+                (
+                    "docker".to_string(),
+                    "not selected (--test unit)".to_string()
+                ),
+            ])
+        );
+        assert_eq!(
+            coverage.notes,
+            vec![
+                "netns integration tests did NOT run: not selected (--test unit)",
+                "docker end-to-end tests did NOT run: not selected (--test unit)",
+            ]
+        );
+    }
+
+    /// `--test none` is one note, not three: the reader needs the fact, not
+    /// the enumeration. `tests_skipped` still lists every tier.
+    #[test]
+    fn coverage_test_none_is_a_single_note() {
+        let selection = tiers::Selection::parse(Some("none")).unwrap();
+        let coverage = coverage_summary(&selection, &BTreeMap::new(), false, false, &[]);
+        assert_eq!(coverage.skipped.len(), 3, "{coverage:?}");
+        assert_eq!(coverage.skipped["unit"], "not selected (--test none)");
+        assert_eq!(coverage.notes, vec!["no tests ran (--test none)"]);
+    }
+
+    /// A probe-skipped tier keeps the probe's reason — the same text as
+    /// `tiers.<name>.reason` — so the two never disagree.
+    #[test]
+    fn coverage_reuses_a_probe_skip_reason() {
+        let selection = tiers::Selection::parse(None).unwrap();
+        let tiers = results(&[
+            ("unit", passed()),
+            (
+                "netns",
+                Tier::skipped("missing: passwordless sudo, valkey-server"),
+            ),
+            ("docker", passed()),
+        ]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert_eq!(
+            coverage.skipped,
+            BTreeMap::from([(
+                "netns".to_string(),
+                "missing: passwordless sudo, valkey-server".to_string()
+            )])
+        );
+        assert_eq!(
+            coverage.notes,
+            vec!["netns integration tests did NOT run: missing: passwordless sudo, valkey-server"]
+        );
+    }
+
+    /// A failed tier is not "skipped" — it ran — but it is a shortcoming the
+    /// notes must name, after the not-run lines.
+    #[test]
+    fn coverage_notes_a_failed_tier_after_the_not_run_lines() {
+        let selection = tiers::Selection::parse(Some("unit")).unwrap();
+        let tiers = results(&[("unit", failed())]);
+        let coverage = coverage_summary(&selection, &tiers, false, false, &[]);
+        assert!(!coverage.skipped.contains_key("unit"), "{coverage:?}");
+        assert_eq!(
+            coverage.notes,
+            vec![
+                "netns integration tests did NOT run: not selected (--test unit)",
+                "docker end-to-end tests did NOT run: not selected (--test unit)",
+                "unit tests FAILED; see tiers.unit.repos",
+            ]
+        );
+    }
+
+    /// When the build itself failed no tier ran, whatever was selected: the
+    /// selected tiers are recorded not run for that reason, and the
+    /// unselected ones keep their own.
+    #[test]
+    fn coverage_build_failure_marks_selected_tiers_not_run() {
+        let selection = tiers::Selection::parse(Some("unit,netns")).unwrap();
+        let coverage = coverage_summary(&selection, &BTreeMap::new(), true, false, &[]);
+        assert_eq!(coverage.skipped["unit"], "not run: build failed");
+        assert_eq!(coverage.skipped["netns"], "not run: build failed");
+        assert_eq!(
+            coverage.skipped["docker"],
+            "not selected (--test unit,netns)"
+        );
+        assert_eq!(coverage.notes.len(), 3, "{coverage:?}");
+    }
+
+    /// A gate-1 downgrade and the operator's own notes close the list, in
+    /// that order, the operator's text verbatim.
+    #[test]
+    fn coverage_ends_with_pin_drift_then_operator_notes() {
+        let selection = tiers::Selection::parse(None).unwrap();
+        let tiers = results(&[
+            ("unit", passed()),
+            ("netns", passed()),
+            ("docker", passed()),
+        ]);
+        let operator = vec!["first".to_string(), "second: with punctuation!".to_string()];
+        let coverage = coverage_summary(&selection, &tiers, false, true, &operator);
+        assert!(coverage.skipped.is_empty());
+        assert_eq!(
+            coverage.notes,
+            vec![
+                "gate 1 pin disagreements were downgraded to warnings (--allow-pin-drift)",
+                "first",
+                "second: with punctuation!",
+            ]
+        );
     }
 }

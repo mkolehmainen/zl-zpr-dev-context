@@ -36,6 +36,10 @@ const KNOWN: &[&str] = &["unit", "netns", "docker"];
 pub struct Selection {
     /// Tier names in run order, deduplicated, each with its explicitness.
     tiers: Vec<(&'static str, bool)>,
+    /// The literal `--test` text, `default` for the absent flag: what the
+    /// emitted manifest reports as `tests_requested`, so a reader can see
+    /// a set was gated on `unit` alone (zipline#87).
+    requested: String,
 }
 
 impl Selection {
@@ -53,15 +57,22 @@ impl Selection {
             "default" => {
                 return Ok(Selection {
                     tiers: IMPLEMENTED.iter().map(|tier| (*tier, false)).collect(),
+                    requested: text.to_string(),
                 });
             }
-            "none" => return Ok(Selection { tiers: Vec::new() }),
+            "none" => {
+                return Ok(Selection {
+                    tiers: Vec::new(),
+                    requested: text.to_string(),
+                });
+            }
             // `all` asks for every known tier by name, so each is explicit:
             // an asked-for tier that cannot run is an error, never a silent
             // skip (spec-003 §6).
             "all" => {
                 return Ok(Selection {
                     tiers: KNOWN.iter().map(|tier| (*tier, true)).collect(),
+                    requested: text.to_string(),
                 });
             }
             _ => {}
@@ -90,7 +101,16 @@ impl Selection {
         // `unit,docker` are the same request, and unit failures should
         // surface before the slower end-to-end tiers run.
         tiers.sort_by_key(|(tier, _)| KNOWN.iter().position(|known| known == tier));
-        Ok(Selection { tiers })
+        Ok(Selection {
+            tiers,
+            requested: text.to_string(),
+        })
+    }
+
+    /// The `--test` text as given (`default` when the flag was absent), for
+    /// the emitted manifest's `tests_requested` (zipline#87).
+    pub fn requested(&self) -> &str {
+        &self.requested
     }
 
     /// True when no tier was selected (`--test none`).
@@ -111,6 +131,25 @@ impl Selection {
         self.tiers
             .iter()
             .any(|(name, explicit)| *name == tier && *explicit)
+    }
+}
+
+/// Every tier spec-003 §6 names, in run order — the set the emitted
+/// manifest's coverage summary must account for (zipline#87).
+pub fn known() -> &'static [&'static str] {
+    KNOWN
+}
+
+/// A tier's human label for the manifest's `notes`: the reader should see
+/// "integration tests did NOT run", not a bare tier name (zipline#87).
+pub fn label(tier: &str) -> &'static str {
+    match tier {
+        "unit" => "unit tests",
+        "netns" => "netns integration tests",
+        "docker" => "docker end-to-end tests",
+        // KNOWN is the only source of tier names; a new tier must add its
+        // label here, and the test `every_known_tier_has_a_label` says so.
+        _ => "tests",
     }
 }
 
@@ -1227,6 +1266,32 @@ mod tests {
             Selection::parse(Some("default")).unwrap(),
             Selection::parse(None).unwrap()
         );
+    }
+
+    /// The literal `--test` text is kept for the emitted manifest's
+    /// `tests_requested` (zipline#87): a reader must be able to see that a
+    /// set was gated on `unit` alone. The absent flag reads `default`.
+    #[test]
+    fn selection_records_the_requested_text() {
+        assert_eq!(Selection::parse(None).unwrap().requested(), "default");
+        assert_eq!(Selection::parse(Some("unit")).unwrap().requested(), "unit");
+        assert_eq!(Selection::parse(Some("all")).unwrap().requested(), "all");
+        assert_eq!(Selection::parse(Some("none")).unwrap().requested(), "none");
+        assert_eq!(
+            Selection::parse(Some("unit,docker")).unwrap().requested(),
+            "unit,docker"
+        );
+    }
+
+    /// Every known tier has a human label for the manifest's `notes`
+    /// (zipline#87), so a reader sees "integration tests did NOT run"
+    /// rather than a bare tier name.
+    #[test]
+    fn every_known_tier_has_a_label() {
+        assert_eq!(known(), &["unit", "netns", "docker"]);
+        assert_eq!(label("unit"), "unit tests");
+        assert_eq!(label("netns"), "netns integration tests");
+        assert_eq!(label("docker"), "docker end-to-end tests");
     }
 
     /// `none` selects nothing: build only, byte-identical to B3 behaviour.

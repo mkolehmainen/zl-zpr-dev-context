@@ -161,6 +161,14 @@ resolved:                          # diagnostic; ignored as input
     vs_policy_min_compiler: "0.18.0"
   binaries:
     - { name: vs, sha256: "...", bytes: 18234512, from: zl-zpr-visaservice }
+  tests_requested: unit,netns    # the literal --test value; "default" when absent
+  tests_skipped:                 # every known tier that did not execute, and why
+    netns:  "no passwordless sudo"
+    docker: "not selected (--test unit,netns)"
+  notes:                         # the shortcomings, in plain words; read this first
+    - "netns integration tests did NOT run: no passwordless sudo"
+    - "docker end-to-end tests did NOT run: not selected (--test unit,netns)"
+    - "docker tier run by hand on the operator workstation"   # from --note
   tiers:
     unit:   { status: passed }
     netns:  { status: skipped, reason: "no passwordless sudo" }
@@ -183,6 +191,19 @@ Normative behavior:
 - Promoting a `--tip` run to a named set is: run it, review, copy
   `dist/zpr-set-<name>.yaml` into `build-sets/`, commit. No separate
   authoring step.
+- **Coverage is stated, never inferred** (zipline#87). `tests_requested`
+  always records the literal `--test` value (`default` when the flag was
+  absent). `tests_skipped` names every tier of §6 that did not execute, with
+  the reason: `not selected (--test <value>)` for a tier the selection left
+  out, the probe's or repository-missing reason for a `skipped` tier (the
+  same text as `tiers.<name>.reason`), or `not run: build failed`. `notes`
+  lists each shortcoming as a sentence a person can act on — one per
+  `tests_skipped` entry (or the single `no tests ran (--test none)`), one per
+  failed tier, one when `--allow-pin-drift` downgraded gate 1 — followed by
+  the operator's `--note` text verbatim. Both `tests_skipped` and `notes`
+  are omitted when empty, so their absence means a clean, full run. A
+  manifest gated on `--test unit` alone therefore says, in its own words,
+  that the integration tiers never ran.
 
 ---
 
@@ -331,7 +352,7 @@ step's output is available to the next:
 ```text
 zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
               [--build-dir <path>] [--keep] [--allow-pin-drift] [--no-tarball]
-              [--prompt-for-sudo] [--clean]
+              [--prompt-for-sudo] [--note <text>]... [--clean]
 
 --manifest <path>   build set to build; default: newest file in build-sets/ (§2.2)
 --tip               ignore every ref; use origin/<default_branch> everywhere
@@ -342,13 +363,16 @@ zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
 --allow-pin-drift   gate 1 disagreements warn instead of failing
 --no-tarball        skip the dist tarball
 --prompt-for-sudo   prompt once for the sudo password before the run (§6)
+--note <text>       append this sentence to the emitted manifest's notes
+                    (§3); repeatable, recorded verbatim after the generated
+                    notes (zipline#87)
 --clean             remove the build directory and clear its worktree
                     registrations, then exit (zipline#71)
 ```
 
 `--clean` is a mode, not a modifier: it conflicts with `--manifest`, `--tip`,
 `--test`, `--repo`, `--keep`, `--gates-only`, `--allow-pin-drift`,
-`--no-tarball` and `--prompt-for-sudo` (usage error, exit 2). `--build-dir`
+`--no-tarball`, `--prompt-for-sudo` and `--note` (usage error, exit 2). `--build-dir`
 stays allowed — it scopes the clean to that directory; without it the whole
 `<workspace>/.zpr-build` tree goes. Cleaning is not per-set: there is no
 manifest resolution and nothing to name a set with. After removing the

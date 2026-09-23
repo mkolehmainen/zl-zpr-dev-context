@@ -145,6 +145,11 @@ enum Command {
         #[arg(long)]
         prompt_for_sudo: bool,
 
+        /// Record this sentence in the emitted manifest's `notes` (repeatable):
+        /// operator context on the run's shortcomings, e.g. why a tier was left out
+        #[arg(long, value_name = "TEXT")]
+        note: Vec<String>,
+
         /// Remove the build directory and clear its worktree registrations,
         /// then exit: no ref resolution, no fetch, no gates, no build
         #[arg(
@@ -158,7 +163,8 @@ enum Command {
                 "gates_only",
                 "allow_pin_drift",
                 "no_tarball",
-                "prompt_for_sudo"
+                "prompt_for_sudo",
+                "note"
             ]
         )]
         clean: bool,
@@ -258,6 +264,7 @@ fn run() -> Result<ExitCode> {
             allow_pin_drift,
             no_tarball,
             prompt_for_sudo,
+            note,
             clean,
         } => build::run(
             &ctx,
@@ -272,6 +279,7 @@ fn run() -> Result<ExitCode> {
                 allow_pin_drift: *allow_pin_drift,
                 no_tarball: *no_tarball,
                 prompt_for_sudo: *prompt_for_sudo,
+                note: note.clone(),
                 clean: *clean,
             },
         ),
