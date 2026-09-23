@@ -894,12 +894,20 @@ pub struct PrepStep {
 }
 
 /// One planned script: its name (relative to the plan's `dir`), the
-/// environment overrides it runs under, and an optional prep build.
+/// environment overrides it runs under, the inherited variables to strip
+/// from the child, and an optional prep build.
 #[derive(Debug)]
 pub struct NetnsScript {
     pub script: &'static str,
     /// `KEY=value` pairs set on the child only — never the tool's own env.
     pub env: Vec<(String, String)>,
+    /// Inherited variables removed from the child's environment before it
+    /// runs (zipline#93): `run_env_command` inherits this process's
+    /// environment and only adds `env`, so an operator's exported
+    /// `VALKEY_SERVER_BIN` would otherwise reach the container through the
+    /// Makefile's `FORWARD_ENV`. Empty on the host route — its behaviour is
+    /// byte-identical to before the field existed.
+    pub env_remove: Vec<&'static str>,
     pub prep: Option<PrepStep>,
 }
 
@@ -948,6 +956,10 @@ pub fn netns_plan(core_worktree: &Path, dist: &Path, valkey: &Path, verbose: boo
             NetnsScript {
                 script,
                 env,
+                // The host route strips nothing: the field exists for the
+                // container route (zipline#93), and an empty list keeps this
+                // route byte-identical to its pre-#93 behaviour.
+                env_remove: vec![],
                 prep: a2a.then(|| PrepStep {
                     name: "security-ph",
                     program: "cargo",
@@ -986,6 +998,7 @@ pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
                 prep.program,
                 &prep.args,
                 &[],
+                &[],
                 &prep.dir,
                 logs,
                 quiet,
@@ -1008,6 +1021,7 @@ pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
             &program,
             &[] as &[&str],
             &script.env,
+            &script.env_remove,
             &plan.dir,
             logs,
             quiet,
@@ -1067,6 +1081,9 @@ pub fn dist_ph_is_clean(dist: &Path) -> Result<()> {
 /// [`recipes::run_command`] with per-child environment overrides: same
 /// working-directory, log shape (`logs/<label>-<name>.log`), failure echo
 /// and error wording. The env touches the child only, never this process.
+/// `env_remove` strips inherited variables from the child before `env` is
+/// applied (zipline#93): the child otherwise inherits this process's whole
+/// environment, and an operator's exported value must not leak through.
 #[allow(clippy::too_many_arguments)]
 fn run_env_command(
     label: &str,
@@ -1074,6 +1091,7 @@ fn run_env_command(
     program: &str,
     args: &[impl AsRef<std::ffi::OsStr>],
     env: &[(String, String)],
+    env_remove: &[&str],
     dir: &Path,
     logs: &Path,
     quiet: bool,
@@ -1083,6 +1101,9 @@ fn run_env_command(
     let log_path = logs.join(format!("{label}-{name}.log"));
     let mut command = std::process::Command::new(program);
     command.args(args).current_dir(dir);
+    for key in env_remove {
+        command.env_remove(key);
+    }
     for (key, value) in env {
         command.env(key, value);
     }
@@ -1250,6 +1271,7 @@ pub fn run_docker(plan: &DockerPlan, logs: &Path, quiet: bool) -> TierOutcome {
             step.name,
             &step.program,
             &step.args,
+            &[],
             &[],
             &step.dir,
             logs,
@@ -2159,6 +2181,74 @@ mod tests {
         assert_eq!(env_of(one_node, "ZPR_TEST_VERBOSE"), None);
     }
 
+    /// The host route never removes anything from the child's environment:
+    /// `env_remove` exists for the container route (zipline#93), and an empty
+    /// list keeps the host route byte-identical to today's behaviour.
+    #[test]
+    fn netns_plan_host_route_removes_nothing_from_the_environment() {
+        let plan = netns_plan(
+            Path::new("/wt/zl-zpr-core"),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+        );
+        for script in &plan.scripts {
+            assert!(
+                script.env_remove.is_empty(),
+                "{} must not remove environment variables on the host route",
+                script.script
+            );
+        }
+    }
+
+    /// `run_env_command` must be able to *remove* a variable from the child's
+    /// inherited environment (zipline#93, contract 1): it inherits this
+    /// process's environment and only adds the listed pairs, so an operator's
+    /// exported `VALKEY_SERVER_BIN` would otherwise be forwarded into the
+    /// container by the Makefile's `FORWARD_ENV` (Codex review of PR #23).
+    /// The child is executed, not planned: the assertion is the variable's
+    /// absence in the running child's environment.
+    #[test]
+    fn run_env_command_removes_named_variables_from_the_executed_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        // The variable is set in THIS process, as an operator's exported
+        // value would be. SAFETY: no other test in this binary reads or
+        // writes VALKEY_SERVER_BIN through the process environment — the
+        // probe tests inject `Probes` and the PATH tests pass explicit
+        // values — so the one mutation cannot race a reader.
+        unsafe { std::env::set_var("VALKEY_SERVER_BIN", "/host/valkey-server") };
+
+        // Without the removal the child inherits it: the fixture is real.
+        run_env_command(
+            "netns",
+            "inherited",
+            "sh",
+            &["-c", "test -n \"$VALKEY_SERVER_BIN\""],
+            &[],
+            &[],
+            tmp.path(),
+            &logs,
+            true,
+        )
+        .expect("the child must inherit the exported variable");
+
+        // With the removal it is gone from the executed child's environment.
+        run_env_command(
+            "netns",
+            "removed",
+            "sh",
+            &["-c", "test -z \"$VALKEY_SERVER_BIN\""],
+            &[],
+            &["VALKEY_SERVER_BIN"],
+            tmp.path(),
+            &logs,
+            true,
+        )
+        .expect("env_remove must reach the executed child");
+    }
+
     /// `--verbose` exports `ZPR_TEST_VERBOSE=1` to every script; the default
     /// leaves it unset (the scripts' own default is quiet).
     #[test]
@@ -2291,16 +2381,19 @@ mod tests {
                 NetnsScript {
                     script: "ok.sh",
                     env: vec![],
+                    env_remove: vec![],
                     prep: None,
                 },
                 NetnsScript {
                     script: "bad.sh",
                     env: vec![],
+                    env_remove: vec![],
                     prep: None,
                 },
                 NetnsScript {
                     script: "prepped.sh",
                     env: vec![],
+                    env_remove: vec![],
                     prep: Some(PrepStep {
                         name: "security-ph",
                         program: "sh",
