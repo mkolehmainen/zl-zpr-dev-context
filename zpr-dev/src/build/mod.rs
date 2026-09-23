@@ -1663,14 +1663,14 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         // refresher has no work after this block (zipline#70 Step 4).
         // Stopping via take-then-drop keeps the one stop path.
         let refresher = inputs.sudo_refresher.take();
-        // The not-run reason, when the runner is anything but Host: the
-        // container selection maps to the same text netns_gate skips with,
-        // so the manifest and the gate can never disagree (zipline#92).
+        // The not-run reason, when no runner was selected at all: the
+        // selector's two-route text, carried verbatim so the manifest and
+        // the selector can never disagree (zipline#92). A `Container`
+        // selection runs since zipline#93 — its remaining prerequisite, the
+        // worktree's Makefile floor, is checked below against the actual
+        // worktree.
         let skip_reason = match &inputs.netns_runner {
-            Some(Ok(tiers::NetnsRunner::Host(_))) => None,
-            Some(Ok(tiers::NetnsRunner::Container { .. })) => {
-                Some("docker fallback selected but not implemented yet (zipline#93)".to_string())
-            }
+            Some(Ok(_)) => None,
             Some(Err(reason)) => Some(reason.clone()),
             // Inconsistent caller: the tier is selected but no selection
             // was stored. Refusing to run beats running without sudo.
@@ -1691,39 +1691,70 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                 tier_results.insert("netns".to_string(), Tier::skipped(reason));
             }
             (None, Some(core), valkey) => {
-                if !inputs.quiet {
-                    println!("netns tier:");
-                }
-                // The probe passed, so valkey was found; the fallback name
-                // only defends against an inconsistent caller.
-                let valkey = valkey
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("valkey-server"));
                 // skip_reason is None only when the stored runner is
-                // Some(Ok(Host(..))); the defensive default cannot be
-                // reached while that invariant holds.
+                // Some(Ok(..)); the defensive default cannot be reached
+                // while that invariant holds.
                 let runner = match &inputs.netns_runner {
                     Some(Ok(runner)) => runner.clone(),
                     _ => tiers::NetnsRunner::Host(tiers::SudoProvenance::Nopasswd),
                 };
-                let plan = tiers::netns_plan(
-                    &core,
-                    &dist,
-                    &valkey,
-                    inputs.verbose,
-                    &runner,
-                    inputs.build_dir,
-                );
-                let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
-                tier_failed = tier_failed || !outcome.passed;
-                // A tier that ran carries how its sudo was satisfied —
-                // derived from the Host runner (zipline#92): nopasswd host
-                // or primed credentials, never conflated (zipline#70).
-                let mut tier = Tier::from_outcome(&outcome);
-                if let Some(Ok(tiers::NetnsRunner::Host(sudo))) = &inputs.netns_runner {
-                    tier = tier.with_sudo(*sudo);
+                // The container route's floor (zipline#93, contract 1): the
+                // worktree's Makefile must forward the environment. Checked
+                // here, not at the gate, because the worktree does not exist
+                // at gate time. `check_gate` keeps the explicitness rule:
+                // a default selection skips visibly, an explicit `--test
+                // netns` / `--test all` errors.
+                let floor = match &runner {
+                    tiers::NetnsRunner::Container { .. } => {
+                        let sha = inputs
+                            .resolved
+                            .iter()
+                            .find(|entry| entry.repo == "zl-zpr-core")
+                            .map(|entry| entry.sha.get(..7).unwrap_or(&entry.sha).to_string())
+                            .unwrap_or_default();
+                        tiers::docker_runner_floor(&core, &sha)
+                    }
+                    tiers::NetnsRunner::Host(_) => Ok(()),
+                };
+                if let Err(reason) = floor {
+                    if let Some(reason) = tiers::check_gate(
+                        "netns",
+                        tiers::TierGate::Skip(reason),
+                        inputs.selection.is_explicit("netns"),
+                    )? {
+                        if !inputs.quiet {
+                            println!("netns tier: skipped ({reason})");
+                        }
+                        tier_results.insert("netns".to_string(), Tier::skipped(&reason));
+                    }
+                } else {
+                    if !inputs.quiet {
+                        println!("netns tier:");
+                    }
+                    // The probe passed, so valkey was found; the fallback name
+                    // only defends against an inconsistent caller.
+                    let valkey = valkey
+                        .clone()
+                        .unwrap_or_else(|| PathBuf::from("valkey-server"));
+                    let plan = tiers::netns_plan(
+                        &core,
+                        &dist,
+                        &valkey,
+                        inputs.verbose,
+                        &runner,
+                        inputs.build_dir,
+                    );
+                    let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
+                    tier_failed = tier_failed || !outcome.passed;
+                    // A tier that ran carries how its sudo was satisfied —
+                    // derived from the Host runner (zipline#92): nopasswd host
+                    // or primed credentials, never conflated (zipline#70).
+                    let mut tier = Tier::from_outcome(&outcome);
+                    if let Some(Ok(tiers::NetnsRunner::Host(sudo))) = &inputs.netns_runner {
+                        tier = tier.with_sudo(*sudo);
+                    }
+                    tier_results.insert("netns".to_string(), tier);
                 }
-                tier_results.insert("netns".to_string(), tier);
             }
         }
         // The netns tier has returned (ran, skipped, passed or failed):
@@ -3244,12 +3275,57 @@ allow_pin_drift:
         assert!(!yaml.contains("sudo:"), "{yaml}");
     }
 
-    /// A stored `Container` selection is refused at execution exactly as the
-    /// gate promised (zipline#92 step 6): the tier is recorded `skipped`
-    /// with the not-implemented reason, the run does not fail, and no sudo
-    /// provenance is claimed — the container never ran anything.
+    /// A stored `Container` selection whose worktree predates the Docker
+    /// runner (no `integration-test/Makefile` with `FORWARD_ENV` — the
+    /// fixture repository has none) is skipped at execution with the floor's
+    /// reason when the tier was default-selected (zipline#93 step 2/4): the
+    /// run does not fail, no sudo provenance is claimed, and the manifest
+    /// names the sha and the floor commit.
     #[test]
-    fn execute_build_records_a_container_selection_as_the_gate_skip() {
+    fn execute_build_skips_a_container_selection_that_fails_the_floor() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        // Default selection: netns is not explicit, so the floor failure is
+        // a visible skip, not an error. The docker tier is probe-skipped to
+        // keep the fixture off a live docker.
+        let selection = tiers::Selection::parse(None).unwrap();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.netns_runner = Some(Ok(tiers::NetnsRunner::Container {
+            host_reason: "missing: passwordless sudo (or pass --prompt-for-sudo)".to_string(),
+        }));
+        in_.docker_skip = Some("docker not found".to_string());
+        let ok = execute_build(&in_).unwrap();
+        assert!(ok, "a floor skip must not fail the run");
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("netns:"), "{text}");
+        assert!(text.contains("status: skipped"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "zl-zpr-core @ {} predates the Docker runner \
+                 (integration-test/Makefile with FORWARD_ENV, zl-zpr-core c163628)",
+                &sha[..7]
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("sudo:"), "{text}");
+    }
+
+    /// The same floor failure on an *explicitly requested* netns tier is an
+    /// error through `check_gate` (zipline#93 step 2), never a silent
+    /// exit-0 skip — the explicitness rule of spec-003 §6 holds at the
+    /// execution-time floor exactly as it does at the gate.
+    #[test]
+    fn execute_build_errors_an_explicit_container_request_that_fails_the_floor() {
         let (_tmp, workspace, _sha) = workspace_with_repo();
         let set = one_repo_set("main");
         let resolved = resolve_set(&workspace, &set).unwrap();
@@ -3266,17 +3342,9 @@ allow_pin_drift:
         in_.netns_runner = Some(Ok(tiers::NetnsRunner::Container {
             host_reason: "missing: passwordless sudo (or pass --prompt-for-sudo)".to_string(),
         }));
-        let ok = execute_build(&in_).unwrap();
-        assert!(ok, "a container-selection skip must not fail the run");
-
-        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
-        assert!(text.contains("netns:"), "{text}");
-        assert!(text.contains("status: skipped"), "{text}");
-        assert!(
-            text.contains("docker fallback selected but not implemented yet (zipline#93)"),
-            "{text}"
-        );
-        assert!(!text.contains("sudo:"), "{text}");
+        let error = execute_build(&in_).unwrap_err().to_string();
+        assert!(error.contains("--test netns was requested"), "{error}");
+        assert!(error.contains("predates the Docker runner"), "{error}");
     }
 
     /// A stored no-route selection (`Err`) is recorded `skipped` with the

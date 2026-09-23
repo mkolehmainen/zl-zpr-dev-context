@@ -292,20 +292,16 @@ pub enum TierGate {
 }
 
 /// Gates the netns tier: a thin match over [`select_netns_runner`], so the
-/// selection logic has one source of truth (zipline#92). `Host` runs.
-/// `Container` is refused **at the gate** until zipline#93 implements the
-/// runner — gate-time, deliberately, so an explicit `--test netns` /
-/// `--test all` still errors through `check_gate`; a run-time skip behind a
-/// `Run` gate would let an explicitly requested tier exit 0 without running,
-/// because skipped outcomes do not fail `execute_build` (operator amendment
-/// on zipline#92). No route at all skips with the selector's two-route
-/// reason. Pure — probes are injected.
+/// selection logic has one source of truth (zipline#92). `Host` and
+/// `Container` both run — the container route executes through `make
+/// docker-test` since zipline#93; its remaining prerequisite, the worktree's
+/// Makefile floor, is checked against the actual worktree at execution time
+/// (`docker_runner_floor`), because no worktree exists at gate time. No
+/// route at all skips with the selector's two-route reason. Pure — probes
+/// are injected.
 pub fn netns_gate(probes: &Probes) -> TierGate {
     match select_netns_runner(probes) {
-        Ok(NetnsRunner::Host(_)) => TierGate::Run,
-        Ok(NetnsRunner::Container { .. }) => TierGate::Skip(
-            "docker fallback selected but not implemented yet (zipline#93)".to_string(),
-        ),
+        Ok(_) => TierGate::Run,
         Err(reason) => TierGate::Skip(reason),
     }
 }
@@ -609,10 +605,9 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
         // The flag changes nothing: report the selection verbatim.
         return match select_netns_runner(probes) {
             Ok(NetnsRunner::Host(_)) => "prerequisites present".to_string(),
-            Ok(NetnsRunner::Container { host_reason }) => format!(
-                "docker fallback selected (host route unavailable: {host_reason}); \
-                 not implemented yet (zipline#93)"
-            ),
+            Ok(NetnsRunner::Container { host_reason }) => {
+                format!("would run in docker (host route unavailable: {host_reason})")
+            }
             Err(reason) => reason,
         };
     }
@@ -647,8 +642,8 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
         // the primed selection's text is reported — quoting sudo as missing
         // here would misstate what the prompt buys (zipline#70 Step 5).
         Ok(NetnsRunner::Container { host_reason }) => format!(
-            "would prompt for sudo (--prompt-for-sudo); docker fallback selected \
-             (host route unavailable: {host_reason}); not implemented yet (zipline#93)"
+            "would prompt for sudo (--prompt-for-sudo); \
+             would run in docker (host route unavailable: {host_reason})"
         ),
         Err(reason) => format!("would prompt for sudo (--prompt-for-sudo); {reason}"),
     }
@@ -1687,11 +1682,10 @@ mod tests {
         assert_eq!(text, "prerequisites present");
     }
 
-    /// The dry-run line when the container is selected (zipline#92 step 5,
-    /// as amended): under this issue the runner does not exist, so the text
-    /// must say the fallback was *selected* and is *not implemented yet* —
-    /// never `would run in docker`, which is only true after zipline#93.
-    /// The parenthetical quotes the host route's real gap, whichever it was.
+    /// The dry-run line when the container is selected (zipline#92 step 5;
+    /// zipline#93 step 4): the runner exists now, so the text says what the
+    /// real run would do — `would run in docker` — and its parenthetical
+    /// quotes the host route's real gap, whichever it was.
     #[test]
     fn netns_dry_run_text_reports_a_container_selection_without_overstating() {
         // Sudo is the host gap.
@@ -1701,8 +1695,8 @@ mod tests {
         };
         assert_eq!(
             netns_dry_run_text(&probes, false),
-            "docker fallback selected (host route unavailable: missing: \
-             passwordless sudo (or pass --prompt-for-sudo)); not implemented yet (zipline#93)"
+            "would run in docker (host route unavailable: missing: \
+             passwordless sudo (or pass --prompt-for-sudo))"
         );
 
         // valkey is the host gap: the text names it, not a fixed sudo cause.
@@ -1713,10 +1707,8 @@ mod tests {
         let text = netns_dry_run_text(&probes, false);
         assert_eq!(
             text,
-            "docker fallback selected (host route unavailable: missing: \
-             valkey-server); not implemented yet (zipline#93)"
+            "would run in docker (host route unavailable: missing: valkey-server)"
         );
-        assert!(!text.contains("would run in docker"), "{text}");
     }
 
     /// `--prompt-for-sudo` with the container as the fallback (zipline#92
@@ -2149,15 +2141,15 @@ mod tests {
         assert!(reason.contains("docker daemon not reachable"), "{reason}");
     }
 
-    /// Until zipline#93 lands, a `Container` selection is refused **at the
-    /// gate**: `netns_gate` maps it to a Skip with the exact reason below,
-    /// so an explicit `--test netns` / `--test all` still errors through
-    /// `check_gate` and a default selection skips visibly. It must NOT be a
-    /// run-time skip behind a `Run` gate — skipped outcomes do not fail
-    /// `execute_build`, which would let an explicitly requested tier exit 0
-    /// without running (operator amendment on zipline#92).
+    /// Since zipline#93 a `Container` selection runs through the gate: the
+    /// docker fallback is implemented, so `netns_gate` maps it to `Run` —
+    /// the run-time floor check (`docker_runner_floor`) is the only
+    /// remaining refusal, and it goes through `check_gate` in
+    /// `execute_build` so an explicit request still errors. This replaces
+    /// zipline#92's placeholder gate-skip test; its RED failure was the
+    /// proof the behaviour changed.
     #[test]
-    fn netns_gate_refuses_a_container_selection_until_93_lands() {
+    fn netns_gate_runs_a_container_selection() {
         let probes = Probes {
             passwordless_sudo: false,
             ..all_present()
@@ -2166,13 +2158,7 @@ mod tests {
             select_netns_runner(&probes),
             Ok(NetnsRunner::Container { .. })
         ));
-        let TierGate::Skip(reason) = netns_gate(&probes) else {
-            panic!("a container selection must be refused at the gate until #93");
-        };
-        assert_eq!(
-            reason,
-            "docker fallback selected but not implemented yet (zipline#93)"
-        );
+        assert!(matches!(netns_gate(&probes), TierGate::Run));
     }
 
     /// A failed probe on a default-selected (non-explicit) tier is a skip
