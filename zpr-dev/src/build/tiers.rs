@@ -2481,17 +2481,61 @@ mod tests {
     /// container by the Makefile's `FORWARD_ENV` (Codex review of PR #23).
     /// The child is executed, not planned: the assertion is the variable's
     /// absence in the running child's environment.
+    ///
+    /// The exported variable must be present in the environment of the
+    /// process that calls `run_env_command`, but mutating THIS process's
+    /// environment with `set_var` is unsound under the multithreaded test
+    /// harness (Codex review of PR #25): other tests spawn commands and may
+    /// read the environment concurrently, and the value would leak into
+    /// later tests. So the call happens one process down: this test re-runs
+    /// the test binary filtered to the `#[ignore]`d helper below, injecting
+    /// `VALKEY_SERVER_BIN` through `Command::env` — the helper process is
+    /// born with the variable, and no environment is ever mutated.
     #[test]
     fn run_env_command_removes_named_variables_from_the_executed_child() {
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "build::tiers::tests::run_env_command_removal_helper",
+                "--include-ignored",
+            ])
+            .env("VALKEY_SERVER_BIN", "/host/valkey-server")
+            .output()
+            .expect("re-running the test binary");
+        assert!(
+            output.status.success(),
+            "removal helper failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The filter must have matched exactly one test: a renamed or
+        // deleted helper would otherwise make this test pass vacuously.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("1 passed"),
+            "the removal helper did not run:\n{stdout}"
+        );
+    }
+
+    /// The executing half of
+    /// [`run_env_command_removes_named_variables_from_the_executed_child`]:
+    /// ignored so the normal suite never runs it, driven by that test in a
+    /// child process whose environment carries `VALKEY_SERVER_BIN` from
+    /// birth (`Command::env`, no `set_var`).
+    #[test]
+    #[ignore = "helper: driven by run_env_command_removes_named_variables_from_the_executed_child"]
+    fn run_env_command_removal_helper() {
+        assert!(
+            std::env::var_os("VALKEY_SERVER_BIN").is_some(),
+            "this helper asserts nothing without VALKEY_SERVER_BIN in its \
+             environment; it is driven by \
+             run_env_command_removes_named_variables_from_the_executed_child, \
+             which injects the variable via Command::env"
+        );
         let tmp = tempfile::tempdir().unwrap();
         let logs = tmp.path().join("logs");
         std::fs::create_dir_all(&logs).unwrap();
-        // The variable is set in THIS process, as an operator's exported
-        // value would be. SAFETY: no other test in this binary reads or
-        // writes VALKEY_SERVER_BIN through the process environment — the
-        // probe tests inject `Probes` and the PATH tests pass explicit
-        // values — so the one mutation cannot race a reader.
-        unsafe { std::env::set_var("VALKEY_SERVER_BIN", "/host/valkey-server") };
 
         // Without the removal the child inherits it: the fixture is real.
         run_env_command(
