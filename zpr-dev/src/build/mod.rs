@@ -448,7 +448,12 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     if ctx.dry_run {
         // The manifest a real run would write: built here so the shape is
         // exercised end to end, printed under --verbose, never written.
-        let emitted = emit(&set, &resolved, args.tip)?;
+        let mut emitted = emit(&set, &resolved, args.tip)?;
+        // The preview carries what the run already knows: the request and
+        // the operator's notes. The generated notes and tests_skipped need
+        // tier results a dry run does not have (PR #22 Codex P2).
+        emitted.resolved.tests_requested = selection.requested().to_string();
+        emitted.resolved.notes = args.note.clone();
         report_dry_run(ctx, &set.name, &resolved, &skipped, args, &selection);
         if ctx.verbose && !ctx.quiet {
             println!();
@@ -818,6 +823,11 @@ struct GateOutcome {
     zplc_version: Option<String>,
     /// `POLICY_MIN_COMPILER_*` from the visa service's `vs/src/config.rs`.
     vs_policy_min_compiler: Option<String>,
+    /// How many gate-1 disagreements `--allow-pin-drift` turned from errors
+    /// into warnings — zero when the pins agreed, whatever the flag said.
+    /// The manifest's pin-drift note keys off this, not the flag, so it
+    /// never claims a downgrade that did not happen (PR #22 Codex P2).
+    pin_drift_downgraded: usize,
 }
 
 /// Extracts every captured pin from `scan` — pairs of display name and the
@@ -896,7 +906,15 @@ fn collect_gate_findings(
     let (pins, mut findings) = extract_scan_pins(scan)?;
 
     // -- gate 1: agreement ---------------------------------------------------
-    findings.extend(gates::gate_pin_agreement(&pins, drift, downgrade));
+    let agreement = gates::gate_pin_agreement(&pins, drift, downgrade);
+    // Gate 1 emits a warning only for a disagreement the flag downgraded
+    // (agreement is OK, an allowed drift is INFO, and without the flag a
+    // disagreement is an ERROR), so the warning count is the downgrade count.
+    let pin_drift_downgraded = agreement
+        .iter()
+        .filter(|f| f.severity == gates::Severity::Warn)
+        .count();
+    findings.extend(agreement);
 
     // -- gate 1 lock scan: post-resolution dual versions (zipline#69) --------
     // Manifest pins cannot see a pin made inside a tagged git dependency, so
@@ -1013,6 +1031,7 @@ fn collect_gate_findings(
         pins,
         zplc_version,
         vs_policy_min_compiler,
+        pin_drift_downgraded,
     })
 }
 
@@ -1323,8 +1342,9 @@ pub struct Coverage {
 
 /// Summarizes a run's coverage gaps for the emitted manifest (zipline#87).
 /// Pure: it reads the selection, the tier results as they will be written,
-/// whether the build failed before any tier could run, whether gate 1 was
-/// downgraded, and the operator's `--note` text. A known tier is *skipped*
+/// whether the build failed before any tier could run, whether gate 1
+/// actually downgraded a disagreement under `--allow-pin-drift` (not merely
+/// whether the flag was passed), and the operator's `--note` text. A known tier is *skipped*
 /// when it has no result (not selected, or build failed) or a `skipped`
 /// result (probe or repository-missing skip, whose reason is reused so the
 /// two records can never disagree). A tier that ran and failed is not
@@ -1745,7 +1765,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         inputs.selection,
         &tier_results,
         failure.is_some(),
-        inputs.downgrade_pin_drift,
+        outcome.pin_drift_downgraded > 0,
         inputs.notes,
     );
     emitted.resolved.tests_requested = inputs.selection.requested().to_string();
