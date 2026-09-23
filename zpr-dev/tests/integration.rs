@@ -1546,6 +1546,29 @@ fn build_note_conflicts_with_clean_and_repeats() {
     assert!(out.contains("note: two"), "{out}");
 }
 
+/// The verbose dry run prints the manifest a real run would write; it must
+/// carry the request and the operator's notes rather than an empty
+/// `tests_requested` (PR #22 Codex P2 on zipline#87).
+#[test]
+fn build_dry_run_verbose_preview_records_requested_tests_and_notes() {
+    let fixture = Fixture::new();
+    fixture.clone_repos();
+    let out = stdout_of(&fixture.run(&[
+        "--verbose",
+        "build",
+        "--tip",
+        "--dry-run",
+        "--test",
+        "unit",
+        "--note",
+        "hand-run netns",
+    ]));
+    assert!(out.contains("emitted manifest (would be written"), "{out}");
+    assert!(out.contains("tests_requested: unit"), "{out}");
+    assert!(out.contains("- hand-run netns"), "{out}");
+    assert!(!out.contains("tests_requested: ''"), "{out}");
+}
+
 /// `--build-dir` scopes the clean: the named directory goes, an unrelated
 /// build directory under the default tree stays.
 #[test]

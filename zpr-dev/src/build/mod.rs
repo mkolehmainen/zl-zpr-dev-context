@@ -3216,6 +3216,78 @@ allow_pin_drift:
 
     // -- coverage summary: tests_skipped and notes (zipline#87) ----------------
 
+    /// A scan directory whose `Cargo.toml` pins `zpr` at `tag`.
+    fn pinned_dir(root: &Path, name: &str, tag: &str) -> (String, PathBuf) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+                 zpr = {{ git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
+            ),
+        )
+        .unwrap();
+        (name.to_string(), dir)
+    }
+
+    /// The gate outcome counts the disagreements `--allow-pin-drift`
+    /// actually downgraded — not whether the flag was passed (PR #22 Codex
+    /// P2): agreeing pins under the flag downgrade nothing, a disagreement
+    /// under the flag downgrades one, and without the flag it is an error.
+    #[test]
+    fn gate_outcome_counts_only_real_downgrades() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agree = vec![
+            pinned_dir(tmp.path(), "a", "v0.26.0"),
+            pinned_dir(tmp.path(), "b", "v0.26.0"),
+        ];
+        let outcome = collect_gate_findings(&agree, &[], true, tmp.path()).unwrap();
+        assert_eq!(outcome.pin_drift_downgraded, 0, "{:#?}", outcome.findings);
+
+        let disagree = vec![
+            pinned_dir(tmp.path(), "c", "v0.26.0"),
+            pinned_dir(tmp.path(), "d", "v0.27.0"),
+        ];
+        let outcome = collect_gate_findings(&disagree, &[], true, tmp.path()).unwrap();
+        assert_eq!(outcome.pin_drift_downgraded, 1, "{:#?}", outcome.findings);
+
+        let outcome = collect_gate_findings(&disagree, &[], false, tmp.path()).unwrap();
+        assert_eq!(outcome.pin_drift_downgraded, 0, "{:#?}", outcome.findings);
+        assert!(
+            outcome
+                .findings
+                .iter()
+                .any(|f| f.severity == gates::Severity::Error),
+            "{:#?}",
+            outcome.findings
+        );
+    }
+
+    /// `--allow-pin-drift` on a set whose pins already agree must not make
+    /// the manifest claim disagreements were downgraded (PR #22 Codex P2).
+    #[test]
+    fn execute_build_allow_pin_drift_without_drift_adds_no_note() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = no_tiers();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.downgrade_pin_drift = true;
+        assert!(execute_build(&in_).unwrap());
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(!text.contains("allow-pin-drift"), "{text}");
+    }
+
     fn passed() -> Tier {
         Tier::from_outcome(&tiers::TierOutcome {
             passed: true,
