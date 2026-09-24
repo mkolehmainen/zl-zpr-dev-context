@@ -44,7 +44,7 @@ but it lands in stages (master plan, "Issue map"):
 | B2 | §4 gates | specified only |
 | B3 | §5 worktrees, builds, `dist/`, emitted manifest, tarball | specified only |
 | B4 | §6 `unit` tier | specified only |
-| B5 | §6 `netns` and `docker` tiers | specified only |
+| B5 | §6 `netns` and `docker` tiers | implemented — including the netns tier's container fallback (zipline#92/#93) |
 
 Until B3 lands, the `resolved:` block of §3 is a fixed shape with empty or
 defaulted fields; B3–B5 populate it.
@@ -163,15 +163,14 @@ resolved:                          # diagnostic; ignored as input
     - { name: vs, sha256: "...", bytes: 18234512, from: zl-zpr-visaservice }
   tests_requested: unit,netns    # the literal --test value; "default" when absent
   tests_skipped:                 # every known tier that did not execute, and why
-    netns:  "no passwordless sudo"
     docker: "not selected (--test unit,netns)"
   notes:                         # the shortcomings, in plain words; read this first
-    - "netns integration tests did NOT run: no passwordless sudo"
+    - "netns integration tests ran in a privileged Docker container, not on the host (host route unavailable: missing: passwordless sudo (or pass --prompt-for-sudo))"
     - "docker end-to-end tests did NOT run: not selected (--test unit,netns)"
     - "docker tier run by hand on the operator workstation"   # from --note
   tiers:
     unit:   { status: passed }
-    netns:  { status: skipped, reason: "no passwordless sudo" }
+    netns:  { status: passed, sudo: container }  # sudo: nopasswd | primed | container (§6)
 ```
 
 Normative behavior:
@@ -199,7 +198,9 @@ Normative behavior:
   same text as `tiers.<name>.reason`), or `not run: build failed`. `notes`
   lists each shortcoming as a sentence a person can act on — one per
   `tests_skipped` entry (or the single `no tests ran (--test none)`), one per
-  failed tier, one when `--allow-pin-drift` downgraded gate 1 — followed by
+  failed tier, one when the netns tier ran through the container fallback
+  (the generated coverage note of §6), one when `--allow-pin-drift`
+  downgraded gate 1 — followed by
   the operator's `--note` text verbatim. Both `tests_skipped` and `notes`
   are omitted when empty, so their absence means a clean, full run. A
   manifest gated on `--test unit` alone therefore says, in its own words,
@@ -315,7 +316,7 @@ step's output is available to the next:
 | Tier | What runs | Prerequisites | Default |
 |---|---|---|---|
 | `unit` | `make test` in each built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | run |
-| `netns` | the seven `zl-zpr-core/integration-test/` scripts | Linux, passwordless `sudo` **or** `--prompt-for-sudo`, `valkey-server`, `python3` | `--test netns` |
+| `netns` | the seven `zl-zpr-core/integration-test/` scripts | Linux, and either (passwordless `sudo` or `--prompt-for-sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | `--test netns` |
 | `docker` | `dns-demo` deploy, `test-dns.sh`, `docker compose down -v` | `docker`, `docker compose` | `--test docker` |
 
 - A tier that was asked for and cannot run is an error under `--test all`; a
@@ -325,6 +326,24 @@ step's output is available to the next:
 - `netns` binaries come from `dist/` via `PH_BIN` / `VS_BIN` /
   `VS_ADMIN_BIN` / `VALKEY_SERVER_BIN`; nothing is copied into
   `integration-test/`. The script list is explicit, not globbed.
+- The netns tier selects its route **host → container → skip**
+  (zipline#92/#93). The host route wins whenever its own prerequisites —
+  passwordless `sudo` or a primed credential, `valkey-server`, `python3` —
+  all hold; otherwise, when a Docker daemon is reachable (`docker info`
+  succeeds), the same seven scripts run as root inside the privileged
+  container of `zl-zpr-core/integration-test/`'s `make docker-test`, one
+  `make` invocation per script with `WORKSPACE=<build-dir>`; when neither
+  route works, the tier skips — or errors when explicitly requested — with
+  a reason naming both routes' gaps. A container run records the tier's
+  provenance as `sudo: container` in the emitted manifest and adds a
+  generated coverage note quoting the host route's real failure — `netns
+  integration tests ran in a privileged Docker container, not on the host
+  (host route unavailable: <reason>)` — so a green manifest never implies
+  the tests ran on the host. The container route requires a `zl-zpr-core`
+  worktree at or after `c163628`, the commit whose
+  `integration-test/Makefile` defines `FORWARD_ENV`; an older worktree
+  refuses the route with a reason naming that floor. No `zl-zpr-core`
+  change was needed (zipline#91 withdrawn).
 - `a2a-pubkey-test.sh` needs a `ph` built with `enable-security-testing`;
   that binary must never be staged into `dist/`.
 - The `docker` tier always runs `docker compose down -v`, pass or fail.
@@ -339,13 +358,15 @@ step's output is available to the next:
   otherwise, never a hang), never prompts under `--dry-run` or `--gates-only`,
   and never weakens the probe: without it, behaviour is exactly as before.
   The emitted manifest records the netns tier's sudo provenance as
-  `sudo: nopasswd` or `sudo: primed` — the two are never conflated.
+  `sudo: nopasswd` or `sudo: primed` — the two are never conflated, and a
+  run through the container fallback is a third provenance,
+  `sudo: container` (see the route-selection bullet above).
 
   Known ceiling: `tty_tickets` makes this a workstation-only convenience —
   it works because the netns children inherit our controlling terminal. It
   is not a path to running the netns tier in CI, and should not be
   documented as one. CI still needs a host with passwordless sudo, or a
-  container.
+  Docker daemon — the container fallback is the CI path.
 
 ## 7. CLI surface
 

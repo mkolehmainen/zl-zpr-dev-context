@@ -1,6 +1,6 @@
 # netns Docker fallback — `zpr-dev build` runs the netns tier in a container when host sudo is missing
 
-**Status:** IN FLIGHT — umbrella [zipline#90](https://github.com/mkolehmainen/zipline/issues/90); N2–N4 filed. N1 ([#91](https://github.com/mkolehmainen/zipline/issues/91)) withdrawn 2026-09-23 after Codex review of PR #23: see *Finding 1*.
+**Status:** COMPLETE (2026-09-23) — umbrella [zipline#90](https://github.com/mkolehmainen/zipline/issues/90). N1 ([#91](https://github.com/mkolehmainen/zipline/issues/91)) withdrawn (Finding 1); N2 ([#92](https://github.com/mkolehmainen/zipline/issues/92)) and N3 ([#93](https://github.com/mkolehmainen/zipline/issues/93)) merged (zl-zpr-dev-context PRs #24/#25); N4 ([#94](https://github.com/mkolehmainen/zipline/issues/94)) is this documentation closure.
 **Date:** 2026-09-23
 **Repo state this plan was written against:** `zl-zpr-dev-context` @ `ed91470`, `zl-zpr-core` @ `e56899a` (`integration-test/Makefile` last changed by `c163628`, zipline#84 follow-up), both on `zipline`.
 
@@ -45,6 +45,32 @@ The first draft of this plan claimed `:=` blocks that and scheduled a one-line `
 ### Finding 5 — a container run is a different provenance
 
 The emitted manifest records `tiers.netns.sudo: nopasswd | primed` and spec-003 §6 says the two are never conflated (zipline#70). A run as root inside `--privileged` — which also lifts seccomp so io_uring works — is a third provenance and must be visible the same way, plus a coverage note (zipline#87), so a green manifest never implies the tests ran on the host.
+
+### Finding 6 — the N3 manual run: the container route works end to end
+
+Recorded from zl-zpr-dev-context PR #25's verification section (zipline#93,
+acceptance's manual step). `ZPR_WORKSPACE=$HOME/zl_src ./target/debug/zpr-dev
+build --tip --test all --force` ran on a host with no passwordless sudo, no
+host `valkey-server`, and a Docker daemon up — **exit 0**, all seven netns
+scripts passed through the container:
+
+```
+netns tier (docker fallback; host route unavailable: missing: passwordless sudo (or pass --prompt-for-sudo), valkey-server):
+one-node-test.sh: passed
+one-node-v6-test.sh: passed
+one-node-oidc-test.sh: passed
+capture-test.sh: passed
+oidc-file-interplay-test.sh: passed
+fake-idp-smoke-test.sh: passed
+a2a-pubkey-test.sh: passed
+```
+
+The emitted manifest recorded exactly contract 2: `tiers.netns` with
+`status: passed`, `sudo: container`, all seven scripts `passed` under
+`repos`, and the generated `resolved.notes` line quoting the host route's
+real gap. No host with passwordless sudo was available for a host-route
+control, so the host-route shape (`sudo: nopasswd`/`primed`, no note, plan
+byte-identical to pre-#93) is verified by the test suite instead.
 
 ## Decisions
 
