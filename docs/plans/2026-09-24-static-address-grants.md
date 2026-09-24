@@ -140,7 +140,15 @@ expiration_seconds = 3600
 { "device.zpr.adapter.cn": { "adapter1": { "addr": ["fd5a:5052:8888::1"] } } }
 ```
 
-Trusted-service attributes already land in the authenticated claims before `approve_connection` runs (`vs/src/connection_control.rs:1173-1207`) and are always committed, so the attribute reaches the actor today with no compiler, schema or store change.
+**The store must be woven, and only a ZPL reference does that.** The compiler prunes a trusted service that vends no identity attributes and that no woven statement references (`docs/ZPL.md:319-330`; `zl-zpr-compiler/src/weaver.rs:1182-1300`). A `file` store that returns only `device.zpr_addr` is exactly that case, so the `.zpl` must mention the attribute in a statement the weaver resolves: an `allow` or a service definition, not a bare `define`. The known-working form is the one `dns-demo` uses for `device.hostname` (`docs/DNS.md:99-102`, `dns-demo.zpl:27-34`), key-presence on the device spec:
+
+```zpl
+allow access:all users to access ping on zpr_addr: devices.
+```
+
+Without this the visa service never queries the store, the adapter gets a pool address, and an adapter that demanded `--zpr-addr` fails with `GrantedAddressMismatch`. The `VISA_SERVICE.md` and `ATTRIBUTE_SERVICE.md` text for A3 must state the trap the way `DNS.md` does. Teaching the compiler to retain providers of well-known attributes is a follow-on (see *Out of scope*); it would serve `device.hostname` and `device.zpr_addr` alike and is not on this plan's path.
+
+Once woven, trusted-service attributes land in the authenticated claims before `approve_connection` runs (`vs/src/connection_control.rs:1173-1207`) and are always committed, so the attribute reaches the actor today with no compiler, schema or store change.
 
 **Change** in `authorize_connection`, after `approve_connection` and before pool allocation: if the actor carries an authenticated `device.zpr_addr`, run the A2 checks on its value and set it as the actor's `zpr.addr`. If the actor *also* has a policy-pinned `zpr.addr` that differs, reject: two sources disagree, and that is an operator error to surface, not resolve. The adapter's own request has already been scrubbed by A1 unless a pin matched it, so the request can never override a grant; if the adapter demanded a different address it reports `GrantedAddressMismatch` itself.
 
@@ -155,13 +163,14 @@ Trusted-service attributes already land in the authenticated claims before `appr
 - Two connecting actors granted the same X: second rejected, first untouched.
 - `device.zpr_addr` present only in unauthenticated claims: ignored, pool allocates.
 
-**Acceptance.** Tests above pass. An end-to-end check in `zl-zpr-core/integration-test` or `zl-zpr-demo/dns-demo`: one adapter with no `zpr.addr` in its `define` and no `--zpr-addr`, given an address by a `file` store, connects at that address and is reachable there.
+**Acceptance.** Tests above pass. An end-to-end check in `zl-zpr-core/integration-test` or `zl-zpr-demo/dns-demo`: one adapter with no `zpr.addr` in its `define` and no `--zpr-addr`, given an address by a `file` store that the `.zpl` references as above, connects at that address and is reachable there. A negative check that the trap is documented rather than silent: the same setup with the ZPL reference removed compiles, the store is absent from the compiled policy's trusted services, and the adapter comes up on a pool address.
 
 ---
 
 ## Out of scope (tracked, not scheduled)
 
 - **Compile-time pool check.** `zplc` does not know the visa service's pool ranges; an in-pool pin is a join-time error. Worth doing once the ranges are stable enough to share through `zl-zpr-common`.
+- **Compiler retention of well-known attribute providers.** A trusted service that vends only `device.zpr_addr` or `device.hostname` is pruned unless the ZPL references the attribute (A3, `docs/DNS.md:99-102`). A retain pass like `retain_identity_vendors` (`weaver.rs:1271`) keyed on a short list of visa-service-interpreted attributes would remove the trap for both. Compiler-only change, no schema impact; not needed for this plan to land.
 - **Converting the core integration tests to dynamic addressing.** See P1.
 - **Retiring `zpr.addr` in `define ... with`** (zpr-compiler#133). Source 1 keeps working; whether policy text should carry addresses at all once source 2 exists is a separate question.
 - **Persisting pool state** (the `TODO: Update redis` in `net_mgr.rs:157`). Unrelated to this plan but adjacent.
@@ -173,6 +182,7 @@ Trusted-service attributes already land in the authenticated claims before `appr
 - **Why two keys for one concept.** `zpr.addr` stays the actor's committed address, the peer's request, and the node pin; `device.zpr_addr` is the grant. The hostname index has the same attribute-to-internal-state shape. Renaming the internal key would touch every repository for no security gain.
 - **Why any trusted service may grant, not just `file`.** The mapping must be declared in the signed `.zplc`, so it is explicit which service may return an address. A declared trusted service already vends the attributes that decide which join and communication policies match, and ZPR grants access by attribute, not by address, with dock-side enforcement (zipline#83) pinning an actor to the address it was granted. Choosing an address is therefore no new power. ZPR does not care which static addresses are used, only that they cannot mask addresses it manages or its own special addresses, which the A2 checks enforce for every source alike.
 - **Why static addresses are outside the pools rather than reserved in them.** Reserve-in-pool needs `take_zpr_addr`, an undo path, and a release path that knows which addresses were reserved versus allocated; the node path has all three today and the adapter path has none. A separate address space needs one rejection and no bookkeeping. Nothing in the tree pins an in-pool address.
+- **Why a ZPL reference keeps the address store woven, not a compiler change.** Codex review of PR #27 caught that an unreferenced `file` store is pruned, so the A3 grant as first written could never fire. The hostname plan met the same trap and chose the reference (`dns-demo.zpl:27-34`); following it keeps this plan free of compiler work and keeps the two visa-service-interpreted device attributes behaving the same way. The compiler-side fix is tracked above and would lift both at once.
 - **Why scrub-and-allocate rather than deny in `approve_connection`.** See A1. Either is a one-branch change; the peers' existing mismatch diagnostics make scrubbing the more legible failure.
 - **Why not fix only the no-match case.** That was done (`eval.rs:238-241`) and left the any-match case, which is the one every service provider hits.
 
