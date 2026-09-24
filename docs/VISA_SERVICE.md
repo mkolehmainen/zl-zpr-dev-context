@@ -182,8 +182,9 @@ vending an authenticated **`device.zpr_addr`** attribute — a `file` store keye
 on the device CN, say. Once authentication has produced the actor, the grant is
 read from the accumulated authenticated claims — never from self-asserted peer
 claims, which are dropped before this point, so a peer cannot steer its own
-address by claiming a grant — and promoted to the requested `zpr.addr` *before*
-the pre-set-address checks run. It therefore flows through exactly the arms a
+address by claiming a grant — and promoted to the actor's `zpr.addr` *before*
+the pre-set-address checks run, independently of any address the peer did or
+did not request. It therefore flows through exactly the arms a
 static pin does: inside `fd5a:5052::/32`, not the visa service's own address,
 outside the managed pools, not held by a live actor, and the
 renewal/reconnect proof arms. A grant that cannot be understood is an operator
