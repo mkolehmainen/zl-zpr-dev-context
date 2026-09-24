@@ -76,6 +76,19 @@ single-valued, multi-valued or tag — which comes from policy's
 `returns_attributes` mapping, not from the service. A service returns names
 and values; policy decides what they mean.
 
+Mostly the visa service just hands attributes to the policy evaluator, but a
+few **well-known attributes** it acts on itself. **`device.zpr_addr`** is one
+(zipline#99): an authenticated `device.zpr_addr` vended by any trusted
+service — an attribute service, a `file` store keyed on the device CN — grants
+the device its requested ZPR address at connection time, subject to the same
+checks as a policy-pinned static address; a malformed or conflicting grant
+rejects the connection loudly. See VISA_SERVICE.md, *Authenticating actors*,
+for the rules. Note the same pruning trap DNS.md records for
+`device.hostname`: the compiler drops a trusted service that no ZPL rule
+references, so a store vending only `device.zpr_addr` is pruned — and the
+grant silently never happens — unless something in the ZPL mentions the
+attribute.
+
 ### The four operations
 
 The plan names four things a visa service might want from an attribute source.

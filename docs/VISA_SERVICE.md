@@ -177,6 +177,30 @@ only when a matched join policy pins it with a `zpr.addr eq` condition, and
 address the actor already holds passes through unchanged on re-authorization
 (session renewal, node reconnect).
 
+Since zipline#99 a trusted service can make that placement decision too, by
+vending an authenticated **`device.zpr_addr`** attribute — a `file` store keyed
+on the device CN, say. Once authentication has produced the actor, the grant is
+read from the accumulated authenticated claims — never from self-asserted peer
+claims, which are dropped before this point, so a peer cannot steer its own
+address by claiming a grant — and promoted to the requested `zpr.addr` *before*
+the pre-set-address checks run. It therefore flows through exactly the arms a
+static pin does: inside `fd5a:5052::/32`, not the visa service's own address,
+outside the managed pools, not held by a live actor, and the
+renewal/reconnect proof arms. A grant that cannot be understood is an operator
+error surfaced loudly with `AuthenticationFailed` naming `device.zpr_addr` —
+never a silent fall-through to the pool, which would quietly bring the device
+up somewhere other than where the operator placed it. Rejected this way: a
+grant resolving to more than one distinct address (multi-valued, or
+conflicting grants from two trusted services — the claims are inspected before
+the actor's keyed attribute insert collapses them, so a conflict stays
+visible), a value that does not parse as an IP address, and a grant that
+disagrees with an address already pinned by a matched join policy. Duplicate
+grants that agree are redundancy, not ambiguity; a grant agreeing with a pin
+is logged and the address keeps its static source. Diagnostics carry the
+address source — a rejected pin reads "static", a rejected grant reads
+"granted" — so the log tells the two apart
+(`vs/src/connection_control.rs`, `authorize_connection`).
+
 Authentication expires. As expiry approaches the visa service tells the docking
 node over the VSS-API so the actor can re-authenticate; the grace period is a
 visa service setting. Default authentication lifetime is **4 hours** — except
