@@ -167,7 +167,15 @@ some store happens to vend.
 With attributes in hand it evaluates the actor against policy: may it
 communicate on the ZPRnet at all, may it host services, does it get special
 privileges such as a static ZPR address, and is it explicitly denied? An actor
-that passes receives a ZPR address and joins.
+that passes receives a ZPR address and joins. Since zipline#97/#98 a static
+address is **granted, never asserted**: a peer-requested `zpr.addr` is honoured
+only when a matched join policy pins it with a `zpr.addr eq` condition, and
+`authorize_connection` then rejects any static address that is outside
+`fd5a:5052::/32`, equal to the visa service address, inside a managed pool
+(static addresses live in a separate address space from the pools — see
+`SYSTEM_OVERVIEW.md`, "Addressing"), or already held by a live actor. An
+address the actor already holds passes through unchanged on re-authorization
+(session renewal, node reconnect).
 
 Authentication expires. As expiry approaches the visa service tells the docking
 node over the VSS-API so the actor can re-authenticate; the grace period is a

@@ -255,12 +255,22 @@ an endpoint joins. In the current implementation:
 | Range | Use |
 |---|---|
 | `fd5a:5052::1` | The visa service |
-| `fd5a:5052:90de:1::/64` | Nodes |
-| `fd5a:5052:adda:1::/64` | Adapters |
+| `fd5a:5052:90de:1::/64` | Nodes (pool-allocated) |
+| `fd5a:5052:adda:1::/64` | Adapters (pool-allocated) |
+| `fd5a:5052:8888::/64` | Static, policy-granted (de facto range; see below) |
 | `10.192.0.0/22`, `10.128.0.0/22` | IPv4 equivalents for nodes and adapters |
 
-An endpoint may be granted a static address by policy. The substrate addresses
-that carry virtual links are ordinary IP addresses and are unrelated to these.
+An endpoint may be granted a static address by policy — a `zpr_address` on a
+node or a `zpr.addr` pin in an adapter's `define`. **Static addresses live in
+a different address space from the pools the visa service manages**: at join
+time the visa service rejects a static address that is inside a managed pool
+(so the pool can never double-allocate it), outside `fd5a:5052::/32`, equal to
+its own address, or already held by a live actor — the second claimant is
+rejected, never silently renumbered. `fd5a:5052:8888::/64` is the de facto
+static range: nothing reserves it, but every pinned adapter address in the
+tree is in it, and every pinned node address is outside the node pool. The
+substrate addresses that carry virtual links are ordinary IP addresses and
+are unrelated to these.
 
 RFC-7 describes generating topology, node numbering, and forwarding rules
 automatically from connection policy and hardware constraints — deriving the
