@@ -47,6 +47,7 @@ paths, so they can be opened directly.
 | Building, testing, or changing a cross-repository dependency | `docs/BUILD.md` |
 | Building a compatible set of binaries, or working a build-set issue | `docs/BUILD.md` ("Compatible build sets"), `zpr-dev/docs/specs/spec-003-build.md` |
 | Changing how `zpr-dev build` gates or runs the netns test tier, or working a netns-Docker-fallback issue (zipline#90) | `docs/plans/2026-09-23-netns-docker-fallback.md`, `zpr-dev/docs/specs/spec-003-build.md` ("Test tiers") |
+| Changing how the visa service assigns, pins or checks a ZPR address, or working a static-address issue | `docs/plans/2026-09-24-static-address-grants.md`, `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
