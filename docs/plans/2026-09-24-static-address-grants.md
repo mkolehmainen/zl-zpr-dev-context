@@ -1,6 +1,6 @@
 # Static ZPR addresses are granted, never asserted
 
-**Status:** IN FLIGHT — issues not yet filed; see *Issue map*.
+**Status:** IN FLIGHT — umbrella [zipline#95](https://github.com/mkolehmainen/zipline/issues/95); P1 [#96](https://github.com/mkolehmainen/zipline/issues/96), A1 [#97](https://github.com/mkolehmainen/zipline/issues/97), A2 [#98](https://github.com/mkolehmainen/zipline/issues/98), A3 [#99](https://github.com/mkolehmainen/zipline/issues/99).
 **Date:** 2026-09-24
 **Repo state this plan was written against:** `zl-zpr-visaservice` @ `f2ad61b`, `zl-zpr-core` @ `95d316f`, `zl-zpr-compiler` @ `3a7cc4e`, `zl-zpr-dev-context` @ `20cb538`, all on `zipline`. Line references are against those commits.
 
@@ -66,16 +66,16 @@ No compiler or policy-schema change anywhere in this plan. `device.zpr_addr` is 
 
 | Task | Repo | Issue |
 |---|---|---|
-| P1 | `zl-zpr-core` | to be filed |
-| A1 | `zl-zpr-visaservice` | to be filed |
-| A2 | `zl-zpr-visaservice`, `zl-zpr-dev-context` (docs) | to be filed |
-| A3 | `zl-zpr-visaservice`, `zl-zpr-dev-context` (docs) | to be filed |
+| P1 | `zl-zpr-core` | [zipline#96](https://github.com/mkolehmainen/zipline/issues/96) |
+| A1 | `zl-zpr-visaservice` | [zipline#97](https://github.com/mkolehmainen/zipline/issues/97) |
+| A2 | `zl-zpr-visaservice`, `zl-zpr-dev-context` (docs) | [zipline#98](https://github.com/mkolehmainen/zipline/issues/98) |
+| A3 | `zl-zpr-visaservice`, `zl-zpr-dev-context` (docs) | [zipline#99](https://github.com/mkolehmainen/zipline/issues/99) |
 
 ---
 
 ## Phase P — Prerequisite
 
-### Task P1: core integration tests stop depending on the loophole (`zl-zpr-core`)
+### Task P1: core integration tests stop depending on the loophole (`zl-zpr-core`, [zipline#96](https://github.com/mkolehmainen/zipline/issues/96))
 
 Every script in `integration-test/` starts adapters through `lib/common_funcs.sh:97-117` with `--tun-if tun0 --zpr-addr <static>`, and no `.zpl` in `pregen/` pins those addresses. All of them depend on the current behaviour and break when A1 or A2 lands.
 
@@ -93,7 +93,7 @@ Option considered and deferred: converting the tests to dynamic addressing throu
 
 ## Phase A — Visa service
 
-### Task A1: `approve_connection` treats the requested address as a check (`libeval`)
+### Task A1: `approve_connection` treats the requested address as a check (`libeval`, [zipline#97](https://github.com/mkolehmainen/zipline/issues/97))
 
 **Change** in `EvalContext::approve_connection` (`libeval/src/eval.rs:208-277`): commit the requested `zpr.addr` only if at least one **matched** join policy has an `AttrExp` whose key is `zpr.addr`. `JPolicy.matches` (`libeval/src/joinpolicy.rs:14`) already exposes the conditions. When no matched policy pins it, take the existing no-match scrub path so the caller allocates from the pool. Update the doc comment at `eval.rs:188-207` and remove the TODO at `:250`.
 
@@ -109,7 +109,7 @@ Scrub-and-allocate rather than hard-deny: it reuses the existing path, both peer
 
 **Acceptance.** Tests above pass; `cargo test` in `libeval` and `vs` green; the `vs/src/connection_control.rs:2889` test that documents "unauthenticated claims only for `zpr.addr` under a matching join policy" is updated to the new rule.
 
-### Task A2: `authorize_connection` enforces the static-address space (`vs`)
+### Task A2: `authorize_connection` enforces the static-address space (`vs`, [zipline#98](https://github.com/mkolehmainen/zipline/issues/98))
 
 **Change** in `ConnectionControl::authorize_connection` (`vs/src/connection_control.rs:1238-1252`): when the approved actor carries a `zpr.addr`, apply the three checks from *The rule* (range and not the visa service address; not `is_managed_address`; not a live actor) before accepting it. Failure is an `AuthError` naming the check. Remove the in-pool reservation on the node path (`vs/src/vsapi_worker.rs:944`, `undo.took_zpr_addr`), which the pool check makes dead.
 
@@ -125,7 +125,7 @@ Scrub-and-allocate rather than hard-deny: it reuses the existing path, both peer
 
 **Acceptance.** Tests above pass; the demos' pinned addresses and every `zpr_address` in the tree still authenticate (P1 has already moved the core tests). The pool ranges remain defined only in `vs/src/config.rs`; an author who pins an in-pool address learns of it at join time. Teaching `zplc` the ranges is out of scope.
 
-### Task A3: a trusted service may grant the address (`vs`)
+### Task A3: a trusted service may grant the address (`vs`, [zipline#99](https://github.com/mkolehmainen/zipline/issues/99))
 
 **Operator-side configuration** (no code): any declared trusted service maps a field to `device.zpr_addr`. With the `file` api:
 
@@ -188,7 +188,7 @@ Once woven, trusted-service attributes land in the authenticated claims before `
 
 ## Open questions
 
-None blocking. The issue numbers are filled in when P1–A3 are filed.
+None blocking.
 
 ## Related
 
