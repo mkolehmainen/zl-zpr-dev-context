@@ -23,7 +23,7 @@ service's admin API, and short TTLs are what make the answer track reality.
 ```
  ┌──────────┐  DNS UDP/53         ┌────────────────────────┐  HTTPS TCP/8182   ┌──────────────┐
  │ client   │  visa: client →     │  CoreDNS + zpr plugin  │  visa: zpr-dns →  │  admin API   │
- │ (adapter)│  zpr-dns service    │  pinned ZPR address    │  vs-admin service │ fd5a:5052::1 │
+ │ (adapter)│  zpr-dns service    │  granted ZPR address   │  vs-admin service │ fd5a:5052::1 │
  └──────────┘ ───────────────────▶└────────────────────────┘ ─────────────────▶└──────────────┘
    dig AAAA web.demo                GET /admin/services/web        200 { zpr_addr }
                                     then /admin/hosts/web on 404
@@ -127,15 +127,13 @@ The resolver's CN also needs a `[bootstrap]` key entry. Keep service names
 that should resolve as lowercase DNS labels: the visa service's service
 lookup is exact-match.
 
-**2. The naming authority**, if machine names are wanted, is a
-`[trusted_services.*]` block in the `.zplc`:
-
-```toml
-[trusted_services.machines]
-api = "file"
-returns_attributes = ["hostnames -> device.hostname{}"]
-expiration_seconds = 3600
-```
+**2. The naming authority**, if machine names are wanted, is a trusted service
+returning `hostnames -> device.hostname{}`. In the configuration above this is
+the same `[trusted_services.machines]` block declared in step 1 — one store
+vends both the hostname claims and the resolver's static-address grant, so the
+table is declared once (TOML rejects a table defined twice). A deployment that
+does not need static-address grants can drop the `zpr_addr` mapping and keep
+only the `hostnames` one.
 
 Note on pruning: the compiler drops a trusted service that no ZPL rule
 references — but `device.hostname` is visa-service-interpreted, so a store
