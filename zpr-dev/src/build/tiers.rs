@@ -512,7 +512,7 @@ pub enum SudoProvenance {
 }
 
 /// Keeps a primed sudo credential alive across a run that outlives sudo's
-/// timestamp timeout (15 minutes by default; a compile plus seven netns
+/// timestamp timeout (15 minutes by default; a compile plus nine netns
 /// scripts routinely does — zipline#70 Step 4): a thread running
 /// `sudo -n -v` on `interval`, from [`SudoRefresher::start`] until
 /// [`SudoRefresher::stop`] or drop. Dropping stops it too, so an early `?`
@@ -901,9 +901,13 @@ pub fn run_unit(plans: &[RepoPlan], logs: &Path, quiet: bool) -> TierOutcome {
 // The netns tier (issue62 step 3)
 // ---------------------------------------------------------------------------
 
-/// The seven integration scripts the netns tier runs, in order. An explicit
+/// The nine integration scripts the netns tier runs, in order. An explicit
 /// list, never a glob: `integration-test/unused_or_outdated/` stays out, and
 /// adding a script to the set's gate is a reviewed change (zipline#62).
+/// The list is guarded against drift by [`netns_script_drift`] (zipline#103):
+/// a top-level `*-test.sh` in the worktree that is neither here nor in
+/// [`NETNS_EXCLUDED`] fails planning, so a new script can never be silently
+/// not-run.
 const NETNS_SCRIPTS: &[&str] = &[
     "one-node-test.sh",
     "one-node-v6-test.sh",
@@ -912,7 +916,89 @@ const NETNS_SCRIPTS: &[&str] = &[
     "oidc-file-interplay-test.sh",
     "fake-idp-smoke-test.sh",
     "a2a-pubkey-test.sh",
+    "attr-query-test.sh",
+    "one-node-oidc-renewal-test.sh",
 ];
+
+/// Top-level `integration-test/*-test.sh` scripts the netns tier
+/// deliberately does NOT run, each with the reason (zipline#103). A script
+/// belongs here only after a reviewed decision — the drift guard
+/// ([`netns_script_drift`]) treats anything in neither list as an error, so
+/// "not yet gated" is never a silent state.
+const NETNS_EXCLUDED: &[(&str, &str)] = &[];
+
+/// The drift guard (zipline#103): every top-level `*-test.sh` in the
+/// worktree's `integration-test/` must be either gated ([`NETNS_SCRIPTS`])
+/// or deliberately excluded with a reason ([`NETNS_EXCLUDED`]). Top level
+/// only (approved Q2 on zipline#103): `lib/` and `unused_or_outdated/` are
+/// invisible, matching the Makefile's own `$(wildcard *-test.sh)` glob. A
+/// missing `integration-test/` passes — there is nothing to judge, and the
+/// tier run itself reports a broken worktree.
+///
+/// The guard fails closed (review findings on zl-zpr-dev-context#35): a
+/// directory entry that cannot be inspected or a script name that is not
+/// valid UTF-8 is an error, never silently absent — the Makefile's byte-wise
+/// glob would still run such a script, so dropping it here would report
+/// complete coverage falsely. And every exclusion must carry a nonempty
+/// reason: the whole table is validated up front, so an unauditable entry
+/// like `("x-test.sh", "")` fails planning even before any script matches.
+fn netns_script_drift(integration: &Path, gated: &[&str], excluded: &[(&str, &str)]) -> Result<()> {
+    // The exclusion table must be auditable before it is consulted: an
+    // entry without a reason could exempt a script with no recorded
+    // justification, which is exactly what the guard exists to prevent.
+    for (name, reason) in excluded {
+        if reason.trim().is_empty() {
+            bail!(
+                "NETNS_EXCLUDED entry {name:?} has no reason: every exclusion \
+                 must record why the script deliberately does not run \
+                 (zipline#103)"
+            );
+        }
+    }
+    if !integration.is_dir() {
+        return Ok(());
+    }
+    // Every top-level `*-test.sh`, sorted so the error is deterministic.
+    // Per-entry errors and non-UTF-8 names fail the scan rather than being
+    // skipped: a name the guard cannot judge is not a name it may ignore.
+    let mut strays: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(integration)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", integration.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!("cannot read an entry in {}: {e}", integration.display())
+        })?;
+        if !entry.path().is_file() {
+            continue;
+        }
+        let name = entry.file_name().into_string().map_err(|raw| {
+            anyhow::anyhow!(
+                "non-UTF-8 file name {raw:?} in {}: the netns drift guard \
+                 cannot compare it against NETNS_SCRIPTS/NETNS_EXCLUDED — \
+                 rename it (zipline#103)",
+                integration.display()
+            )
+        })?;
+        if !name.ends_with("-test.sh") {
+            continue;
+        }
+        if gated.contains(&name.as_str()) || excluded.iter().any(|(excl, _)| *excl == name) {
+            continue;
+        }
+        strays.push(name);
+    }
+    strays.sort();
+    if strays.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "netns script list has drifted: {} in {} is neither gated nor \
+         deliberately excluded — add it to NETNS_SCRIPTS to run it, or to \
+         NETNS_EXCLUDED with the reason it must not run (zipline#103)",
+        strays.join(", "),
+        integration.display()
+    );
+}
 
 /// A build that must succeed before its script runs — the worktree-local
 /// `enable-security-testing` build of `ph` for `a2a-pubkey-test.sh`. Kept
@@ -964,7 +1050,7 @@ pub struct NetnsPlan {
 }
 
 /// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
-/// the seven blessed scripts in order, each with the `*_BIN` overrides the
+/// the nine blessed scripts in order, each with the `*_BIN` overrides the
 /// scripts already honour pointed at `dist/` — nothing is copied into
 /// `integration-test/`. `a2a-pubkey-test.sh` alone runs the worktree-local
 /// `enable-security-testing` `ph` (a debug build that must never reach
@@ -990,10 +1076,14 @@ pub fn netns_plan(
     verbose: bool,
     runner: &NetnsRunner,
     build_dir: &Path,
-) -> NetnsPlan {
+) -> Result<NetnsPlan> {
     let display = |path: PathBuf| path.display().to_string();
     let container = matches!(runner, NetnsRunner::Container { .. });
     let integration = core_worktree.join("integration-test");
+    // The drift guard (zipline#103): judge the worktree under test before
+    // planning anything — an unlisted top-level script is a plan error,
+    // never a silently smaller tier.
+    netns_script_drift(&integration, NETNS_SCRIPTS, NETNS_EXCLUDED)?;
     let scripts = NETNS_SCRIPTS
         .iter()
         .map(|script| {
@@ -1010,6 +1100,16 @@ pub fn netns_plan(
                 ("PH_DEBUG_BIN".to_string(), display(dist.join("ph-cli"))),
                 ("VS_BIN".to_string(), display(dist.join("vs"))),
                 ("VS_ADMIN_BIN".to_string(), display(dist.join("vs-admin"))),
+                // attr-query-test.sh needs the reference attribute server
+                // and (optionally, for its pre-check) zpdump; a build
+                // worktree carries none of the symlinks the scripts default
+                // to, so point both at the staged dist/ (zipline#103). The
+                // other scripts ignore them.
+                (
+                    "ZPR_ATTR_SERVER_BIN".to_string(),
+                    display(dist.join("zpr-attr-server")),
+                ),
+                ("ZPDUMP_BIN".to_string(), display(dist.join("zpdump"))),
             ];
             if !container {
                 // Host route only: the container's image ships its own
@@ -1055,7 +1155,7 @@ pub fn netns_plan(
             }
         })
         .collect();
-    NetnsPlan {
+    Ok(NetnsPlan {
         // The container invocation runs `make` from the worktree (`-C`
         // names the Makefile's directory); the host route keeps running
         // the scripts from integration-test/ as before.
@@ -1065,7 +1165,7 @@ pub fn netns_plan(
             integration
         },
         scripts,
-    }
+    })
 }
 
 /// Runs a netns plan: each script in order in the plan's directory, under
@@ -2293,7 +2393,8 @@ mod tests {
             false,
             &runner,
             Path::new("/b"),
-        );
+        )
+        .expect("a fixture-free plan is clean");
         // The workdir is the worktree; `-C` names the Makefile's directory.
         assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core"));
         for script in &plan.scripts {
@@ -2354,7 +2455,8 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
-        );
+        )
+        .expect("a fixture-free plan is clean");
         assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));
         for script in &plan.scripts {
             assert_eq!(
@@ -2385,7 +2487,8 @@ mod tests {
             true,
             &runner,
             Path::new("/b"),
-        );
+        )
+        .expect("a fixture-free plan is clean");
         for script in &plan.scripts {
             assert_eq!(
                 env_of(script, "ZPR_TEST_VERBOSE"),
@@ -2396,11 +2499,13 @@ mod tests {
         }
     }
 
-    /// The plan runs exactly the seven blessed scripts, in order — an
+    /// The plan runs exactly the nine blessed scripts, in order — an
     /// explicit list, not a glob: `unused_or_outdated/` and any new script
-    /// stay out until reviewed in (zipline#62).
+    /// stay out until reviewed in (zipline#62, zipline#103). The order is
+    /// the documented one: `attr-query-test.sh` after `a2a-pubkey-test.sh`,
+    /// `one-node-oidc-renewal-test.sh` last (approved Q1 on zipline#103).
     #[test]
-    fn netns_plan_lists_the_seven_scripts_in_order() {
+    fn netns_plan_lists_the_nine_scripts_in_order() {
         let plan = netns_plan(
             Path::new("/wt/zl-zpr-core"),
             Path::new("/b/dist"),
@@ -2408,7 +2513,8 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
-        );
+        )
+        .expect("a worktree with no integration-test/ plans cleanly");
         let names: Vec<&str> = plan.scripts.iter().map(|script| script.script).collect();
         assert_eq!(
             names,
@@ -2420,14 +2526,151 @@ mod tests {
                 "oidc-file-interplay-test.sh",
                 "fake-idp-smoke-test.sh",
                 "a2a-pubkey-test.sh",
+                "attr-query-test.sh",
+                "one-node-oidc-renewal-test.sh",
             ]
         );
         assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));
     }
 
-    /// Every script gets the five `*_BIN` overrides pointing at `dist/` and
+    /// Writes a fixture `integration-test/` directory carrying the named
+    /// top-level scripts (plus `lib/` and `unused_or_outdated/` decoys that
+    /// the guard must never see — approved Q2 on zipline#103), and returns
+    /// the worktree root.
+    fn drift_fixture(scripts: &[&str]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::create_dir_all(dir.join("unused_or_outdated")).unwrap();
+        for script in scripts {
+            std::fs::write(dir.join(script), "#!/bin/sh\n").unwrap();
+        }
+        // Below top level: invisible to the guard, like the Makefile's
+        // `$(wildcard *-test.sh)`.
+        std::fs::write(dir.join("lib/helper-test.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(dir.join("unused_or_outdated/old-test.sh"), "#!/bin/sh\n").unwrap();
+        // Non-matching top-level names are not scripts to the guard.
+        std::fs::write(dir.join("Makefile"), "docker-test:\n\ttrue\n").unwrap();
+        tmp
+    }
+
+    /// The drift guard (zipline#103): a top-level `*-test.sh` in the
+    /// worktree that is neither gated nor excluded fails planning with an
+    /// error naming the script and both lists, so a new script can never be
+    /// silently not-run.
+    #[test]
+    fn netns_plan_fails_on_an_unlisted_top_level_script() {
+        let mut scripts: Vec<&str> = NETNS_SCRIPTS.to_vec();
+        scripts.push("new-test.sh");
+        let tmp = drift_fixture(&scripts);
+        let error = netns_plan(
+            tmp.path(),
+            Path::new("/b/dist"),
+            Path::new("/usr/bin/valkey-server"),
+            false,
+            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            Path::new("/b"),
+        )
+        .expect_err("an unlisted script must fail planning")
+        .to_string();
+        assert!(
+            error.contains("new-test.sh"),
+            "must name the script: {error}"
+        );
+        assert!(
+            error.contains("NETNS_SCRIPTS") && error.contains("NETNS_EXCLUDED"),
+            "must point at the two lists to fix: {error}"
+        );
+    }
+
+    /// The same fixture passes once the new script is deliberately
+    /// excluded with a reason: exclusion is the reviewed way to keep a
+    /// top-level script out of the tier (zipline#103).
+    #[test]
+    fn drift_guard_accepts_a_deliberately_excluded_script() {
+        let mut scripts: Vec<&str> = NETNS_SCRIPTS.to_vec();
+        scripts.push("new-test.sh");
+        let tmp = drift_fixture(&scripts);
+        netns_script_drift(
+            &tmp.path().join("integration-test"),
+            NETNS_SCRIPTS,
+            &[("new-test.sh", "deliberately unrun: fixture reason")],
+        )
+        .expect("an excluded script must plan cleanly");
+        // And the gated set alone — no strays — passes against the real
+        // constants, empty exclusion list included.
+        let tmp = drift_fixture(NETNS_SCRIPTS);
+        netns_script_drift(
+            &tmp.path().join("integration-test"),
+            NETNS_SCRIPTS,
+            NETNS_EXCLUDED,
+        )
+        .expect("the gated set alone must plan cleanly");
+    }
+
+    /// Review finding on zl-zpr-dev-context#35 (zipline#103): a top-level
+    /// script whose name is not valid UTF-8 cannot be compared against
+    /// [`NETNS_SCRIPTS`] / [`NETNS_EXCLUDED`], yet the Makefile's byte-wise
+    /// `$(wildcard *-test.sh)` WOULD run it — so the guard must fail loudly
+    /// on such a name rather than silently treating the script as absent.
+    #[cfg(unix)]
+    #[test]
+    fn drift_guard_fails_closed_on_a_non_utf8_script_name() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = drift_fixture(NETNS_SCRIPTS);
+        let dir = tmp.path().join("integration-test");
+        let bad = std::ffi::OsStr::from_bytes(b"bad-\xff-test.sh");
+        std::fs::write(dir.join(bad), "#!/bin/sh\n").unwrap();
+        let error = netns_script_drift(&dir, NETNS_SCRIPTS, NETNS_EXCLUDED)
+            .expect_err("a non-UTF-8 script name must fail the guard, not vanish")
+            .to_string();
+        assert!(
+            error.contains("non-UTF-8"),
+            "must say why the name is unusable: {error}"
+        );
+    }
+
+    /// Review finding on zl-zpr-dev-context#35 (zipline#103): an exclusion
+    /// is only auditable with a reason. An entry like `("new-test.sh", "")`
+    /// must be a hard error — the whole table is validated, so an
+    /// empty-reason entry fails planning even before any script matches it.
+    #[test]
+    fn drift_guard_rejects_an_exclusion_without_a_reason() {
+        let mut scripts: Vec<&str> = NETNS_SCRIPTS.to_vec();
+        scripts.push("new-test.sh");
+        let tmp = drift_fixture(&scripts);
+        let error = netns_script_drift(
+            &tmp.path().join("integration-test"),
+            NETNS_SCRIPTS,
+            &[("new-test.sh", "")],
+        )
+        .expect_err("an exclusion with an empty reason must be a hard error")
+        .to_string();
+        assert!(
+            error.contains("new-test.sh") && error.contains("reason"),
+            "must name the entry and the missing reason: {error}"
+        );
+        // Whitespace is not a reason either.
+        let error = netns_script_drift(
+            &tmp.path().join("integration-test"),
+            NETNS_SCRIPTS,
+            &[("new-test.sh", "  ")],
+        )
+        .expect_err("a whitespace-only reason must be a hard error")
+        .to_string();
+        assert!(
+            error.contains("new-test.sh"),
+            "must name the offending entry: {error}"
+        );
+    }
+
+    /// Every script gets the `*_BIN` overrides pointing at `dist/` and
     /// the system valkey — nothing is ever copied into `integration-test/`
-    /// (zipline#62).
+    /// (zipline#62). `ZPR_ATTR_SERVER_BIN` and `ZPDUMP_BIN` joined in
+    /// zipline#103: `attr-query-test.sh` requires the reference attribute
+    /// server, and a build worktree has no symlinks next to the scripts, so
+    /// the plan must point at the staged binaries (the Makefile's
+    /// `FORWARD_ENV` already forwards both).
     #[test]
     fn netns_plan_points_the_bin_overrides_at_dist() {
         let plan = netns_plan(
@@ -2437,13 +2680,19 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
-        );
+        )
+        .expect("a fixture-free plan is clean");
         // Every script except a2a runs the dist/ ph.
         let one_node = &plan.scripts[0];
         assert_eq!(env_of(one_node, "PH_BIN"), Some("/b/dist/ph"));
         assert_eq!(env_of(one_node, "PH_DEBUG_BIN"), Some("/b/dist/ph-cli"));
         assert_eq!(env_of(one_node, "VS_BIN"), Some("/b/dist/vs"));
         assert_eq!(env_of(one_node, "VS_ADMIN_BIN"), Some("/b/dist/vs-admin"));
+        assert_eq!(
+            env_of(one_node, "ZPR_ATTR_SERVER_BIN"),
+            Some("/b/dist/zpr-attr-server")
+        );
+        assert_eq!(env_of(one_node, "ZPDUMP_BIN"), Some("/b/dist/zpdump"));
         assert_eq!(
             env_of(one_node, "VALKEY_SERVER_BIN"),
             Some("/usr/bin/valkey-server")
@@ -2464,7 +2713,8 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
-        );
+        )
+        .expect("a fixture-free plan is clean");
         for script in &plan.scripts {
             assert!(
                 script.env_remove.is_empty(),
@@ -2577,7 +2827,8 @@ mod tests {
             true,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
-        );
+        )
+        .expect("a fixture-free plan is clean");
         for script in &plan.scripts {
             assert_eq!(
                 env_of(script, "ZPR_TEST_VERBOSE"),
@@ -2601,7 +2852,8 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
-        );
+        )
+        .expect("a fixture-free plan is clean");
         for script in &plan.scripts {
             if script.script == "a2a-pubkey-test.sh" {
                 let prep = script.prep.as_ref().expect("a2a needs a prep build");
