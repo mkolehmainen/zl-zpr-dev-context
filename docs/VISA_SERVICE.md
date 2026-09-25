@@ -434,7 +434,11 @@ entirely. Naming it in policy does not help either, because both authority keys
 resolve to the default trusted service. The accepted cost: a genuinely unused
 identity vendor is now woven, and the compiler logs an `info` line for each one
 retained this way. Attribute overlays (`file`) are still pruned when
-unreferenced. ([zipline#23](https://github.com/mkolehmainen/zipline/issues/23))
+unreferenced — unless they vend a visa-service-interpreted attribute
+(`device.zpr_addr`, `device.hostname`); see the retention rule under
+*Static addresses are granted, never asserted* below
+([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)).
+([zipline#23](https://github.com/mkolehmainen/zipline/issues/23))
 
 **Attribute chaining runs on identity attributes, and needed no change.** An
 OIDC arm stamps `user.sub`, `sub` is a declared identity attribute, and a `file`

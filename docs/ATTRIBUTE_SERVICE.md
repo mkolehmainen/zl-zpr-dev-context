@@ -142,9 +142,12 @@ with a message saying so. Reaching the service over ordinary IP is the only
 mode.
 
 The weaver treats an attribute service exactly like a `file` store: retained
-when a policy statement references one of its attributes, pruned otherwise. It
-declares no identity attributes, so the identity-vendor retention rule
-(ZPL.md) never applies.
+when a policy statement references one of its attributes, or when it vends a
+visa-service-interpreted attribute (`device.zpr_addr`, `device.hostname` — see
+the well-known attributes discussion in *The model* above and
+[zipline#105](https://github.com/mkolehmainen/zipline/issues/105)); pruned
+otherwise. It declares no identity attributes, so the identity-vendor
+retention rule (ZPL.md) never applies.
 
 ### Compiled form
 
