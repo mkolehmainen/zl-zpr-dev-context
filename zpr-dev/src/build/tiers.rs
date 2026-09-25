@@ -934,20 +934,59 @@ const NETNS_EXCLUDED: &[(&str, &str)] = &[];
 /// invisible, matching the Makefile's own `$(wildcard *-test.sh)` glob. A
 /// missing `integration-test/` passes — there is nothing to judge, and the
 /// tier run itself reports a broken worktree.
+///
+/// The guard fails closed (review findings on zl-zpr-dev-context#35): a
+/// directory entry that cannot be inspected or a script name that is not
+/// valid UTF-8 is an error, never silently absent — the Makefile's byte-wise
+/// glob would still run such a script, so dropping it here would report
+/// complete coverage falsely. And every exclusion must carry a nonempty
+/// reason: the whole table is validated up front, so an unauditable entry
+/// like `("x-test.sh", "")` fails planning even before any script matches.
 fn netns_script_drift(integration: &Path, gated: &[&str], excluded: &[(&str, &str)]) -> Result<()> {
+    // The exclusion table must be auditable before it is consulted: an
+    // entry without a reason could exempt a script with no recorded
+    // justification, which is exactly what the guard exists to prevent.
+    for (name, reason) in excluded {
+        if reason.trim().is_empty() {
+            bail!(
+                "NETNS_EXCLUDED entry {name:?} has no reason: every exclusion \
+                 must record why the script deliberately does not run \
+                 (zipline#103)"
+            );
+        }
+    }
     if !integration.is_dir() {
         return Ok(());
     }
     // Every top-level `*-test.sh`, sorted so the error is deterministic.
-    let mut strays: Vec<String> = std::fs::read_dir(integration)
-        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", integration.display()))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().is_file())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.ends_with("-test.sh"))
-        .filter(|name| !gated.contains(&name.as_str()))
-        .filter(|name| !excluded.iter().any(|(excl, _)| excl == name))
-        .collect();
+    // Per-entry errors and non-UTF-8 names fail the scan rather than being
+    // skipped: a name the guard cannot judge is not a name it may ignore.
+    let mut strays: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(integration)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", integration.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!("cannot read an entry in {}: {e}", integration.display())
+        })?;
+        if !entry.path().is_file() {
+            continue;
+        }
+        let name = entry.file_name().into_string().map_err(|raw| {
+            anyhow::anyhow!(
+                "non-UTF-8 file name {raw:?} in {}: the netns drift guard \
+                 cannot compare it against NETNS_SCRIPTS/NETNS_EXCLUDED — \
+                 rename it (zipline#103)",
+                integration.display()
+            )
+        })?;
+        if !name.ends_with("-test.sh") {
+            continue;
+        }
+        if gated.contains(&name.as_str()) || excluded.iter().any(|(excl, _)| *excl == name) {
+            continue;
+        }
+        strays.push(name);
+    }
     strays.sort();
     if strays.is_empty() {
         return Ok(());
