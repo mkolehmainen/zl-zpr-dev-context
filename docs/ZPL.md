@@ -69,8 +69,10 @@ runtime because attribute values change.
 ### Policy versus configuration
 
 ZPL deliberately holds no configuration. Everything
-installation-specific — static addresses, protocols, topology, trusted
-sources, which enforcement mechanism covers which part of the
+installation-specific — static addresses (node addresses in the `.zplc`
+topology; adapter addresses in a trusted service's store, granted as
+`device.zpr_addr` — never in policy text, zipline#109), protocols, topology,
+trusted sources, which enforcement mechanism covers which part of the
 network — lives in the **configuration description** (the `.zplc` file). The
 compiler combines the two to emit enforcement rules per network region.
 

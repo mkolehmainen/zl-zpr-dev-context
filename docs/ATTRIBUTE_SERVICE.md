@@ -82,7 +82,7 @@ service — an attribute service, a `file` store keyed on the device CN —
 assigns the device that ZPR address at connection time, independently of
 anything the peer requests: a device that asks for no address still comes up
 at the granted one, and a peer request cannot select or override the value.
-The grant is subject to the same checks as a policy-pinned static address; a
+The grant is subject to the same checks as a node's pinned static address; a
 malformed or conflicting grant rejects the connection loudly. See
 VISA_SERVICE.md, *Authenticating actors*, for the rules. A store vending only
 `device.zpr_addr` needs no ZPL reference to stay woven: like `device.hostname`,

@@ -79,15 +79,18 @@ a service, and allow both hops. The resolver appears as the *subject* of an
 `Allow` — this is a supported ZPL shape:
 
 ```
-Define zpr-dns as a service.        # UDP/53, pinned provider address
+Define zpr-dns as a service.        # UDP/53, provider address granted by a trusted service
 Define vs-admin as a service.       # TCP/8182, provided by the VS adapter itself
 Allow access:all users to access zpr-dns.
 Allow zpr-dns to access vs-admin.
 ```
 
-In the `.zplc`, the resolver is pinned to a static address so clients can be
-pointed at it, and `vs-admin` is provided by the visa service's own adapter
-CN (`vs.zpr`), which is what puts `fd5a:5052::1` behind the name:
+In the `.zplc`, the resolver gets its static address from a trusted service
+that vends `device.zpr_addr` keyed on the resolver's adapter CN (an authored
+`["zpr.addr", ...]` provider pin is a compile error since zipline#109 — in
+dns-demo the existing `machines` store carries the grant), so clients can be
+pointed at a fixed address. `vs-admin` is provided by the visa service's own
+adapter CN (`vs.zpr`), which is what puts `fd5a:5052::1` behind the name:
 
 ```toml
 [protocols.dns]
@@ -98,15 +101,26 @@ port = 53
 l4protocol = "TCP"
 port = 8182
 
+[trusted_services.machines]
+api = "file"
+returns_attributes = ["hostnames -> device.hostname{}", "zpr_addr -> device.zpr_addr"]
+expiration_seconds = 3600
+
 [services.zpr-dns]
 protocol = "dns"
 port = 53
-provider = [["device.zpr.adapter.cn", "dns.demo"], ["zpr.addr", "fd5a:5052:8888::53"]]
+provider = [["device.zpr.adapter.cn", "dns.demo"]]   # static addr granted by `machines` (device.zpr_addr)
 
 [services.vs-admin]
 protocol = "vs-admin"
 port = 8182
 provider = [["device.zpr.adapter.cn", "vs.zpr"]]
+```
+
+with the resolver's address in the store file (`machines.json`):
+
+```json
+{ "device.zpr.adapter.cn": { "dns.demo": { "zpr_addr": ["fd5a:5052:8888::53"] } } }
 ```
 
 The resolver's CN also needs a `[bootstrap]` key entry. Keep service names

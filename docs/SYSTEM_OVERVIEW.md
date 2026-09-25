@@ -260,8 +260,10 @@ an endpoint joins. In the current implementation:
 | `fd5a:5052:8888::/64` | Static, policy-granted (de facto range; see below) |
 | `10.192.0.0/22`, `10.128.0.0/22` | IPv4 equivalents for nodes and adapters |
 
-An endpoint may be granted a static address by policy — a `zpr_address` on a
-node or a `zpr.addr` pin in an adapter's `define`. **Static addresses live in
+An endpoint may hold a static address from the network's own configuration — a
+`zpr_address` on a node — or be granted one by a trusted service vending
+`device.zpr_addr` (zipline#99); an authored `zpr.addr` pin in policy text is a
+compile error (zipline#109). **Static addresses live in
 a different address space from the pools the visa service manages**: at join
 time the visa service rejects a static address that is inside a managed pool
 (so the pool can never double-allocate it), outside `fd5a:5052::/32`, equal to
