@@ -84,14 +84,12 @@ anything the peer requests: a device that asks for no address still comes up
 at the granted one, and a peer request cannot select or override the value.
 The grant is subject to the same checks as a policy-pinned static address; a
 malformed or conflicting grant rejects the connection loudly. See
-VISA_SERVICE.md, *Authenticating actors*, for the rules. Note the same
-pruning trap DNS.md records for `device.hostname`: the compiler drops a
-trusted service that no ZPL rule references, so a store vending only
-`device.zpr_addr` is pruned — and the grant silently never happens — unless a
-**woven statement** references the attribute: an `allow` rule or a service
-definition, not a bare `define`. The known-working form is key-presence on
-the object device spec, e.g.
-`Allow access:all users to access ping on zpr_addr: devices.`
+VISA_SERVICE.md, *Authenticating actors*, for the rules. A store vending only
+`device.zpr_addr` needs no ZPL reference to stay woven: like `device.hostname`,
+it is a visa-service-interpreted attribute, and the compiler retains any
+trusted service vending one
+([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)), emitting
+an `info` diagnostic per retention.
 
 ### The four operations
 

@@ -123,10 +123,13 @@ returns_attributes = ["hostnames -> device.hostname{}"]
 expiration_seconds = 3600
 ```
 
-Note the pruning trap: the compiler drops a trusted service that no ZPL rule
-references, and the index only fills from a woven store. Something in the ZPL
-must mention the attribute — `dns-demo` does it with
-`Allow access:all users to access ping on hostname: devices.`
+Note on pruning: the compiler drops a trusted service that no ZPL rule
+references — but `device.hostname` is visa-service-interpreted, so a store
+vending it is retained anyway
+([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)): the
+weaver keeps any service whose `returns_attributes` maps to `device.hostname`
+or `device.zpr_addr`, emitting an `info` diagnostic. No ZPL reference is
+needed to keep the hosts index filling.
 
 **3. An API key** with the least-privilege `resolve` permission, minted on the
 visa service host and readable only by the resolver:
