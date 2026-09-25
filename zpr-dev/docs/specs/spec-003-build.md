@@ -1,11 +1,10 @@
 # SPEC-003: `zpr-dev build` — compatible build sets
 
-Status: draft — B1 (schemas, ref resolution, `--dry-run`) implemented; gates,
-builds and tiers specified here land in B2–B5
+Status: implemented (B1–B6, umbrella `mkolehmainen/zipline#57`, complete
+2026-09-21); the netns container fallback followed (`zipline#90`)
 Date: 2026-09-17
 Parent spec: `spec-001-zpr-dev.md`
-Master plan: `docs/plans/2026-09-17-build-sets.md` (umbrella
-`mkolehmainen/zipline#57`)
+Design rationale: §10
 
 `zpr-dev build` builds the whole ZPR binary set — `vs`, `vs-admin`, `vsapikey`,
 `zpt`, `zpr-dashboard`, `zpr-attr-server`, `zplc`, `zpdump`, `ph`, `ph-cli`,
@@ -35,21 +34,18 @@ against.
 
 ### 1.2 Implementation status
 
-The spec is written whole so the gates and schemas can be reviewed together,
-but it lands in stages (master plan, "Issue map"):
+The spec was written whole so the gates and schemas could be reviewed
+together, and landed in stages:
 
 | Stage | Implements | Status |
 |---|---|---|
 | B1 | §2, §3 (schema + round-trip), §2.3 resolution, `--dry-run` (§7.2) | implemented |
-| B2 | §4 gates | specified only |
-| B3 | §5 worktrees, builds, `dist/`, emitted manifest, tarball | specified only |
-| B4 | §6 `unit` tier | specified only |
+| B2 | §4 gates | implemented — plus the `Cargo.lock` dual-version scan (zipline#69, §10) |
+| B3 | §5 worktrees, builds, `dist/`, emitted manifest, tarball | implemented |
+| B4 | §6 `unit` tier | implemented |
 | B5 | §6 `netns` and `docker` tiers | implemented — including the netns tier's container fallback (zipline#92/#93) |
 
-Until B3 lands, the `resolved:` block of §3 is a fixed shape with empty or
-defaulted fields; B3–B5 populate it.
-
-### 1.3 Out of scope (recorded in the master plan, not scheduled)
+### 1.3 Out of scope (recorded, not scheduled; see §10.3)
 
 No `[patch]` or path override of `zl-zpr-common`; no container build; no CI
 wiring; no parallel repository builds or `target/` reuse; no signing or
@@ -119,8 +115,8 @@ checkout:
 - **No fetch, ever.** Resolution runs against whatever the local checkout
   already has; `zpr-dev` treats a fetch as a mutation (spec-001 §5.1), and
   `--dry-run` must not perform one. A tag pushed but never fetched therefore
-  fails as an unknown ref; an opt-in `--fetch` is open question 4 on the
-  umbrella, not part of this spec.
+  fails as an unknown ref; an opt-in `--fetch` is recorded in §10.3,
+  not part of this spec.
 - An unknown ref is an error naming **both** the repository and the ref. A
   repository directory that is missing, or is not a Git repository, is an
   error naming the repository.
@@ -453,8 +449,9 @@ nothing; the build directory still exists afterwards (zipline#71).
 - **Round-trip test**: serialize a resolved set as the emitted manifest,
   re-read it as an input build set, and assert the resolution is identical
   and the `resolved:` block is ignored.
-- Gate tests (B2) and worktree/recipe/tier tests (B3–B5) are specified in the
-  master plan's task sections and land with their stages.
+- Gate tests (B2) and worktree/recipe/tier tests (B3–B5) live beside the code
+  in `src/build/`; gate 3's tests cite `libeval/src/pio.rs`'s `check_version`
+  as their oracle so the two can be compared by eye.
 
 ## 9. Dependencies
 
@@ -462,3 +459,137 @@ B1 adds no crates. `toml` (reading pins out of `Cargo.toml`, gate 1) arrives
 with B2, and `sha2` (binary digests) with B3 — each recorded in spec-001 §6.1
 when it lands, so the manifest and the spec never disagree. No
 `cargo-metadata`, no `git2`, no async runtime.
+
+---
+
+## 10. Design decisions
+
+Rationale carried over from the completed master plans, which were retired
+once shipped. Full plan text is in git history:
+
+- `git show a35b224:docs/plans/2026-09-17-build-sets.md` — umbrella
+  [zipline#57](https://github.com/mkolehmainen/zipline/issues/57)
+- `git show a35b224:docs/plans/2026-09-23-netns-docker-fallback.md` —
+  umbrella [zipline#90](https://github.com/mkolehmainen/zipline/issues/90)
+
+### 10.1 Build sets
+
+**Why build sets exist.** Nothing said "these binaries go together", and each
+thing that makes a set compatible was invisible at build time: cargo pins
+(not checkouts) decide what compiles, the visa service hardcodes a
+near-exact compiler version, and the tests that would catch a bad set needed
+foreign binaries staged by hand.
+([zipline#57](https://github.com/mkolehmainen/zipline/issues/57))
+
+**A build set does not pin `zl-zpr-common`.** The first draft pinned it and
+compared that ref to the consumers' tags — backwards, since nothing in the
+set compiles the checkout. The meaningful invariant is that the consumers
+*agree*, at whatever tag; generalizing that to every shared git dependency
+(the `zpr-utils` crates, the Cap'n Proto fork) came free.
+([zipline#57](https://github.com/mkolehmainen/zipline/issues/57))
+
+**Gate 3 is static *and* dynamic.** Parsing `POLICY_MIN_COMPILER_*` gives a
+readable message before anything compiles; `pregen` with the set's own
+`zplc` proves it for real and cannot be fooled by a parser bug. An
+unparseable value is an error, because silently skipping the one check
+nothing else performs would be worse than failing.
+([zipline#59](https://github.com/mkolehmainen/zipline/issues/59))
+
+**No separate `vs-int` tier.** The visa service's `make test` already runs
+its integration tests; a separate tier would reimplement that sequencing and
+drift from it. ([zipline#61](https://github.com/mkolehmainen/zipline/issues/61))
+
+**Release for `dist/`, debug for `make test`, compiled twice.** Rather than
+force one profile, `dist/` is release (what demos and tarballs use) and the
+netns scripts are pointed at it via `PH_BIN`/`VS_BIN`; the double compile is
+the price of not reimplementing `make release`.
+([zipline#60](https://github.com/mkolehmainen/zipline/issues/60))
+
+**Reproducible inputs, not reproducible binaries.** The emitted manifest
+guarantees the same sources and pins; `sha256` per binary is for comparison
+only, since cargo output varies with toolchain and path. The manifest is
+emitted whenever the gates pass, even on a later failure, because the most
+interesting set to reproduce is the one that broke.
+([zipline#60](https://github.com/mkolehmainen/zipline/issues/60))
+
+**Transitive pins are checked in `Cargo.lock`, not the manifests.** Gate 1
+reads manifests only, so a pin made inside a tagged git dependency
+(`zpr-utils-v0.2.2` pinning `zpr v0.8.1`) was invisible while both copies
+shipped. The fix scans each repository's resolved `Cargo.lock` for a
+ZPR-family crate at two versions (`gates::gate_lock_dual_versions`); a
+finding names the lock, not the `Cargo.toml` line, because that file lives
+inside a tagged artifact the workspace does not check out. An unreadable
+lock is an error, not a skip.
+([zipline#69](https://github.com/mkolehmainen/zipline/issues/69))
+
+**A known drift is fixed, not suppressed.** The first run's `rcu`
+disagreement was a stale repo-wide tag in `zl-zpr-common` (same source,
+identical `rcu/src/`); it was re-pinned in `zl-zpr-common` `v0.28.0` rather
+than recorded in `allow_pin_drift`, whose reason would have cited a closed
+issue and left an exception no reader could justify.
+([zipline#18](https://github.com/mkolehmainen/zipline/issues/18),
+[zipline#63](https://github.com/mkolehmainen/zipline/issues/63))
+
+**The committed manifest is a set's identifier.** Sets live in
+`zl-zpr-dev-context/build-sets/`, beside `workspace.yaml`; no per-repository
+git tag is cut for a set, because a sha is a stronger reference than a tag
+that can move. ([zipline#63](https://github.com/mkolehmainen/zipline/issues/63))
+
+### 10.2 netns container fallback
+
+**Automatic fallback, no flag.** Host route runnable → host; otherwise a
+reachable Docker daemon → container; otherwise skip or error as before. The
+fallback covers any host-route miss (sudo, `valkey-server`, `python3`), not
+only sudo. `--prompt-for-sudo` stays an explicit host request: a failed
+prime falls to the container, but no terminal on stdin still exits 1,
+because guessing the container would hide a misused flag.
+([zipline#92](https://github.com/mkolehmainen/zipline/issues/92))
+
+**`zpr-dev` drives `zl-zpr-core`'s Makefile; it never owns `docker run`.**
+One `make docker-test TEST=<script> WORKSPACE=<build-dir>` per script keeps
+the manifest's per-script breakdown and `zpr-dev`'s explicit script list;
+the Makefile's run-all target would collapse seven results into one and use
+its own glob. `WORKSPACE` is overridden from the `make` command line, which
+beats the Makefile's `:=` — the first draft wrongly scheduled a `?=` change
+in `zl-zpr-core` (zipline#91, withdrawn); `:=` is better anyway, since an
+exported `WORKSPACE` in the operator's shell cannot leak into the mount.
+([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+
+**`VALKEY_SERVER_BIN` is removed from the child environment, not merely
+omitted.** The Makefile forwards it into the container, where a host path
+would not exist, and the child inherits the operator's environment; so the
+plan removes it explicitly (`env_remove`).
+([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+
+**Provenance is `sudo: container`, and it quotes the real reason.** Keeping
+the `sudo` field name preserves the manifest shape; the coverage note and
+the stdout header carry the host route's actual failure text, because a
+fixed "no passwordless sudo" would record false provenance when the miss
+was `valkey-server`. ([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+
+**A selected-but-unrunnable route is refused at the gate, never at run
+time.** Skipped outcomes do not fail a build, so a run-time skip behind a
+passing gate would let an explicitly requested tier exit 0 without running.
+([zipline#92](https://github.com/mkolehmainen/zipline/issues/92))
+
+### 10.3 Deferred
+
+Recorded, not scheduled; none has an open issue.
+
+- **`--fetch`.** Opt-in fetch before ref resolution is cheap; making it the
+  default would break `zpr-dev`'s rule that a fetch is a mutation.
+- **`--link-common`.** An untagged `zl-zpr-common` cannot be tested by this
+  tool: cut a tag. If that genuinely stalls work, a flag that rewrites only
+  a throwaway worktree is the shape to add.
+- **`--in-container` builds.** `dist/` is host-built, so a host glibc newer
+  than the container image's can break the `docker` tier and the netns
+  container route. Workaround: `make docker-image BASE_IMAGE=ubuntu:<host
+  release>` in `zl-zpr-core/integration-test/` before the build. No
+  `BASE_IMAGE` knob in `zpr-dev` until someone hits it.
+- **`--netns-runner host|docker|auto`**, to force the container on a
+  sudo-capable host.
+- **Shared per-repository `CARGO_TARGET_DIR`**, the first thing to try if the
+  roughly fifteen-minute cold build becomes the bottleneck.
+- **Narrowing `--privileged`** to a capability set — belongs to
+  `zl-zpr-core/integration-test/Makefile`.
+- **Converting `containerized-demo`'s release flow** to `zpr-dev build`.

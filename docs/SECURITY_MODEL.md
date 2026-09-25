@@ -222,8 +222,8 @@ place. It cannot extend past `auth_time + max_auth_age_seconds`, cannot renew
 an actor docked elsewhere, cannot change the actor's `sub` or its attributes,
 and cannot replay a token twice. The cryptographically stronger alternative —
 a user-held keypair bound to `sub` at first login — is recorded as deferred in
-`docs/plans/2026-09-16-silent-oidc-reauth.md` (X3c) and is the thing to
-revisit if this relaxation fails a later review.
+`docs/OIDC.md` (*Deferred*) and is the thing to revisit if this relaxation
+fails a later review.
 
 **Running as root: the mitigation holds, conditionally.** The refresh token
 that makes renewal possible is held in memory by `ph-cli auth-agent` for the

@@ -512,7 +512,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         // cache against the wrong ticket, so the honest answer is an error
         // naming the requirement — never a hang, never a silent skip. This
         // also precedes the runner selection: the flag was misused, and
-        // guessing the container would hide that (master plan N2).
+        // guessing the container would hide that (zipline#92).
         if probes.sudo_prime == Some(tiers::PrimeOutcome::NoTty) {
             eprintln!(
                 "error: --prompt-for-sudo needs a terminal on stdin \
@@ -1327,7 +1327,7 @@ impl Tier {
     /// The manifest record of a tier that did not run, with why: a failed
     /// prerequisite probe, or a repository the set does not include. Always
     /// recorded — a skipped tier must be visible in the manifest and never
-    /// presented as coverage (spec-003 §6; master plan B5 constraint).
+    /// presented as coverage (spec-003 §6; zipline#62).
     pub fn skipped(reason: &str) -> Tier {
         Tier {
             status: "skipped".to_string(),
@@ -3253,7 +3253,7 @@ allow_pin_drift:
 
     /// A probe-skipped tier serializes as `status: skipped` with the probe's
     /// reason and no repos breakdown — visible in the manifest, never
-    /// presented as coverage (master plan B5 constraint).
+    /// presented as coverage (zipline#62).
     #[test]
     fn tier_skipped_serializes_status_and_reason() {
         let tier = Tier::skipped("docker not found");

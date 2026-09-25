@@ -280,8 +280,8 @@ cbpf-rs   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "
 > #18: `zl-zpr-common` pinned `rcu` by the repo-wide tag `zpr-utils-v0.1.0`
 > rather than `rcu`'s own tag line, so it never followed `rcu`'s releases;
 > `zl-zpr-common` `v0.28.0` re-pins it to `rcu-v0.1.2` (same source, and for
-> `rcu/src/` an identical tree). The full history is in
-> `docs/plans/2026-09-17-build-sets.md`, *Finding 1*.
+> `rcu/src/` an identical tree). Why it was fixed rather than suppressed is in
+> `zpr-dev/docs/specs/spec-003-build.md`, §10 ("Design decisions").
 >
 > Gate 1 of `zpr-dev build` (see "Compatible build sets" below) now checks
 > this class of drift on every set: the same crate at two tags, or at one tag
@@ -428,16 +428,16 @@ seconds, not after fifteen minutes of cargo. Findings accumulate into one
    at runtime, so it is checked statically here and dynamically again by the
    `unit` tier's `pregen`.
 
-**What gate 1 does *not* check.** It reads the root `Cargo.toml` and literal
-workspace members of the repositories it scans — **manifests only, never
-`Cargo.lock`** — so a pin carried *transitively* by a git dependency is
-invisible. Concretely: `zpr-utils-v0.2.2`'s own manifest pins `zpr v0.8.1`,
-so `zl-zpr-core/Cargo.lock` holds two `zpr` crates while gate 1 truthfully
-reports the *manifest* pins consistent. `allow_pin_drift` cannot express this
-either — there is no finding to suppress. A green gate 1 is agreement among
-the manifests it read, not a single-version guarantee for the compiled
-binaries; [zipline#69](https://github.com/mkolehmainen/zipline/issues/69)
-tracks the blind spot and whether to widen the gate.
+**Transitive pins.** Gate 1 reads manifests only — the root `Cargo.toml` and
+literal workspace members — so a pin carried *transitively* by a git
+dependency (`zpr-utils-v0.2.2`'s own manifest pinning `zpr v0.8.1`) never
+appears in it. A complementary scan
+([zipline#69](https://github.com/mkolehmainen/zipline/issues/69),
+`gates::gate_lock_dual_versions`) reads each repository's resolved
+`Cargo.lock` and reports any ZPR-family crate present at two versions. Its
+finding names the lock and the resolved sources, not the `Cargo.toml` line
+that pinned the stale version, which lives inside a tagged dependency the
+workspace does not check out.
 
 ### The test tiers
 
