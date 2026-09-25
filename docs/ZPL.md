@@ -318,7 +318,13 @@ identity_attributes = [ "bas_id" ]   # service-side names, not ZPL names
 
 **A trusted service that vends identity attributes is always woven into the
 compiled policy**, whether or not any ZPL statement references its returned
-attributes (zipline#23). Every other trusted service is retained by reference,
+attributes (zipline#23). **So is a trusted service that vends a
+visa-service-interpreted attribute** — `device.zpr_addr` (the static-address
+grant) or `device.hostname` (the DNS hosts index), listed in
+`zpl::KATTR_VS_INTERPRETED` — because the visa service reads those attributes
+itself, so a ZPL reference says nothing about whether the store is needed
+([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)). Every
+other trusted service is retained by reference,
 with one transitive exception: the weaver marks a service used when policy
 names one of its attributes, then `resolve_trusted_service_providers` widens
 that set to a fixpoint through *provider* attributes — a service whose
@@ -335,13 +341,16 @@ attribute and value, and the compiler cannot see a JSON file's keys. So an
 still survive compilation: the visa service needs it to authenticate the user
 and to mint the identity attribute the file store is keyed on. The compiler
 emits an `info` diagnostic naming each service retained by the identity-vendor
-rule, and a `file` or `validation/2` service that declares no identity
+rule (and each retained as a visa-service-interpreted vendor), and a `file` or
+`validation/2` service that declares no identity
 attributes and sits outside the reference-plus-provider closure is still
 pruned as before.
 
 A worked pair to read first: `zl-zpr-compiler/test-data/m3-ping-and-http.zpl` and
 its `.zplc`. For the identity-vendor retention rule, see
-`test-data/test-oidc-file-interplay.zpl` / `.zplc`.
+`test-data/test-oidc-file-interplay.zpl` / `.zplc`; for the
+visa-service-interpreted retention rule, `test-data/retain-vs-interpreted.zpl`
+/ `.zplc`.
 
 ### Building and testing the compiler
 

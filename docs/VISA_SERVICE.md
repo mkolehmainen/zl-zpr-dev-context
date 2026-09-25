@@ -434,7 +434,11 @@ entirely. Naming it in policy does not help either, because both authority keys
 resolve to the default trusted service. The accepted cost: a genuinely unused
 identity vendor is now woven, and the compiler logs an `info` line for each one
 retained this way. Attribute overlays (`file`) are still pruned when
-unreferenced. ([zipline#23](https://github.com/mkolehmainen/zipline/issues/23))
+unreferenced — unless they vend a visa-service-interpreted attribute
+(`device.zpr_addr`, `device.hostname`); see the retention rule under
+*Static addresses are granted, never asserted* below
+([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)).
+([zipline#23](https://github.com/mkolehmainen/zipline/issues/23))
 
 **Attribute chaining runs on identity attributes, and needed no change.** An
 OIDC arm stamps `user.sub`, `sub` is a declared identity attribute, and a `file`
@@ -493,13 +497,20 @@ granted address. Choosing an address is therefore no new power; the static-range
 checks apply to every source alike.
 ([zipline#99](https://github.com/mkolehmainen/zipline/issues/99))
 
-**An address-only store stays woven through a ZPL reference, not through a
-compiler change.** A `file` store that vends only `device.zpr_addr` vends no
-identity attributes, so it is pruned unless a woven statement references the
-attribute (e.g. `... on zpr_addr: devices`), the same trap and fix as
-`device.hostname` in [DNS.md](DNS.md). Without the reference the adapter comes
-up on a pool address.
-([zipline#99](https://github.com/mkolehmainen/zipline/issues/99))
+**A store vending a visa-service-interpreted attribute is retained by the
+compiler.** A `file` store that vends only `device.zpr_addr` vends no identity
+attributes and no ZPL-referenced attributes, so reference-based pruning used to
+drop it — and the grant silently never happened (the device came up on a pool
+address). The weaver now retains any trusted service whose `returns_attributes`
+maps to a visa-service-interpreted attribute (`device.zpr_addr`,
+`device.hostname` — `zpl::KATTR_VS_INTERPRETED` in `zl-zpr-compiler/src/zpl.rs`,
+kept in sync with the visa-service consumers), the same way it retains identity
+vendors, emitting an `info` diagnostic per retention. Any trusted-service API
+qualifies, because any declared service may grant. The accepted cost is that an
+unused networked store vending one of these attributes is woven — the same
+trade-off as identity vendors. No ZPL reference is needed to keep such a store
+woven.
+([zipline#105](https://github.com/mkolehmainen/zipline/issues/105))
 
 **The visa service's own address was missed by the plan.** Nothing could supply
 `fd5a:5052::1`, and the non-evicting actor add refused the adapter's re-add over
@@ -514,10 +525,6 @@ No tracker issues are filed for these unless linked.
 - **Multi-valued `user.zpr.authority`.** More faithful, but it touches
   evaluation semantics and every consumer of the key. Revisit only if a
   deployment needs two concurrent user authorities.
-- **Compiler retention of visa-service-interpreted attribute providers**
-  (`device.zpr_addr`, `device.hostname`). A retain pass like
-  `retain_identity_vendors` would remove the ZPL-reference trap for both.
-  Compiler-only, no schema impact.
 - **Compile-time pool check.** Once the pool ranges are stable enough to share
   through `zl-zpr-common`.
 - **Retiring `zpr.addr` in `define ... with`**
