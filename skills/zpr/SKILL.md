@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.5.0
+version: 2.6.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -129,6 +129,15 @@ and nowhere else:
   itself pickable — it is a container for work, not work. Nothing needs configuring
   when you file the next one. Because a closed umbrella can still have open children,
   the sub-issue order is read from issues in every state.
+
+  **Umbrella close-out (zipline#95 postmortem):** an umbrella whose children changed
+  behavior is not done when its last child merges — it is done when the full
+  integration tier (netns/docker) has run green at tip AFTERWARDS. Plans must give
+  that run an owner: a final integration child ("re-run the integration tier at tip
+  after the last code child merges"), because a cross-cutting acceptance criterion
+  attached to a task that merges EARLIER is structurally unverifiable — #96 carried
+  "netns passes again after A1/A2" but merged before either existed, so nobody ran
+  it and three broken PRs merged on green unit gates (zipline#102).
 
 Everything else that states an order — the `**Blocked by:**` line in each issue body,
 the plan document's *Issue map* and dependency graph, the board's `Ready`/`Backlog`
@@ -279,6 +288,14 @@ against a misread issue:
   from it, that is a new decision: comment on the issue and wait for another `/go`
   rather than deciding alone. Escalate rather than expand scope — in particular, never
   touch a repository the issue does not name.
+- **Post-merge breakage is an escalation, never a footnote (zipline#95 postmortem).**
+  If verification (e2e, integration run, demo topology) shows that already-MERGED work
+  breaks tip, file the tracker issue(s) immediately — self-contained body, evidence
+  linked — and say plainly that the feature is NOT done. Never report it as an
+  optional "follow-up flagged, your call whether to file", and never declare an epic
+  or pipeline drained while such a finding is unfiled: the #99 e2e found both #102
+  regressions the night they merged, reported them as discretionary follow-ups, and
+  the operator discovered the breakage himself the next morning.
 
 ## Coding conventions
 
@@ -489,6 +506,17 @@ A task is done only when ALL of these hold for the PR:
    no remote gate to wait for. Run the gate from the repository's `Makefile`, except
    in `zl-zpr-core`, which has no root `make check` (use the CI-equivalent commands in
    `docs/BUILD.md`).
+   **Gate escalation:** if the change touches connection authorization or addressing
+   semantics — `libeval`'s `approve_connection`, `vs`'s `authorize_connection` /
+   `connection_control`, or the adapter's dock/address paths — the unit gate is NOT
+   sufficient: the netns integration tier is part of THIS condition. Run it via
+   `make docker-test` in `zl-zpr-core` (or `zpr-dev build --test netns|docker` with a
+   manifest pinning the branch under test), and quote the result in the PR beside the
+   unit gate. This exists because zipline#95 merged three visa-service PRs on green
+   unit gates while #97 had broken every netns test (zipline#102); Docker provably ran
+   the full tier on this host the same day. If Docker genuinely fails, say so
+   explicitly in the PR and hand the run to the operator — never silently downgrade
+   to the unit gate.
 3. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
    `DIRTY`, or `BLOCKED`). `UNSTABLE` is acceptable **only** when it traces to check
    runs recorded before Actions was switched off, as on `zl-zpr-core#1`; confirm that
