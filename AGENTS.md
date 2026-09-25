@@ -48,6 +48,7 @@ paths, so they can be opened directly.
 | Building a compatible set of binaries, or working a build-set issue | `docs/BUILD.md` ("Compatible build sets"), `zpr-dev/docs/specs/spec-003-build.md` |
 | Changing how `zpr-dev build` gates or runs the netns test tier, or its Docker fallback | `zpr-dev/docs/specs/spec-003-build.md` ("Test tiers"), `docs/BUILD.md` |
 | Changing how the visa service assigns, pins or checks a ZPR address | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
+| Working an issue under zipline#106 (retiring authored `zpr.addr` pins in favour of `device.zpr_addr` grants) | `docs/plans/2026-09-25-retire-authored-address-pins.md`, `docs/VISA_SERVICE.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
