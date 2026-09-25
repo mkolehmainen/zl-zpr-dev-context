@@ -1767,36 +1767,58 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                     let valkey = valkey
                         .clone()
                         .unwrap_or_else(|| PathBuf::from("valkey-server"));
-                    let plan = tiers::netns_plan(
+                    // Planning is fallible since zipline#103: an unlisted
+                    // top-level `*-test.sh` in the worktree fails the tier
+                    // here, before anything runs — a drifted script list is
+                    // a finding, never silently reduced coverage.
+                    match tiers::netns_plan(
                         &core,
                         &dist,
                         &valkey,
                         inputs.verbose,
                         &runner,
                         inputs.build_dir,
-                    );
-                    let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
-                    tier_failed = tier_failed || !outcome.passed;
-                    // A tier that ran carries how its sudo was satisfied —
-                    // derived from the runner (zipline#92): nopasswd host or
-                    // primed credentials, or root inside the privileged
-                    // container (zipline#93) — never conflated (zipline#70).
-                    let tier = match &runner {
-                        tiers::NetnsRunner::Host(sudo) => {
-                            Tier::from_outcome(&outcome).with_sudo(*sudo)
+                    ) {
+                        Err(error) => {
+                            eprintln!("error: {error:#}");
+                            tier_failed = true;
+                            tier_results.insert(
+                                "netns".to_string(),
+                                Tier {
+                                    status: "failed".to_string(),
+                                    reason: Some(error.to_string()),
+                                    repos: BTreeMap::new(),
+                                    sudo: None,
+                                },
+                            );
                         }
-                        tiers::NetnsRunner::Container { host_reason } => {
-                            // The coverage note exists iff the container
-                            // route actually ran, quoting the real host gap
-                            // (zipline#93, contract 2).
-                            netns_container_note = Some(format!(
-                                "netns integration tests ran in a privileged Docker container, \
-                                 not on the host (host route unavailable: {host_reason})"
-                            ));
-                            Tier::from_outcome(&outcome).with_sudo(tiers::SudoProvenance::Container)
+                        Ok(plan) => {
+                            let outcome = tiers::run_netns(&plan, &logs, inputs.quiet);
+                            tier_failed = tier_failed || !outcome.passed;
+                            // A tier that ran carries how its sudo was satisfied —
+                            // derived from the runner (zipline#92): nopasswd host or
+                            // primed credentials, or root inside the privileged
+                            // container (zipline#93) — never conflated (zipline#70).
+                            let tier = match &runner {
+                                tiers::NetnsRunner::Host(sudo) => {
+                                    Tier::from_outcome(&outcome).with_sudo(*sudo)
+                                }
+                                tiers::NetnsRunner::Container { host_reason } => {
+                                    // The coverage note exists iff the container
+                                    // route actually ran, quoting the real host gap
+                                    // (zipline#93, contract 2).
+                                    netns_container_note = Some(format!(
+                                        "netns integration tests ran in a privileged Docker \
+                                         container, not on the host (host route unavailable: \
+                                         {host_reason})"
+                                    ));
+                                    Tier::from_outcome(&outcome)
+                                        .with_sudo(tiers::SudoProvenance::Container)
+                                }
+                            };
+                            tier_results.insert("netns".to_string(), tier);
                         }
-                    };
-                    tier_results.insert("netns".to_string(), tier);
+                    }
                 }
             }
         }
