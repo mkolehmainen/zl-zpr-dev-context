@@ -19,7 +19,7 @@ Additional coding guidelines:
 ## INDEX
 
 - `docs/` -> technical knowledge loaded when relevant.
-- `docs/plans/` -> master plans for multi-issue features: ordering, cross-repository interface contracts, per-issue scope and acceptance criteria. Each opens with a `**Status:**` line; read it first, most of these plans are finished work.
+- `docs/plans/` -> master plans for multi-issue features that are **in flight**: ordering, cross-repository interface contracts, per-issue scope and acceptance criteria. A plan is retired when its umbrella closes -- decisions moved into the spec, file deleted -- so there is usually little or nothing here; `docs/plans/README.md` has the lifecycle and where each retired plan's rationale went.
 - `skills/` -> specialized, repeatable agent workflows.
 - `zpr-dev/` -> binary for configuring the ZPR development environment.
 
@@ -46,8 +46,8 @@ paths, so they can be opened directly.
 | Unsure which repository owns something | `docs/REPOSITORIES.md` |
 | Building, testing, or changing a cross-repository dependency | `docs/BUILD.md` |
 | Building a compatible set of binaries, or working a build-set issue | `docs/BUILD.md` ("Compatible build sets"), `zpr-dev/docs/specs/spec-003-build.md` |
-| Changing how `zpr-dev build` gates or runs the netns test tier, or working a netns-Docker-fallback issue (zipline#90) | `docs/plans/2026-09-23-netns-docker-fallback.md`, `zpr-dev/docs/specs/spec-003-build.md` ("Test tiers") |
-| Changing how the visa service assigns, pins or checks a ZPR address, or working a static-address issue | `docs/plans/2026-09-24-static-address-grants.md`, `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
+| Changing how `zpr-dev build` gates or runs the netns test tier, or its Docker fallback | `zpr-dev/docs/specs/spec-003-build.md` ("Test tiers"), `docs/BUILD.md` |
+| Changing how the visa service assigns, pins or checks a ZPR address | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
@@ -63,17 +63,17 @@ paths, so they can be opened directly.
 
 Three rules that apply to every task above:
 
-- **An in-flight plan wins over the spec it implements; a completed plan does
-  not.** Every document in `docs/plans/` opens with a `**Status:**` line -- `IN
-  FLIGHT`, `COMPLETE (<date>)` or `SUPERSEDED by <plan>` -- and any new plan
-  carries one from its first commit. While a plan is in flight it fixes
-  ordering, interface contracts and acceptance criteria against the code as it
-  actually is, and wins wherever it and the spec disagree: read the spec for
-  intent and the plan for what to do. Once it is complete it is a historical
-  record -- its line references and "repo state this plan was written against"
-  are frozen at writing time, and the code plus the `docs/` spec are current.
-  Read a completed plan to learn *why* a decision was made, never to learn what
-  the code does.
+- **A plan wins over the spec it implements while it is in flight, and is
+  retired when it completes.** Every plan in `docs/plans/` opens with a
+  `**Status:** IN FLIGHT` line. While in flight it fixes ordering, interface
+  contracts and acceptance criteria against the code as it actually is, and wins
+  wherever it and the spec disagree: read the spec for intent and the plan for
+  what to do. When its umbrella closes, the plan's lasting decisions, findings
+  and still-open deferred items move into the spec's `## Design decisions`
+  section and the plan file is deleted -- git history keeps the full text. So
+  there is no such thing as a completed plan to read: for *why* something was
+  decided, read the spec's `## Design decisions`. A task-table row in this file
+  that points at a plan goes when the plan does.
 - **These documents record design intent, not what runs.** The RFCs describe the
   system as designed; each document in `docs/` has an `## Implementation status`
   section recording where the code diverges, and flags divergence inline where

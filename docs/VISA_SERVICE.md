@@ -152,8 +152,8 @@ computed from the authenticated claims *before* any store is queried
 exists only inside another store's cache can never be a lookup key. Keying a
 `file` store on `user.email` therefore cannot work by construction — `email`
 is not an identity attribute — and the store's JSON must be keyed on a
-declared identity attribute such as `user.sub` (see
-`docs/plans/2026-09-14-trusted-service-interplay.md`, Finding 2). The one
+declared identity attribute such as `user.sub` (see "Design decisions",
+*Attribute chaining runs on identity attributes*). The one
 exception is the reserved authority marker: `lookup_identities` feeds
 `user.zpr.authority` into every lookup unconditionally, whether or not any
 service declares it, because identities such as an OIDC `sub` are unique only
@@ -411,6 +411,118 @@ Rust-only change is faster from inside the crate.
 Use `zpt` to test policy evaluation without a ZPRnet: load a compiled policy,
 set attributes on named actors, and evaluate. It runs as a REPL or over an
 instruction file, with `-j` for JSONL output.
+
+---
+
+## Design decisions
+
+Rationale carried over from the completed master plans, which were retired once
+shipped. Full plan text is in git history:
+
+- `git show a35b224:docs/plans/2026-09-14-trusted-service-interplay.md` —
+  umbrella [zipline#22](https://github.com/mkolehmainen/zipline/issues/22)
+- `git show a35b224:docs/plans/2026-09-24-static-address-grants.md` — umbrella
+  [zipline#95](https://github.com/mkolehmainen/zipline/issues/95)
+
+### Trusted-service interplay (an `oidc` authenticator plus a `file` overlay)
+
+**The compiler never prunes a trusted service that vends identity attributes.**
+Such a service is a query key for every attribute store, so whether ZPL
+references *its own* attributes says nothing about whether the visa service
+needs it; reference-based pruning had left the OIDC provider out of the policy
+entirely. Naming it in policy does not help either, because both authority keys
+resolve to the default trusted service. The accepted cost: a genuinely unused
+identity vendor is now woven, and the compiler logs an `info` line for each one
+retained this way. Attribute overlays (`file`) are still pruned when
+unreferenced. ([zipline#23](https://github.com/mkolehmainen/zipline/issues/23))
+
+**Attribute chaining runs on identity attributes, and needed no change.** An
+OIDC arm stamps `user.sub`, `sub` is a declared identity attribute, and a `file`
+store keyed on `user.sub` answers on both the connect and refresh paths. Keying
+on a non-identity attribute such as `user.email` is rejected on the merits
+(mutable, reusable addresses would transfer a departed user's access) and is
+impossible anyway, because the lookup set is fixed before any store is queried.
+([zipline#22](https://github.com/mkolehmainen/zipline/issues/22))
+
+**The authenticating service keeps `user.zpr.authority`.** A decorating store
+vending any `user.*` attribute used to derive a competing authority, and the
+last writer won in store order, which follows compiler emission order, not ids.
+The displaced authority made the OIDC store's `vouched_here` gate answer empty,
+pruning `user.sub` and with it the overlay's attributes mid-session. Join
+matching failed too: `JPolicy::matches` checks every value of a repeated key, so
+an `authority:google` join policy was vetoed and the connection was refused as
+`policyDenied`. Since the fix, `derive_user_authority` takes the existing
+authority and yields `None` if it names a *different* source. The `!=` is
+load-bearing: the authority's own source must still re-stamp its expiry on each
+refresh. Side effect: two `file` stores with no IdP present now resolve
+first-wins instead of last-wins, which is still arbitrary.
+([zipline#24](https://github.com/mkolehmainen/zipline/issues/24)–[#26](https://github.com/mkolehmainen/zipline/issues/26))
+
+### Static addresses are granted, never asserted
+
+**The peer's requested `zpr.addr` is a check, not a grant.** Previously any
+matched join policy committed it, so any service provider could self-assign any
+address, overwriting a live actor keyed on it or colliding with the pool.
+Precedence is policy pin, then trusted-service grant, then pool. An unconfirmed
+request is **scrubbed and the actor gets a pool address, rather than denied**.
+That reuses the existing no-match path, and both peers already refuse a
+substituted address with a clear message (the adapter's
+`GrantedAddressMismatch`). A deny would look like a policy denial, which is the
+worse diagnostic for what is usually a misconfiguration.
+([zipline#97](https://github.com/mkolehmainen/zipline/issues/97))
+
+**Static addresses live outside the pools rather than being reserved in them.**
+Reserving in-pool needs a take, an undo path and a release path that tells
+reserved from allocated, and the adapter path had none of these. A separate
+address space needs a single rejection and no bookkeeping, and nothing in the
+tree pinned an in-pool address. Pool ranges stay defined only in the visa
+service, so an in-pool pin is a join-time error rather than a compile-time one.
+([zipline#98](https://github.com/mkolehmainen/zipline/issues/98))
+
+**The grant is `device.zpr_addr`: a device attribute, from any declared trusted
+service.** It is a `device` attribute because nodes and headless servers have
+addresses and no user, and a roaming user does not carry the adapter's address.
+The name avoids the reserved `zpr.` sub-namespace, which declared services may
+not return. That makes it deliverable with no compiler or schema change,
+following the `device.hostname` precedent, and `zpr_` keeps it from being
+confused with an operator's own `addr` field. `zpr.addr` stays the committed
+address, the request and the pin. Any service may grant, not only `file`,
+because the mapping is declared in the signed `.zplc`, and attributes already
+decide access with dock-side enforcement (zipline#83) pinning an actor to its
+granted address. Choosing an address is therefore no new power; the static-range
+checks apply to every source alike.
+([zipline#99](https://github.com/mkolehmainen/zipline/issues/99))
+
+**An address-only store stays woven through a ZPL reference, not through a
+compiler change.** A `file` store that vends only `device.zpr_addr` vends no
+identity attributes, so it is pruned unless a woven statement references the
+attribute (e.g. `... on zpr_addr: devices`), the same trap and fix as
+`device.hostname` in [DNS.md](DNS.md). Without the reference the adapter comes
+up on a pool address.
+([zipline#99](https://github.com/mkolehmainen/zipline/issues/99))
+
+**The visa service's own address was missed by the plan.** Nothing could supply
+`fd5a:5052::1`, and the non-evicting actor add refused the adapter's re-add over
+the startup record, which broke every netns test. The fix is the `vs.zpr`
+exception described under "Authenticating actors".
+([zipline#102](https://github.com/mkolehmainen/zipline/issues/102))
+
+### Deferred
+
+No tracker issues are filed for these unless linked.
+
+- **Multi-valued `user.zpr.authority`.** More faithful, but it touches
+  evaluation semantics and every consumer of the key. Revisit only if a
+  deployment needs two concurrent user authorities.
+- **Compiler retention of visa-service-interpreted attribute providers**
+  (`device.zpr_addr`, `device.hostname`). A retain pass like
+  `retain_identity_vendors` would remove the ZPL-reference trap for both.
+  Compiler-only, no schema impact.
+- **Compile-time pool check.** Once the pool ranges are stable enough to share
+  through `zl-zpr-common`.
+- **Retiring `zpr.addr` in `define ... with`**
+  ([zpr-compiler#133](https://github.com/org-zpr/zpr-compiler/issues/133)).
+  Whether policy text should carry addresses at all once grants exist.
 
 ---
 

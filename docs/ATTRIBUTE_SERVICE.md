@@ -15,9 +15,9 @@ attributes are refreshed and when a visa is denied) and
 [SECURITY_MODEL.md](SECURITY_MODEL.md) (what an attribute's provenance means).
 
 **Status.** Implemented as of 2026-09-22, by zipline issues #74–#81 under
-umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72),
-sequenced by `docs/plans/2026-09-22-attr-query.md` (now COMPLETE). This
-document and the code are current. The wire protocol is also rendered as
+umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72).
+This document and the code are current; the rationale behind the design is
+under *Design decisions*. The wire protocol is also rendered as
 `docs/zpr-attr-v1.openapi.yaml`. The `## Implementation status` section at the
 end records version floors and what was deliberately not built.
 
@@ -27,7 +27,6 @@ end records version floors and what was deliberately not built.
 
 | Source | Status |
 |---|---|
-| `docs/plans/2026-09-22-attr-query.md` | The master plan: ordering, issues, acceptance criteria. Wins over this document while it is in flight. |
 | `zl-zpr-visaservice/vs/src/trusted_services/` | The store trait and the two stores that exist today (`file`, `oidc`). |
 | internal RFC-13.1, *Authentication, Identity and Attributes* | Design intent for trusted services generally. This document departs from it in one place, recorded under *Security*. |
 | [RFC 7643](https://www.rfc-editor.org/rfc/rfc7643) §7, SCIM 2.0 schema definitions | The attribute-definition vocabulary `GET {url}/schema` returns. |
@@ -96,7 +95,7 @@ the object device spec, e.g.
 
 ### The four operations
 
-The plan names four things a visa service might want from an attribute source.
+There are four things a visa service might want from an attribute source.
 `zpr-attr/1` specifies the first two, provides the third through the visa
 service's existing invalidation machinery, and reserves the fourth.
 
@@ -538,6 +537,48 @@ record for `validation/2`, which nothing implements.
 
 ---
 
+## Design decisions
+
+Rationale carried over from the completed master plan, which was retired once
+shipped (umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72)).
+Full plan text is in git history:
+`git show a35b224:docs/plans/2026-09-22-attr-query.md`. Decisions already
+argued in the body above — the bearer token over the RFC-13.1 HMAC, SCIM for
+the schema, schema advice never failing an install, one credential per
+declaration, the inverted STREAM — are not repeated here.
+
+**HTTPS + JSON, not Cap'n Proto RPC or gRPC.** Anyone can implement it, and
+the visa service already speaks HTTPS/JSON on its admin API. Cap'n Proto RPC
+and gRPC were rejected as hostile to third-party implementers.
+([#72](https://github.com/mkolehmainen/zipline/issues/72))
+
+**A new `api` value instead of reusing `validation/1`/`validation/2`.** Those
+are the BAS-era network API (`provider` tuples, fabric names, `cert_path`,
+HMAC-signed calls to a ZPR-internal service): the wrong shape for a hosted
+database, and nothing implements them. `zpr-attr/1` names the contract and its
+version, leaving room for `zpr-attr/2`.
+([#72](https://github.com/mkolehmainen/zipline/issues/72))
+
+**ZPR key names on the wire.** `identities` uses `user.sub`,
+`device.zpr.adapter.cn`, `user.zpr.authority` as-is: it mirrors the `file`
+store's JSON, needs no reverse mapping, and the authority marker has no
+service-side name to map to.
+([#72](https://github.com/mkolehmainen/zipline/issues/72))
+
+**No new store abstraction.** `TrustedServiceInterface` and
+`TrustedServicesMgr` already fit a networked source, so the store is one
+module plus one factory arm; refactoring bootstrap or the OIDC store onto
+something else was out of scope.
+([#78](https://github.com/mkolehmainen/zipline/issues/78))
+
+**A reference server before the first real implementer.** zipline had no code
+when the protocol was fixed, so the API is the contract zipline builds to, not
+a fit to its database. `zpr-attr-server` exists as a second implementation to
+keep the spec honest; this document stays normative over it and over the
+OpenAPI rendering. ([#80](https://github.com/mkolehmainen/zipline/issues/80))
+
+---
+
 ## Implementation status
 
 **Implemented** as of 2026-09-22, by zipline issues
@@ -563,9 +604,8 @@ these version floors:
 - Netns end-to-end test `zl-zpr-core/integration-test/attr-query-test.sh`
   ([#81](https://github.com/mkolehmainen/zipline/issues/81)).
 
-The build was sequenced by `docs/plans/2026-09-22-attr-query.md`, now COMPLETE
-— read it for why, not for what the code does; this document and the code are
-current.
+Why it was built this way is under *Design decisions*; this document and the
+code are current.
 
 Already in place and relied on, unchanged:
 

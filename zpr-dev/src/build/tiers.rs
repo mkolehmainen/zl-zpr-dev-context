@@ -310,7 +310,7 @@ pub fn netns_gate(probes: &Probes) -> TierGate {
 // The netns runner selection (zipline#92 step 2)
 // ---------------------------------------------------------------------------
 
-/// Which route the netns tier takes (zipline#92, master plan N2): the host
+/// Which route the netns tier takes (zipline#92): the host
 /// when its own prerequisites hold, the privileged container of zipline#84's
 /// `make docker-test` when they do not but a Docker daemon answers. The
 /// no-route case is [`select_netns_runner`]'s `Err`, naming both gaps.
@@ -358,8 +358,8 @@ fn host_route_reason(probes: &Probes) -> Option<String> {
     Some(reason)
 }
 
-/// Decides which route the netns tier takes (zipline#92, the *Decisions*
-/// rule of the master plan): the host route wins whenever it can run;
+/// Decides which route the netns tier takes (zipline#92; the rationale is
+/// spec-003 §10.2): the host route wins whenever it can run;
 /// otherwise the container is selected when a Docker daemon is reachable —
 /// a `docker` client on PATH with no daemon is not a usable fallback; and
 /// when neither route works the `Err` names both routes' gaps, e.g.
@@ -634,7 +634,7 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
             // The prompt is what decides the route: a successful prime runs
             // on the host, and a failed one falls to the container when the
             // daemon answers — the flag stays an explicit host request
-            // (master plan N2, Decisions).
+            // (zipline#92; spec-003 §10.2).
             if probes.docker && probes.docker_daemon {
                 "would prompt for sudo (--prompt-for-sudo); \
                  on failure would fall back to docker"
@@ -903,7 +903,7 @@ pub fn run_unit(plans: &[RepoPlan], logs: &Path, quiet: bool) -> TierOutcome {
 
 /// The seven integration scripts the netns tier runs, in order. An explicit
 /// list, never a glob: `integration-test/unused_or_outdated/` stays out, and
-/// adding a script to the set's gate is a reviewed change (master plan B5).
+/// adding a script to the set's gate is a reviewed change (zipline#62).
 const NETNS_SCRIPTS: &[&str] = &[
     "one-node-test.sh",
     "one-node-v6-test.sh",
@@ -917,7 +917,7 @@ const NETNS_SCRIPTS: &[&str] = &[
 /// A build that must succeed before its script runs — the worktree-local
 /// `enable-security-testing` build of `ph` for `a2a-pubkey-test.sh`. Kept
 /// separate from the script so its failure fails that one script while the
-/// rest of the tier still runs (master plan B5).
+/// rest of the tier still runs (zipline#62).
 #[derive(Debug)]
 pub struct PrepStep {
     /// Labels the log file (`logs/netns-<name>.log`) and the failure entry.
@@ -1072,7 +1072,7 @@ pub fn netns_plan(
 /// its env overrides, logging as `logs/netns-<script>.log` in `run_unit`'s
 /// shape. A failing script — or a failing prep build — fails the tier and
 /// the sweep **keeps going**, so one run reports every broken script
-/// (master plan B5: continue after a failing script; record each).
+/// (zipline#62: continue after a failing script; record each).
 pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
     let mut outcome = TierOutcome {
         passed: true,
@@ -1138,7 +1138,7 @@ pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
     outcome
 }
 
-/// The runtime half of the dist/ guard (master plan B5): the staged `ph`
+/// The runtime half of the dist/ guard (zipline#62): the staged `ph`
 /// must not be an `enable-security-testing` build. A security-testing `ph`
 /// advertises `--security-testing-mangle-forwarded-pings` in `node --help`
 /// (the same detection `a2a-pubkey-test.sh` uses); a clean one does not.
@@ -1263,7 +1263,7 @@ pub struct DockerPlan {
 /// `make` entirely, so the DNS test exercises the set's binaries rather
 /// than a fresh build — then `local-compute/deploy-docker.sh`,
 /// `local-compute/test-dns.sh`, and `docker compose down -v`
-/// unconditionally (master plan B5).
+/// unconditionally (zipline#62).
 pub fn docker_plan(demo_worktree: &Path, dist: &Path) -> DockerPlan {
     let demo = demo_worktree.join("dns-demo");
     let compose_file = demo.join("docker-compose.yml").display().to_string();
@@ -1299,7 +1299,7 @@ pub fn docker_plan(demo_worktree: &Path, dist: &Path) -> DockerPlan {
 
 /// Copies every staged name the recipe table produces from `dist/` into the
 /// demo's `bin/`, executably — the two sets of names are identical, which is
-/// what makes the DNS test exercise the set (master plan B5). A missing
+/// what makes the DNS test exercise the set (zipline#62). A missing
 /// binary is an error naming it: the demo must not run against a half-staged
 /// `bin/`.
 pub fn stage_dist_into_demo(dist: &Path, bin: &Path) -> Result<()> {
@@ -1326,7 +1326,7 @@ pub fn stage_dist_into_demo(dist: &Path, bin: &Path) -> Result<()> {
 
 /// Runs a docker plan: stage, deploy, test — each failure skipping the rest
 /// — then teardown **unconditionally**, recorded separately from a test
-/// failure (master plan B5). Compose down is safe when nothing is up, so
+/// failure (zipline#62). Compose down is safe when nothing is up, so
 /// even a stage failure tears down: a previous run's leftovers must not
 /// survive. Steps log as `logs/docker-<step>.log` in `run_unit`'s shape.
 pub fn run_docker(plan: &DockerPlan, logs: &Path, quiet: bool) -> TierOutcome {
@@ -2009,7 +2009,7 @@ mod tests {
 
     /// The host route wins whenever it can run: with every prerequisite
     /// present the selection is `Host`, never the container — the fallback
-    /// is a fallback, not a preference (master plan N2, Decisions).
+    /// is a fallback, not a preference (zipline#92; spec-003 §10.2).
     #[test]
     fn selector_picks_the_host_when_both_routes_work() {
         let runner = select_netns_runner(&all_present()).unwrap();
@@ -2066,7 +2066,7 @@ mod tests {
 
     /// `docker` on PATH with no reachable daemon is not a usable fallback:
     /// the selection errors naming BOTH routes' gaps, so the operator sees
-    /// what to fix on either route (master plan N2).
+    /// what to fix on either route (zipline#92).
     #[test]
     fn selector_requires_a_reachable_daemon_not_merely_a_client() {
         let probes = Probes {
@@ -2102,7 +2102,7 @@ mod tests {
     }
 
     /// A non-Linux host errors: the netns scripts create network namespaces,
-    /// which neither route offers off Linux (master plan N2).
+    /// which neither route offers off Linux (zipline#92).
     #[test]
     fn selector_errors_off_linux() {
         let probes = Probes {
@@ -2115,7 +2115,7 @@ mod tests {
 
     /// A failed prompt (`sudo -v` refused) leaves the host route unusable,
     /// so the container is selected when available — the flag asked for the
-    /// host, but a fallback beats a dead stop (master plan N2, Decisions).
+    /// host, but a fallback beats a dead stop (zipline#92; spec-003 §10.2).
     #[test]
     fn selector_falls_to_the_container_after_a_failed_prime() {
         let probes = Probes {
@@ -2398,7 +2398,7 @@ mod tests {
 
     /// The plan runs exactly the seven blessed scripts, in order — an
     /// explicit list, not a glob: `unused_or_outdated/` and any new script
-    /// stay out until reviewed in (master plan B5).
+    /// stay out until reviewed in (zipline#62).
     #[test]
     fn netns_plan_lists_the_seven_scripts_in_order() {
         let plan = netns_plan(
@@ -2427,7 +2427,7 @@ mod tests {
 
     /// Every script gets the five `*_BIN` overrides pointing at `dist/` and
     /// the system valkey — nothing is ever copied into `integration-test/`
-    /// (master plan B5 constraint).
+    /// (zipline#62).
     #[test]
     fn netns_plan_points_the_bin_overrides_at_dist() {
         let plan = netns_plan(
@@ -2590,7 +2590,7 @@ mod tests {
 
     /// `a2a-pubkey-test.sh` alone gets a prep step — the worktree-local
     /// `enable-security-testing` build of `ph` — and its `PH_BIN` points at
-    /// that build's debug binary, not at `dist/` (master plan B5: that
+    /// that build's debug binary, not at `dist/` (zipline#62: that
     /// binary must never reach `dist/`).
     #[test]
     fn netns_plan_gives_a2a_its_own_security_testing_ph() {
@@ -2750,7 +2750,7 @@ mod tests {
     /// The plan stages `dist/` into the demo worktree's `dns-demo/bin/`,
     /// then deploys, tests, and tears down with `docker compose down -v` —
     /// never the demo's own `make`, so the DNS test exercises the set's
-    /// binaries rather than a fresh build (master plan B5).
+    /// binaries rather than a fresh build (zipline#62).
     #[test]
     fn docker_plan_stages_deploys_tests_and_tears_down() {
         let plan = docker_plan(Path::new("/wt/zl-zpr-demo"), Path::new("/b/dist"));
@@ -2865,7 +2865,7 @@ mod tests {
 
     /// Teardown runs even when the test step fails, and the two are recorded
     /// separately: the tier fails on the test, the teardown entry still says
-    /// `passed` (master plan B5: report a teardown failure separately).
+    /// `passed` (zipline#62: report a teardown failure separately).
     #[test]
     fn run_docker_tears_down_unconditionally_after_a_test_failure() {
         let tmp = tempfile::tempdir().unwrap();

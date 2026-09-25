@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.6.0
+version: 2.7.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -138,6 +138,32 @@ and nowhere else:
   attached to a task that merges EARLIER is structurally unverifiable — #96 carried
   "netns passes again after A1/A2" but merged before either existed, so nobody ran
   it and three broken PRs merged on green unit gates (zipline#102).
+
+  **Plan retirement is the last step of close-out.** A master plan in `docs/plans/`
+  is a working document for the umbrella's lifetime only; once the work ships, its
+  line references and "code as it is today" snapshots rot, and an agent that reads
+  it pays context for stale text. So every plan's final child is a
+  documentation-closure task in `zl-zpr-dev-context` (it may share a child with the
+  integration re-run above) that, in one PR:
+
+  1. **Moves the decisions up** into the spec the plan implements, under its
+     `## Design decisions` section (just before `## Implementation status`; create
+     it if absent). Carry over only what stays true: each decision and why,
+     findings that explain non-obvious behavior, rejected alternatives -- one
+     bold-titled entry of a few lines each, ending in its issue link. Still-open
+     deferred items go under `### Deferred`, each with an open issue; check the
+     issue state and drop closed ones. Do not carry task breakdowns, issue maps,
+     acceptance criteria or line numbers. The section's opening line names the
+     retired plan as `git show <sha>:docs/plans/<file>`, `<sha>` being a commit
+     that still has it.
+  2. **Deletes the plan file** and repoints every reference to it -- the
+     `AGENTS.md` task table, other `docs/`, `skills/` -- at the spec's
+     `## Design decisions`. Grep the whole workspace for the file name; references
+     in code comments in other repositories are fixed there, or listed in the PR
+     as follow-up if the closure issue does not name those repositories.
+
+  The umbrella is not done until that PR merges. Never mark a plan `COMPLETE` and
+  leave the file in place -- that is the state this rule exists to prevent.
 
 Everything else that states an order — the `**Blocked by:**` line in each issue body,
 the plan document's *Issue map* and dependency graph, the board's `Ready`/`Backlog`

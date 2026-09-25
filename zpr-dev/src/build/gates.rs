@@ -704,7 +704,7 @@ mod tests {
     use super::*;
 
     // Fixtures lifted verbatim from the real manifests, so the tests exercise
-    // exactly the shapes the gate must read (master plan, task B2 step 1).
+    // exactly the shapes the gate must read (zipline#59).
     // Line numbers asserted below are line numbers in these constants, which
     // match the source files they were lifted from.
 

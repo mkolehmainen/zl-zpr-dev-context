@@ -1,4 +1,4 @@
-//! The five build recipes of spec-003 §5 (contract 4 of the master plan) and
+//! The five build recipes of spec-003 §5 (zipline#60) and
 //! their staging lists, plus the step runner that shells out with the worktree
 //! as the working directory, tees output to `logs/<repo>-<step>.log`, and
 //! echoes the last 40 lines on a non-zero exit.
