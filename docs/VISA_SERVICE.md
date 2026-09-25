@@ -202,6 +202,13 @@ address source — a rejected pin reads "static", a rejected grant reads
 "granted" — so the log tells the two apart
 (`vs/src/connection_control.rs`, `authorize_connection`).
 
+The visa service's own adapter is the one address neither source supplies: it
+is fixed by configuration, so an actor whose *authenticated* CN is `vs.zpr` is
+assigned `fd5a:5052::1` before policy is consulted, with no pin and regardless
+of what it requested, and its adapter's record supersedes the one its startup
+self-authorization wrote there. A merely claimed `vs.zpr` gets nothing
+(zipline#102).
+
 Authentication expires. As expiry approaches the visa service tells the docking
 node over the VSS-API so the actor can re-authenticate; the grace period is a
 visa service setting. Default authentication lifetime is **4 hours** — except

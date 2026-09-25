@@ -1,6 +1,6 @@
 # Static ZPR addresses are granted, never asserted
 
-**Status:** IN FLIGHT — umbrella [zipline#95](https://github.com/mkolehmainen/zipline/issues/95); P1 [#96](https://github.com/mkolehmainen/zipline/issues/96), A1 [#97](https://github.com/mkolehmainen/zipline/issues/97), A2 [#98](https://github.com/mkolehmainen/zipline/issues/98), A3 [#99](https://github.com/mkolehmainen/zipline/issues/99).
+**Status:** COMPLETE (2026-09-24) — umbrella [zipline#95](https://github.com/mkolehmainen/zipline/issues/95); P1 [#96](https://github.com/mkolehmainen/zipline/issues/96), A1 [#97](https://github.com/mkolehmainen/zipline/issues/97), A2 [#98](https://github.com/mkolehmainen/zipline/issues/98) and A3 [#99](https://github.com/mkolehmainen/zipline/issues/99) all merged. The plan missed the visa service's own adapter: no address source could supply its `fd5a:5052::1` (A1 scrubbed the request), and A2's non-evicting actor add refused its re-add over its own startup record, which together broke every netns test and the docker dns-demo; fixed by [zipline#102](https://github.com/mkolehmainen/zipline/issues/102). The current reference is `docs/VISA_SERVICE.md`. Historical record: read it for *why*, not for what the code does now.
 **Date:** 2026-09-24
 **Repo state this plan was written against:** `zl-zpr-visaservice` @ `f2ad61b`, `zl-zpr-core` @ `95d316f`, `zl-zpr-compiler` @ `3a7cc4e`, `zl-zpr-dev-context` @ `20cb538`, all on `zipline`. Line references are against those commits.
 
