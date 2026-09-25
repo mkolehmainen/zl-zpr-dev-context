@@ -2569,6 +2569,62 @@ mod tests {
         .expect("the gated set alone must plan cleanly");
     }
 
+    /// Review finding on zl-zpr-dev-context#35 (zipline#103): a top-level
+    /// script whose name is not valid UTF-8 cannot be compared against
+    /// [`NETNS_SCRIPTS`] / [`NETNS_EXCLUDED`], yet the Makefile's byte-wise
+    /// `$(wildcard *-test.sh)` WOULD run it — so the guard must fail loudly
+    /// on such a name rather than silently treating the script as absent.
+    #[cfg(unix)]
+    #[test]
+    fn drift_guard_fails_closed_on_a_non_utf8_script_name() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = drift_fixture(NETNS_SCRIPTS);
+        let dir = tmp.path().join("integration-test");
+        let bad = std::ffi::OsStr::from_bytes(b"bad-\xff-test.sh");
+        std::fs::write(dir.join(bad), "#!/bin/sh\n").unwrap();
+        let error = netns_script_drift(&dir, NETNS_SCRIPTS, NETNS_EXCLUDED)
+            .expect_err("a non-UTF-8 script name must fail the guard, not vanish")
+            .to_string();
+        assert!(
+            error.contains("non-UTF-8"),
+            "must say why the name is unusable: {error}"
+        );
+    }
+
+    /// Review finding on zl-zpr-dev-context#35 (zipline#103): an exclusion
+    /// is only auditable with a reason. An entry like `("new-test.sh", "")`
+    /// must be a hard error — the whole table is validated, so an
+    /// empty-reason entry fails planning even before any script matches it.
+    #[test]
+    fn drift_guard_rejects_an_exclusion_without_a_reason() {
+        let mut scripts: Vec<&str> = NETNS_SCRIPTS.to_vec();
+        scripts.push("new-test.sh");
+        let tmp = drift_fixture(&scripts);
+        let error = netns_script_drift(
+            &tmp.path().join("integration-test"),
+            NETNS_SCRIPTS,
+            &[("new-test.sh", "")],
+        )
+        .expect_err("an exclusion with an empty reason must be a hard error")
+        .to_string();
+        assert!(
+            error.contains("new-test.sh") && error.contains("reason"),
+            "must name the entry and the missing reason: {error}"
+        );
+        // Whitespace is not a reason either.
+        let error = netns_script_drift(
+            &tmp.path().join("integration-test"),
+            NETNS_SCRIPTS,
+            &[("new-test.sh", "  ")],
+        )
+        .expect_err("a whitespace-only reason must be a hard error")
+        .to_string();
+        assert!(
+            error.contains("new-test.sh"),
+            "must name the offending entry: {error}"
+        );
+    }
+
     /// Every script gets the `*_BIN` overrides pointing at `dist/` and
     /// the system valkey — nothing is ever copied into `integration-test/`
     /// (zipline#62). `ZPR_ATTR_SERVER_BIN` and `ZPDUMP_BIN` joined in
