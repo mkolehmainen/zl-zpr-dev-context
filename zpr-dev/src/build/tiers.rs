@@ -1061,6 +1061,16 @@ pub fn netns_plan(
                 ("PH_DEBUG_BIN".to_string(), display(dist.join("ph-cli"))),
                 ("VS_BIN".to_string(), display(dist.join("vs"))),
                 ("VS_ADMIN_BIN".to_string(), display(dist.join("vs-admin"))),
+                // attr-query-test.sh needs the reference attribute server
+                // and (optionally, for its pre-check) zpdump; a build
+                // worktree carries none of the symlinks the scripts default
+                // to, so point both at the staged dist/ (zipline#103). The
+                // other scripts ignore them.
+                (
+                    "ZPR_ATTR_SERVER_BIN".to_string(),
+                    display(dist.join("zpr-attr-server")),
+                ),
+                ("ZPDUMP_BIN".to_string(), display(dist.join("zpdump"))),
             ];
             if !container {
                 // Host route only: the container's image ships its own
@@ -2559,9 +2569,13 @@ mod tests {
         .expect("the gated set alone must plan cleanly");
     }
 
-    /// Every script gets the five `*_BIN` overrides pointing at `dist/` and
+    /// Every script gets the `*_BIN` overrides pointing at `dist/` and
     /// the system valkey — nothing is ever copied into `integration-test/`
-    /// (zipline#62).
+    /// (zipline#62). `ZPR_ATTR_SERVER_BIN` and `ZPDUMP_BIN` joined in
+    /// zipline#103: `attr-query-test.sh` requires the reference attribute
+    /// server, and a build worktree has no symlinks next to the scripts, so
+    /// the plan must point at the staged binaries (the Makefile's
+    /// `FORWARD_ENV` already forwards both).
     #[test]
     fn netns_plan_points_the_bin_overrides_at_dist() {
         let plan = netns_plan(
@@ -2579,6 +2593,11 @@ mod tests {
         assert_eq!(env_of(one_node, "PH_DEBUG_BIN"), Some("/b/dist/ph-cli"));
         assert_eq!(env_of(one_node, "VS_BIN"), Some("/b/dist/vs"));
         assert_eq!(env_of(one_node, "VS_ADMIN_BIN"), Some("/b/dist/vs-admin"));
+        assert_eq!(
+            env_of(one_node, "ZPR_ATTR_SERVER_BIN"),
+            Some("/b/dist/zpr-attr-server")
+        );
+        assert_eq!(env_of(one_node, "ZPDUMP_BIN"), Some("/b/dist/zpdump"));
         assert_eq!(
             env_of(one_node, "VALKEY_SERVER_BIN"),
             Some("/usr/bin/valkey-server")
