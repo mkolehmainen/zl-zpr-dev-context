@@ -444,7 +444,7 @@ workspace does not check out.
 | Tier | What runs | Prerequisites | Probe-gated |
 |---|---|---|---|
 | `unit` | `make test` per built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | no |
-| `netns` | the seven `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, and either (passwordless `sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | yes |
+| `netns` | the nine `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, and either (passwordless `sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | yes |
 | `docker` | `dns-demo` deploy + `test-dns.sh` + `docker compose down -v` | `docker`, `docker compose` | yes |
 
 `--test` selects: `none`, `default` (the flag absent means the same), `all`,

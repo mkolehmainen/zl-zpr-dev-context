@@ -512,7 +512,7 @@ pub enum SudoProvenance {
 }
 
 /// Keeps a primed sudo credential alive across a run that outlives sudo's
-/// timestamp timeout (15 minutes by default; a compile plus seven netns
+/// timestamp timeout (15 minutes by default; a compile plus nine netns
 /// scripts routinely does — zipline#70 Step 4): a thread running
 /// `sudo -n -v` on `interval`, from [`SudoRefresher::start`] until
 /// [`SudoRefresher::stop`] or drop. Dropping stops it too, so an early `?`
@@ -916,6 +916,8 @@ const NETNS_SCRIPTS: &[&str] = &[
     "oidc-file-interplay-test.sh",
     "fake-idp-smoke-test.sh",
     "a2a-pubkey-test.sh",
+    "attr-query-test.sh",
+    "one-node-oidc-renewal-test.sh",
 ];
 
 /// Top-level `integration-test/*-test.sh` scripts the netns tier
@@ -932,12 +934,31 @@ const NETNS_EXCLUDED: &[(&str, &str)] = &[];
 /// invisible, matching the Makefile's own `$(wildcard *-test.sh)` glob. A
 /// missing `integration-test/` passes — there is nothing to judge, and the
 /// tier run itself reports a broken worktree.
-fn netns_script_drift(
-    _integration: &Path,
-    _gated: &[&str],
-    _excluded: &[(&str, &str)],
-) -> Result<()> {
-    Ok(())
+fn netns_script_drift(integration: &Path, gated: &[&str], excluded: &[(&str, &str)]) -> Result<()> {
+    if !integration.is_dir() {
+        return Ok(());
+    }
+    // Every top-level `*-test.sh`, sorted so the error is deterministic.
+    let mut strays: Vec<String> = std::fs::read_dir(integration)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", integration.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with("-test.sh"))
+        .filter(|name| !gated.contains(&name.as_str()))
+        .filter(|name| !excluded.iter().any(|(excl, _)| excl == name))
+        .collect();
+    strays.sort();
+    if strays.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "netns script list has drifted: {} in {} is neither gated nor \
+         deliberately excluded — add it to NETNS_SCRIPTS to run it, or to \
+         NETNS_EXCLUDED with the reason it must not run (zipline#103)",
+        strays.join(", "),
+        integration.display()
+    );
 }
 
 /// A build that must succeed before its script runs — the worktree-local

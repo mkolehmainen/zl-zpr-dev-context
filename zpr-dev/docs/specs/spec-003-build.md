@@ -312,7 +312,7 @@ step's output is available to the next:
 | Tier | What runs | Prerequisites | Default |
 |---|---|---|---|
 | `unit` | `make test` in each built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | run |
-| `netns` | the seven `zl-zpr-core/integration-test/` scripts | Linux, and either (passwordless `sudo` or `--prompt-for-sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | `--test netns` |
+| `netns` | the nine `zl-zpr-core/integration-test/` scripts | Linux, and either (passwordless `sudo` or `--prompt-for-sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | `--test netns` |
 | `docker` | `dns-demo` deploy, `test-dns.sh`, `docker compose down -v` | `docker`, `docker compose` | `--test docker` |
 
 - A tier that was asked for and cannot run is an error under `--test all`; a
@@ -321,12 +321,18 @@ step's output is available to the next:
   in the emitted manifest — a green run must never overstate coverage.
 - `netns` binaries come from `dist/` via `PH_BIN` / `VS_BIN` /
   `VS_ADMIN_BIN` / `VALKEY_SERVER_BIN`; nothing is copied into
-  `integration-test/`. The script list is explicit, not globbed.
+  `integration-test/`. The script list is explicit, not globbed, and it is
+  guarded against drift (zipline#103): planning the tier fails when the
+  worktree carries a top-level `integration-test/*-test.sh` that is neither
+  in the run list (`NETNS_SCRIPTS`) nor deliberately excluded with a reason
+  (`NETNS_EXCLUDED`). Only the top level is judged — `lib/` and
+  `unused_or_outdated/` are invisible, matching the Makefile's own
+  `$(wildcard *-test.sh)`.
 - The netns tier selects its route **host → container → skip**
   (zipline#92/#93). The host route wins whenever its own prerequisites —
   passwordless `sudo` or a primed credential, `valkey-server`, `python3` —
   all hold; otherwise, when a Docker daemon is reachable (`docker info`
-  succeeds), the same seven scripts run as root inside the privileged
+  succeeds), the same nine scripts run as root inside the privileged
   container of `zl-zpr-core/integration-test/`'s `make docker-test`, one
   `make` invocation per script with `WORKSPACE=<build-dir>`; when neither
   route works, the tier skips — or errors when explicitly requested — with
@@ -548,7 +554,8 @@ because guessing the container would hide a misused flag.
 **`zpr-dev` drives `zl-zpr-core`'s Makefile; it never owns `docker run`.**
 One `make docker-test TEST=<script> WORKSPACE=<build-dir>` per script keeps
 the manifest's per-script breakdown and `zpr-dev`'s explicit script list;
-the Makefile's run-all target would collapse seven results into one and use
+the Makefile's run-all target would collapse the per-script results into one
+and use
 its own glob. `WORKSPACE` is overridden from the `make` command line, which
 beats the Makefile's `:=` — the first draft wrongly scheduled a `?=` change
 in `zl-zpr-core` (zipline#91, withdrawn); `:=` is better anyway, since an
