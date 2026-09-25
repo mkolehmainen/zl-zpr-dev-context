@@ -169,7 +169,11 @@ communicate on the ZPRnet at all, may it host services, does it get special
 privileges such as a static ZPR address, and is it explicitly denied? An actor
 that passes receives a ZPR address and joins. Since zipline#97/#98 a static
 address is **granted, never asserted**: a peer-requested `zpr.addr` is honoured
-only when a matched join policy pins it with a `zpr.addr eq` condition, and
+only when a matched join policy pins it with a `zpr.addr eq` condition — and
+since zipline#109 the only source of such a pin is a node's `zpr_address` in
+the `.zplc` topology (an authored `["zpr.addr", ...]` provider attribute is a
+compile error; adapters get static addresses via the `device.zpr_addr` grant
+below) — and
 `authorize_connection` then rejects any static address that is outside
 `fd5a:5052::/32`, equal to the visa service address, inside a managed pool
 (static addresses live in a separate address space from the pools — see

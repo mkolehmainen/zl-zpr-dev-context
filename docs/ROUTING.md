@@ -394,7 +394,7 @@ Routing destinations are ZPR addresses, and where each kind comes from matters:
 | **Node ZPR address** | `zpr_address` in `.zplc`, and the same value in the node's own config. Not allocated. |
 | **Adapter/actor address** | Allocated by the visa service from its pool, or requested by the adapter via the `zpr.addr` claim (the one `zpr.*` claim an adapter may send). |
 | **AAA address** | Used only during authentication. The ZPRnet AAA network is `fd5a:5052:0:aaa::/64`; each node gets a **/88** carved out using the low 24 bits of its node address, pushed to the node as the `AAA_PREFIX` configuration parameter and used to seed its local `AddressPool`. |
-| **Static service address** | A service needing a fixed address sets `zpr_addr` in the adapter config *and* a matching `["zpr.addr", "..."]` provider attribute in `.zplc`. |
+| **Static service address** | A service needing a fixed address sets `zpr_addr` in the adapter config *and* is granted the same address by a trusted service returning `device.zpr_addr` (a `file` store keyed on the adapter CN at minimum). An authored `["zpr.addr", ...]` provider attribute in `.zplc` is a compile error (zipline#109). |
 
 ZRFC 6.4 §4.1 has node addresses as prefixes from which dock and tether
 addresses are cut, so a route to a dock covers every tether on it. The
