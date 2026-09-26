@@ -59,7 +59,7 @@ A build set lives at `zl-zpr-dev-context/build-sets/<name>.yaml`.
 
 ```yaml
 version: 1
-name: 2026-09-17              # names the build and its dist directory
+name: 2026-09-17              # optional; ignored on input (see below)
 
 repositories:                 # value is a tag, branch or sha; resolved to a sha
   zl-zpr-compiler:    v0.18.0
@@ -83,8 +83,20 @@ allow_pin_drift:              # optional; each entry MUST carry a reason
 - A key under `repositories:` that is not a repository in `workspace.yaml` is
   an error naming the key. `url` and `default_branch` come from
   `workspace.yaml`; nothing is duplicated here.
-- `version: 1` is the only accepted version. `name` must be non-empty (it
-  names the build directory) and `repositories` must be non-empty.
+- `version: 1` is the only accepted version, and `repositories` must be
+  non-empty.
+- **The build's name is derived from the manifest's file name** — the file
+  name without its `.yaml`/`.yml` extension — never from the `name:` field,
+  which is optional and **ignored on input** (zipline#115: two files carrying
+  the same stale `name:` shared one build directory and clobbered each
+  other's `dist/`). `--tip` has no file, so it keeps the name `tip`. The
+  derived name must be a single safe path component (non-empty, no
+  separators, not `.` or `..`); it names `.zpr-build/<name>/`, the emitted
+  `dist/zpr-set-<name>.yaml` and the tarball. The emitted manifest still
+  writes the derived name into `name:` as a record of what it built as.
+  Feeding an emitted manifest back in (`--manifest dist/zpr-set-X.yaml`)
+  derives `zpr-set-X` — slightly clunky, harmless, and collision-free with
+  the original; the `zpr-set-` prefix gets no special handling.
 - Unknown keys are ignored, matching `workspace.yaml`'s tolerance
   (spec-001 §3.1: no `deny_unknown_fields` anywhere), so the schema can grow
   ahead of the tool. This is also what makes the emitted manifest (§3) valid
@@ -100,6 +112,22 @@ name is the newest set, and a rename cannot silently change which set builds.
 Only regular files ending `.yaml` or `.yml` count. An absent or empty
 `build-sets/` directory is an error telling the user to pass `--manifest` or
 `--tip`.
+
+**Two sets cut on the same day** need the second file named so it sorts
+*after* the first — the comparison is byte-wise over the whole file name, so
+a suffix inserted before `.yaml` compares against the `.` of `.yaml`
+(0x2E), and most separators sort *before* it:
+
+```
+2026-09-25-2.yaml     sorts before 2026-09-25.yaml   (wrong)
+2026-09-25.2.yaml     sorts before 2026-09-25.yaml   (wrong)
+2026-09-25.yaml
+2026-09-25T1430.yaml  sorts after                    (recommended)
+2026-09-25b.yaml      sorts after
+```
+
+Recommended: append `T<HHMM>` (`YYYY-MM-DDTHHMM`) whenever a day already has
+a set.
 
 ### 2.3 Ref resolution
 
@@ -127,7 +155,9 @@ checkout:
 
 Written to `dist/zpr-set-<name>.yaml`. The **same schema as the input**, with
 every ref replaced by its resolved 40-character sha, plus a diagnostic
-`resolved:` block that a later read ignores:
+`resolved:` block that a later read ignores. Its `name:` field records the
+**derived** build name (§2.1) — what this build actually ran as — not
+whatever the input file's `name:` said:
 
 ```yaml
 version: 1
@@ -185,7 +215,9 @@ Normative behavior:
   path. The `host:` block records the toolchain that produced them.
 - Promoting a `--tip` run to a named set is: run it, review, copy
   `dist/zpr-set-<name>.yaml` into `build-sets/`, commit. No separate
-  authoring step.
+  authoring step, and nothing inside the file to edit: the copy's **file
+  name** is what names the next build (§2.1), so pick a date that sorts last
+  (§2.2 has the same-day guidance).
 - **Coverage is stated, never inferred** (zipline#87). `tests_requested`
   always records the literal `--test` value (`default` when the flag was
   absent). `tests_skipped` names every tier of §6 that did not execute, with

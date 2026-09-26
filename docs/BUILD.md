@@ -386,7 +386,10 @@ working knowledge.
 - **Input manifest** — `zl-zpr-dev-context/build-sets/<name>.yaml`, committed
   and reviewed. Names the five binary-producing repositories
   (`zl-zpr-compiler`, `zl-zpr-visaservice`, `zl-zpr-core`, `zl-zpr-coredns`,
-  `zl-zpr-demo`) with one ref each. `zl-zpr-common`, `zl-zpr-policy` and
+  `zl-zpr-demo`) with one ref each. **The build is named after the file** —
+  the file name without its extension, so `2026-09-25.yaml` builds
+  `.zpr-build/2026-09-25/`; the `name:` field inside is optional and ignored
+  on input (zipline#115). `zl-zpr-common`, `zl-zpr-policy` and
   `zl-zpr-vsapi` are deliberately absent: cargo consumes them from Git by tag,
   so the set's `zl-zpr-common` version is *derived* from what the consumers
   agree on. An optional `allow_pin_drift:` list tolerates a named crate's pin
@@ -395,10 +398,12 @@ working knowledge.
 - **Emitted manifest** — `dist/zpr-set-<name>.yaml`, written by every run
   whose gates pass (even when a build step or test tier later fails — the most
   interesting set to reproduce is the one that broke). Same schema with every
-  ref resolved to a 40-character sha, plus a diagnostic `resolved:` block
+  ref resolved to a 40-character sha — and the derived name recorded in
+  `name:` — plus a diagnostic `resolved:` block
   (pins, versions, host toolchain, per-binary sha256, tier results) that a
   later read ignores. Feeding it back as `--manifest` rebuilds the same set:
-  a sha resolves to itself.
+  a sha resolves to itself (into `.zpr-build/zpr-set-<name>/`, named after
+  the emitted file, so it never collides with the original's directory).
 
 Refs resolve against the **local checkouts, with no fetch** — `zpr-dev`
 treats a fetch as a mutation. A tag pushed but never fetched fails as an
@@ -475,8 +480,14 @@ instead.
 3. Review `dist/zpr-set-<name>.yaml`: the `notes:` first — they name every
    tier that did not run and why — then the resolved shas, the `pins:` block,
    and the tier results.
-4. Copy it into `build-sets/<date>.yaml` and commit it. There is no separate
-   authoring step; the emitted manifest *is* the set.
+4. Copy it into `build-sets/<date>.yaml` and commit it, unchanged. There is
+   no separate authoring step; the emitted manifest *is* the set, and the
+   **file name you give the copy is what names the next build** — the
+   `name:` field inside is ignored (zipline#115). Default selection picks
+   the lexicographically last file name, so when the day already has a set,
+   suffix the time as `YYYY-MM-DDTHHMM` (e.g. `2026-09-25T1430.yaml`):
+   `T` sorts after `.yaml`'s dot, where `-2` or `.2` would sort before it
+   and never be selected.
 5. Reproduce before relying on it: `zpr-dev build --manifest
    build-sets/<date>.yaml` must resolve to the same shas and recompute the
    same `pins:` block.
@@ -486,7 +497,8 @@ gates against the live checkouts (read-only, seconds), and `--dry-run` prints
 the resolved shas, build order, tier probes and target `dist/` without
 creating anything.
 
-Build directory: `<workspace>/.zpr-build/<name>` (`--build-dir` overrides);
+Build directory: `<workspace>/.zpr-build/<name>` — `<name>` being the
+manifest's file stem, or `tip` (`--build-dir` overrides);
 sources come from detached worktrees, so the live checkouts are never
 touched. A directory left by a previous run is refused; `--force` removes and
 recreates it. Exit codes are `zpr-dev`'s usual contract: 0 success or
