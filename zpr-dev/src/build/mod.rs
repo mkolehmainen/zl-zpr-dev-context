@@ -2292,6 +2292,109 @@ allow_pin_drift:
         assert!(error.contains("build-sets"), "{error}");
     }
 
+    // -- build name derivation (zipline#115) -----------------------------------
+
+    /// The build is named after the manifest FILE, never the `name:` field:
+    /// distinct files derive distinct names regardless of what `name:` says,
+    /// so two sets' build directories and dist manifests can coexist.
+    #[test]
+    fn derived_name_comes_from_the_file_stem() {
+        assert_eq!(
+            derived_name(Some(Path::new("build-sets/2026-09-25.yaml")), false).unwrap(),
+            "2026-09-25"
+        );
+        // The `.yml` spelling and a nested absolute path stem the same way.
+        assert_eq!(
+            derived_name(Some(Path::new("/a/b/2026-09-25T1430.yml")), false).unwrap(),
+            "2026-09-25T1430"
+        );
+        // An emitted manifest fed back in keeps its `zpr-set-` prefix
+        // verbatim: slightly clunky, but harmless, and it cannot collide
+        // with the original set's directory (proposal item 4).
+        assert_eq!(
+            derived_name(Some(Path::new("dist/zpr-set-2026-09-25.yaml")), false).unwrap(),
+            "zpr-set-2026-09-25"
+        );
+    }
+
+    /// `--tip` has no manifest file to name the build after, so it keeps `tip`.
+    #[test]
+    fn derived_name_for_tip_is_tip() {
+        assert_eq!(derived_name(None, true).unwrap(), "tip");
+    }
+
+    /// The safe-path-component rule moved from the `name:` field to the
+    /// derived name (zipline#115): the name still lands in `.zpr-build/<name>`
+    /// and `--force` still removes that directory wholesale, so a stem that
+    /// is `.`/`..` or carries a separator is rejected naming the rule.
+    #[test]
+    fn derived_name_rejects_unsafe_or_empty_stems() {
+        // "..yaml" stems to `.`; a backslash is a separator where the
+        // tarball may land even though Linux tolerates it in a file name.
+        for path in ["..yaml", "a\\b.yaml"] {
+            let error = derived_name(Some(Path::new(path)), false)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("path component"), "{path}: {error}");
+        }
+        // No file name at all: nothing to derive from.
+        assert!(derived_name(Some(Path::new("/")), false).is_err());
+    }
+
+    /// `name:` is optional and ignored on input (zipline#115): a manifest
+    /// without one parses, because the build is named after the file.
+    #[test]
+    fn manifest_without_name_parses() {
+        let text = VALID.replace("name: 2026-09-17\n", "");
+        let set = parse(&text).unwrap();
+        assert_eq!(set.name, None);
+    }
+
+    /// `--build-dir` still overrides the derived default (zipline#115).
+    #[test]
+    fn build_dir_override_and_derived_default() {
+        let ws = Path::new("/ws");
+        assert_eq!(
+            build_dir_for(Some(Path::new("/custom")), ws, "2026-09-25"),
+            PathBuf::from("/custom")
+        );
+        assert_eq!(
+            build_dir_for(None, ws, "2026-09-25"),
+            PathBuf::from("/ws/.zpr-build/2026-09-25")
+        );
+    }
+
+    /// Same-day sets: a `T<HHMM>` suffix sorts AFTER the plain date, so the
+    /// suffixed set is what default selection picks (zipline#115; the
+    /// same-day naming guidance of spec-003 §2.2).
+    #[test]
+    fn default_manifest_same_day_suffix_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("build-sets");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("2026-09-25.yaml"), "first").unwrap();
+        std::fs::write(dir.join("2026-09-25T1430.yaml"), "second").unwrap();
+
+        let path = default_manifest_path(tmp.path()).unwrap();
+        assert_eq!(path, dir.join("2026-09-25T1430.yaml"));
+    }
+
+    /// The emitted manifest records the DERIVED name in `name:` (zipline#115,
+    /// proposal item 3): the input's `name:` field — stale `tip` here — is
+    /// ignored, and what lands in the record is the name the build ran under.
+    #[test]
+    fn emit_records_the_derived_name_not_the_name_field() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let set = parse("version: 1\nname: tip\nrepositories:\n  zl-zpr-core: main\n").unwrap();
+        let resolved = resolve_set(&workspace, &set).unwrap();
+
+        let emitted = emit("2026-09-25", &set, &resolved, false).unwrap();
+        assert_eq!(emitted.name, "2026-09-25");
+        // And the YAML round-trips carrying that name.
+        let reread = parse(&emitted_yaml(&emitted).unwrap()).unwrap();
+        assert_eq!(reread.name.as_deref(), Some("2026-09-25"));
+    }
+
     // -- ref resolution (spec-003 §2.3) --------------------------------------
 
     /// Runs git in `dir` for fixture setup, panicking on failure.
@@ -2799,6 +2902,45 @@ allow_pin_drift:
     /// The `--test none` selection, for the B3-era tests above the tier ones.
     fn no_tiers() -> tiers::Selection {
         tiers::Selection::parse(Some("none")).unwrap()
+    }
+
+    /// The build directory and the dist manifest are named by the DERIVED
+    /// name, never the set's `name:` field (zipline#115): a set whose file
+    /// says `name: tip` builds `dist/zpr-set-<file-stem>.yaml`, so two files
+    /// with the same stale `name:` cannot collide.
+    #[test]
+    fn execute_build_names_outputs_by_the_derived_name() {
+        let (_tmp, workspace, _sha) = workspace_with_repo();
+        // The set's `name:` field says `tip`; the derived name does not.
+        let set = parse("version: 1\nname: tip\nrepositories:\n  zl-zpr-core: main\n").unwrap();
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("2026-09-25");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let mut build_inputs = inputs(
+            &set,
+            &resolved,
+            &workspace,
+            &manifest,
+            &build_dir,
+            &recipes,
+            true,
+            false,
+            &no_tiers(),
+        );
+        build_inputs.name = "2026-09-25";
+        let ok = execute_build(&build_inputs).unwrap();
+        assert!(ok);
+
+        // The emitted manifest is named and stamped with the derived name.
+        let text =
+            std::fs::read_to_string(build_dir.join("dist").join("zpr-set-2026-09-25.yaml"))
+                .unwrap();
+        let reread = parse(&text).unwrap();
+        assert_eq!(reread.name.as_deref(), Some("2026-09-25"));
     }
 
     /// The emitted manifest is written to `dist/zpr-set-<name>.yaml` **even
