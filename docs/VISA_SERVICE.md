@@ -427,6 +427,8 @@ shipped. Full plan text is in git history:
   umbrella [zipline#22](https://github.com/mkolehmainen/zipline/issues/22)
 - `git show a35b224:docs/plans/2026-09-24-static-address-grants.md` — umbrella
   [zipline#95](https://github.com/mkolehmainen/zipline/issues/95)
+- `git show b817c70:docs/plans/2026-09-25-retire-authored-address-pins.md` —
+  umbrella [zipline#106](https://github.com/mkolehmainen/zipline/issues/106)
 
 ### Trusted-service interplay (an `oidc` authenticator plus a `file` overlay)
 
@@ -471,7 +473,10 @@ first-wins instead of last-wins, which is still arbitrary.
 **The peer's requested `zpr.addr` is a check, not a grant.** Previously any
 matched join policy committed it, so any service provider could self-assign any
 address, overwriting a live actor keyed on it or colliding with the pool.
-Precedence is policy pin, then trusted-service grant, then pool. An unconfirmed
+Precedence is policy pin, then trusted-service grant, then pool — and since
+zipline#109 the only policy pin left is a node's `zpr_address`; for adapters
+the precedence starts at the grant (see *Authored `zpr.addr` pins retired*
+below). An unconfirmed
 request is **scrubbed and the actor gets a pool address, rather than denied**.
 That reuses the existing no-match path, and both peers already refuse a
 substituted address with a clear message (the adapter's
@@ -522,6 +527,53 @@ the startup record, which broke every netns test. The fix is the `vs.zpr`
 exception described under "Authenticating actors".
 ([zipline#102](https://github.com/mkolehmainen/zipline/issues/102))
 
+### Authored `zpr.addr` pins retired: adapter static addresses come only from grants
+
+Carried over from the retired plan
+(`git show b817c70:docs/plans/2026-09-25-retire-authored-address-pins.md`),
+umbrella [zipline#106](https://github.com/mkolehmainen/zipline/issues/106).
+An adapter's static ZPR address has exactly one authored source: a trusted
+service vending `device.zpr_addr`. The `[["zpr.addr", ...]]` provider entry in
+a `.zplc` is a compile error.
+
+**Hard compile error, not a deprecation warning.** Early-release code with no
+compatibility burden, and a warning trips `--Werror` anyway. The error names
+`device.zpr_addr` and the `file`-store shape, so the fix is in the message.
+([zipline#109](https://github.com/mkolehmainen/zipline/issues/109))
+
+**Nodes keep `zpr_address`, and the visa service keeps `fd5a:5052::1`.** Both
+are fixed by the network's own configuration, not granted to an endpoint. Node
+addresses feed the compiler's topology planning; the visa service address is a
+compile-time constant on both sides ("Constants that must stay in sync").
+Neither goes through `vec_to_attributes`, so the compile error does not reach
+them. ([zipline#106](https://github.com/mkolehmainen/zipline/issues/106))
+
+**No visa-service change and no `POLICY_MIN_COMPILER_MINOR` bump.** An old
+policy carrying an authored pin is still a signed policy granting an address,
+so honouring it is not a hole; bumping the floor to refuse it would buy
+nothing. The pin-versus-grant precedence and conflict checks in
+`authorize_connection` stay, because the node path still produces pins.
+([zipline#109](https://github.com/mkolehmainen/zipline/issues/109))
+
+**Adapters that bring up a static TUN keep `zpr_addr` in their config.** The
+request is scrubbed (no pin matches), the grant supplies the same address, and
+the adapter's `GrantedAddressMismatch` check passes. Request and grant must
+agree; that is the operator's contract, and the adapter already reports a
+mismatch loudly.
+([zipline#107](https://github.com/mkolehmainen/zipline/issues/107))
+
+**One store per deployment, keyed on the adapter CN.** `device.zpr.adapter.cn`
+is authenticated for every bootstrap adapter. Where a deployment already has a
+device-keyed `file` store, extend it rather than adding a second — dns-demo's
+`machines` store is the naming *and* addressing authority.
+([zipline#108](https://github.com/mkolehmainen/zipline/issues/108))
+
+**Depends on zipline#105 and does not work around its absence.** Without the
+retention rule an address-only store is pruned unless a ZPL statement
+references it, and every fixture would need a throwaway reference — the trap
+this work was meant to end.
+([zipline#105](https://github.com/mkolehmainen/zipline/issues/105))
+
 ### Deferred
 
 No tracker issues are filed for these unless linked.
@@ -531,9 +583,6 @@ No tracker issues are filed for these unless linked.
   deployment needs two concurrent user authorities.
 - **Compile-time pool check.** Once the pool ranges are stable enough to share
   through `zl-zpr-common`.
-- **Retiring `zpr.addr` in `define ... with`**
-  ([zpr-compiler#133](https://github.com/org-zpr/zpr-compiler/issues/133)).
-  Whether policy text should carry addresses at all once grants exist.
 
 ---
 
