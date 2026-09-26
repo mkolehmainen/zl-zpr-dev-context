@@ -1,5 +1,4 @@
 version: 1
-name: tip
 repositories:
   zl-zpr-compiler: 3a7cc4e7ac41ba4d7c4da32f3df1e3358f0ed562
   zl-zpr-core: 824d7a53bf4726f223868e672d4c12b65353b46b
