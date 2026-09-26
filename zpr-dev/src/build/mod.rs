@@ -37,8 +37,12 @@ const BUILD_ORDER: [&str; 5] = [
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BuildSet {
     pub version: u32,
-    /// Names the build and its dist directory.
-    pub name: String,
+    /// Optional and **ignored on input** (zipline#115): the build is named
+    /// after the manifest's file name, so two files carrying the same stale
+    /// `name:` cannot collide. Kept in the schema because the emitted
+    /// manifest records the derived name here, and older sets still carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Repository name → tag, branch or sha. A `BTreeMap` so iteration and
     /// serialization order are deterministic.
     pub repositories: BTreeMap<String, String>,
@@ -68,26 +72,9 @@ pub fn parse(text: &str) -> Result<BuildSet> {
             set.version
         );
     }
-    if set.name.trim().is_empty() {
-        bail!("build set has an empty name; the name labels the build and its dist directory");
-    }
-    // The name becomes a filesystem path (`.zpr-build/<name>`, the emitted
-    // manifest and tarball names), and `--force` removes that directory
-    // wholesale — so a name like `..`, `a/b` or `/abs` could escape the build
-    // root and put arbitrary directories in `remove_dir_all`'s path. Require
-    // one plain path component: no separators, no `.`/`..`, not absolute.
-    if set.name.contains(['/', '\\'])
-        || set.name == "."
-        || set.name == ".."
-        || Path::new(&set.name).is_absolute()
-    {
-        bail!(
-            "build set name {:?} is not a single safe path component; \
-             it names the build directory, so it must contain no path \
-             separators and must not be `.` or `..`",
-            set.name
-        );
-    }
+    // `name:` is deliberately unchecked: it is ignored on input (zipline#115)
+    // — the build is named after the manifest's file name, which is checked
+    // by `derived_name` instead.
     if set.repositories.is_empty() {
         bail!("build set lists no repositories");
     }
@@ -119,6 +106,58 @@ pub fn validate_against(set: &BuildSet, manifest: &Manifest) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Derives the build's name (zipline#115): `tip` under `--tip` — there is no
+/// file to name it after — otherwise the manifest's file name without its
+/// extension, so `build-sets/2026-09-25T1430.yaml` builds `.zpr-build/
+/// 2026-09-25T1430/` and two files with the same stale `name:` field cannot
+/// share a build directory. An emitted manifest fed back in derives its
+/// `zpr-set-` stem verbatim — no special handling, and no collision with the
+/// original set.
+///
+/// The name becomes a filesystem path (`.zpr-build/<name>`, the emitted
+/// manifest and tarball names), and `--force` removes that directory
+/// wholesale — so a stem like `..` or one carrying a separator could escape
+/// the build root and put arbitrary directories in `remove_dir_all`'s path.
+/// Require one plain path component: non-empty, no separators, not `.`/`..`.
+pub fn derived_name(manifest_path: Option<&Path>, tip: bool) -> Result<String> {
+    if tip {
+        return Ok("tip".to_string());
+    }
+    let path = manifest_path.ok_or_else(|| {
+        // `run()` always supplies a path when not under --tip; this guards
+        // the contract rather than a reachable CLI state.
+        anyhow::anyhow!("no manifest path to derive the build name from")
+    })?;
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    if stem.is_empty()
+        || stem.contains(['/', '\\'])
+        || stem == "."
+        || stem == ".."
+        || Path::new(stem).is_absolute()
+    {
+        bail!(
+            "manifest file name {:?} does not derive a safe path component; \
+             the file name (without extension) names the build directory, so \
+             it must be non-empty, contain no path separators and must not \
+             be `.` or `..`",
+            path.display().to_string()
+        );
+    }
+    Ok(stem.to_string())
+}
+
+/// The build directory: `--build-dir` verbatim when given, otherwise
+/// `<workspace>/.zpr-build/<name>` — the same precedence as before
+/// zipline#115, with the name now derived from the manifest file.
+fn build_dir_for(build_dir: Option<&Path>, workspace: &Path, name: &str) -> PathBuf {
+    build_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace.join(".zpr-build").join(name))
 }
 
 /// Picks the default build set: the newest file in `<context>/build-sets/` by
@@ -397,7 +436,9 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     // workspace.yaml (spec-003 §2.3). A named set supplies both instead. The
     // tip branch synthesizes a set so the emitted-manifest path (§3) is one
     // code path — which is also how a --tip run is promoted to a named set.
-    let (set, resolution, skipped) = if args.tip {
+    // The build's name is derived per zipline#115: `tip`, or the manifest's
+    // file stem — never the set's `name:` field, which is ignored on input.
+    let (set, resolution, skipped, name, manifest_path) = if args.tip {
         let mut repos: Vec<(&str, &str)> = Vec::new();
         let mut skipped: Vec<&str> = Vec::new();
         for wanted in BUILD_ORDER {
@@ -413,7 +454,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         }
         let set = BuildSet {
             version: SUPPORTED_VERSION,
-            name: "tip".to_string(),
+            name: None,
             repositories: repos
                 .iter()
                 .map(|(name, branch)| (name.to_string(), format!("origin/{branch}")))
@@ -421,7 +462,9 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
             allow_pin_drift: Vec::new(),
         };
         let resolution = resolve_tip(&ctx.workspace, &repos);
-        (set, resolution, skipped)
+        let name = derived_name(None, true)?;
+        // What the emitted manifest records as its own provenance (spec-003 §3).
+        (set, resolution, skipped, name, "--tip".to_string())
     } else {
         let path = match &args.manifest {
             Some(path) => path.clone(),
@@ -432,7 +475,9 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         let set = parse(&text)?;
         validate_against(&set, &manifest)?;
         let resolution = resolve_set(&ctx.workspace, &set);
-        (set, resolution, vec![])
+        let name = derived_name(Some(&path), false)?;
+        let manifest_path = path.display().to_string();
+        (set, resolution, vec![], name, manifest_path)
     };
 
     // A resolution failure is a gate-style finding — the set is incoherent on
@@ -448,13 +493,13 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
     if ctx.dry_run {
         // The manifest a real run would write: built here so the shape is
         // exercised end to end, printed under --verbose, never written.
-        let mut emitted = emit(&set, &resolved, args.tip)?;
+        let mut emitted = emit(&name, &set, &resolved, args.tip)?;
         // The preview carries what the run already knows: the request and
         // the operator's notes. The generated notes and tests_skipped need
         // tier results a dry run does not have (PR #22 Codex P2).
         emitted.resolved.tests_requested = selection.requested().to_string();
         emitted.resolved.notes = args.note.clone();
-        report_dry_run(ctx, &set.name, &resolved, &skipped, args, &selection);
+        report_dry_run(ctx, &name, &resolved, &skipped, args, &selection);
         if ctx.verbose && !ctx.quiet {
             println!();
             println!("emitted manifest (would be written on a real run):");
@@ -470,10 +515,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         }
     }
 
-    let build_dir = args
-        .build_dir
-        .clone()
-        .unwrap_or_else(|| ctx.workspace.join(".zpr-build").join(&set.name));
+    let build_dir = build_dir_for(args.build_dir.as_deref(), &ctx.workspace, &name);
     // The manifest's repository names, for the registration-side prune in
     // unregister_worktrees: the filesystem walk alone cannot see worktrees
     // whose directories were deleted by hand (zipline#71).
@@ -484,15 +526,6 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         .collect();
     prepare_build_dir(&build_dir, ctx.force, &ctx.workspace, &manifest_repo_names)?;
 
-    // What the emitted manifest records as its own provenance (spec-003 §3).
-    let manifest_path = if args.tip {
-        "--tip".to_string()
-    } else {
-        match &args.manifest {
-            Some(path) => path.display().to_string(),
-            None => default_manifest_path(&ctx.context)?.display().to_string(),
-        }
-    };
     let context_sha = crate::git::head_short(&ctx.context).unwrap_or_default();
 
     // The end-to-end tiers' prerequisite probes (task B5), resolved before
@@ -566,6 +599,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
 
     let ok = execute_build(&BuildInputs {
         set: &set,
+        name: &name,
         resolved: &resolved,
         workspace: &ctx.workspace,
         manifest: &manifest,
@@ -696,7 +730,8 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
 
     // The repositories whose manifests the gates scan, and the tolerated
     // drift entries, come from the build set — synthesized under `--tip`
-    // exactly as the dry-run path does (spec-003 §2.3).
+    // exactly as the dry-run path does (spec-003 §2.3). The report label is
+    // the derived name (zipline#115), never the set's `name:` field.
     let (scan_names, drift, set_name) = if args.tip {
         let names: Vec<String> = BUILD_ORDER
             .iter()
@@ -706,7 +741,7 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
         if names.is_empty() {
             bail!("--tip found none of the build-set repositories in workspace.yaml");
         }
-        (names, Vec::new(), "tip".to_string())
+        (names, Vec::new(), derived_name(None, true)?)
     } else {
         let path = match &args.manifest {
             Some(path) => path.clone(),
@@ -719,7 +754,7 @@ fn run_gates(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCod
         (
             set.repositories.keys().cloned().collect(),
             set.allow_pin_drift.clone(),
-            set.name.clone(),
+            derived_name(Some(&path), false)?,
         )
     };
 
@@ -1431,18 +1466,25 @@ pub fn coverage_summary(
     coverage
 }
 
-/// Builds the emitted manifest for a resolution (spec-003 §3): the input set's
-/// name and drift entries with every ref replaced by its sha, plus the
-/// `resolved:` block shape that B3–B5 fill in — present but honestly empty at
-/// this stage, so nothing pretends a build or a tier ran.
-pub fn emit(set: &BuildSet, resolved: &[Resolved], tip: bool) -> Result<EmittedManifest> {
+/// Builds the emitted manifest for a resolution (spec-003 §3): the derived
+/// build name (zipline#115 — recorded in `name:` so the file says what it
+/// actually built as; the input's `name:` field is ignored), the input set's
+/// drift entries with every ref replaced by its sha, plus the `resolved:`
+/// block shape that B3–B5 fill in — present but honestly empty at this
+/// stage, so nothing pretends a build or a tier ran.
+pub fn emit(
+    name: &str,
+    set: &BuildSet,
+    resolved: &[Resolved],
+    tip: bool,
+) -> Result<EmittedManifest> {
     let repositories: BTreeMap<String, String> = resolved
         .iter()
         .map(|entry| (entry.repo.clone(), entry.sha.clone()))
         .collect();
     Ok(EmittedManifest {
         version: SUPPORTED_VERSION,
-        name: set.name.clone(),
+        name: name.to_string(),
         repositories,
         allow_pin_drift: set.allow_pin_drift.clone(),
         resolved: ResolvedBlock {
@@ -1473,6 +1515,10 @@ pub fn emitted_yaml(manifest: &EmittedManifest) -> Result<String> {
 /// record about its own provenance.
 struct BuildInputs<'a> {
     set: &'a BuildSet,
+    /// The derived build name (zipline#115): the manifest's file stem, or
+    /// `tip`. Names the report, the emitted manifest and the tarball; the
+    /// set's `name:` field is ignored.
+    name: &'a str,
     resolved: &'a [Resolved],
     workspace: &'a Path,
     /// The workspace manifest, for the derived `zl-zpr-common` gate scan.
@@ -1588,7 +1634,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
         crate::git::worktree_remove(&inputs.workspace.join("zl-zpr-common"), &dest)?;
     }
     let outcome = outcome?;
-    let gate_errors = print_findings(inputs.quiet, &inputs.set.name, &outcome.findings);
+    let gate_errors = print_findings(inputs.quiet, inputs.name, &outcome.findings);
     if gate_errors > 0 {
         // No manifest: it is emitted only when the gates pass (spec-003 §3).
         // Nothing was built, so the worktrees hold nothing to debug.
@@ -1876,7 +1922,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
 
     // -- the emitted manifest, written even on build or tier failure ---------
     // (spec-003 §3: emitted whenever the gates pass, failures recorded.)
-    let mut emitted = emit(inputs.set, inputs.resolved, inputs.tip)?;
+    let mut emitted = emit(inputs.name, inputs.set, inputs.resolved, inputs.tip)?;
     emitted.resolved.built_from.manifest = inputs.manifest_path.clone();
     emitted.resolved.built_from.context = inputs.context_sha.clone();
     emitted.resolved.host = host_stamps();
@@ -1908,7 +1954,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
     emitted.resolved.tests_skipped = coverage.skipped;
     emitted.resolved.notes = coverage.notes;
     emitted.resolved.tiers = tier_results;
-    let manifest_file = dist.join(format!("zpr-set-{}.yaml", inputs.set.name));
+    let manifest_file = dist.join(format!("zpr-set-{}.yaml", inputs.name));
     std::fs::write(&manifest_file, emitted_yaml(&emitted)?)
         .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", manifest_file.display()))?;
     if !inputs.quiet {
@@ -1943,7 +1989,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
 
     // -- tarball (task B3 step 6) --------------------------------------------
     if !inputs.no_tarball {
-        write_tarball(&dist, &inputs.set.name, inputs.quiet)?;
+        write_tarball(&dist, inputs.name, inputs.quiet)?;
     }
 
     // -- prune worktrees on success unless --keep (task B3 step 7) -----------
@@ -2180,7 +2226,7 @@ allow_pin_drift:
     fn valid_build_set_parses() {
         let set = parse(VALID).unwrap();
         assert_eq!(set.version, 1);
-        assert_eq!(set.name, "2026-09-17");
+        assert_eq!(set.name.as_deref(), Some("2026-09-17"));
         assert_eq!(set.repositories["zl-zpr-core"], "v0.3.1");
         assert_eq!(set.repositories["zl-zpr-common"], "main");
         assert_eq!(set.allow_pin_drift.len(), 1);
@@ -2202,10 +2248,14 @@ allow_pin_drift:
         assert!(error.contains("version"), "{error}");
     }
 
+    /// The `name:` field is ignored on input (zipline#115), so a value that
+    /// would once have been rejected — empty here — parses fine: nothing
+    /// consumes it, and the build is named after the manifest file, where the
+    /// safe-path-component rule now lives (see `derived_name`'s tests).
     #[test]
-    fn empty_name_is_rejected() {
+    fn empty_name_field_is_tolerated() {
         let text = VALID.replace("name: 2026-09-17", "name: \"\"");
-        assert!(parse(&text).is_err());
+        assert!(parse(&text).is_ok());
     }
 
     #[test]
@@ -2213,17 +2263,15 @@ allow_pin_drift:
         assert!(parse("version: 1\nname: x\nrepositories: {}\n").is_err());
     }
 
-    /// A name that is not a single plain path component is rejected at parse
-    /// time: the name lands in `.zpr-build/<name>` and the emitted file
-    /// names, and `--force` removes that directory wholesale — so `..`, a
-    /// separator or an absolute path could escape the build root and delete
-    /// an arbitrary directory (Codex review on PR #8).
+    /// The safe-path-component rule no longer applies to the `name:` field
+    /// (zipline#115): it is ignored on input, so even a traversal-shaped
+    /// value parses. The rule lives on the derived name — see
+    /// `derived_name_rejects_unsafe_or_empty_stems`.
     #[test]
-    fn traversal_names_are_rejected_naming_the_rule() {
+    fn traversal_name_field_is_tolerated_because_ignored() {
         for name in ["'..'", "'.'", "'../evil'", "'/abs'", "'a/b'", "'a\\b'"] {
             let text = VALID.replace("name: 2026-09-17", &format!("name: {name}"));
-            let error = parse(&text).unwrap_err().to_string();
-            assert!(error.contains("path component"), "{name}: {error}");
+            assert!(parse(&text).is_ok(), "{name}");
         }
     }
 
@@ -2549,13 +2597,13 @@ allow_pin_drift:
         let set = one_repo_set("v0.3.1");
         let resolved = resolve_set(&workspace, &set).unwrap();
 
-        let emitted = emit(&set, &resolved, false).unwrap();
+        let emitted = emit("t", &set, &resolved, false).unwrap();
         let yaml = emitted_yaml(&emitted).unwrap();
         assert!(yaml.contains("resolved:"), "{yaml}");
 
         // Re-read as an input build set: parses cleanly, refs are the shas.
         let reread = parse(&yaml).unwrap();
-        assert_eq!(reread.name, set.name);
+        assert_eq!(reread.name.as_deref(), Some("t"));
         assert_eq!(reread.repositories["zl-zpr-core"], sha);
         assert_eq!(reread.allow_pin_drift.len(), set.allow_pin_drift.len());
 
@@ -2570,7 +2618,7 @@ allow_pin_drift:
     }
 
     /// The emitted repositories map holds full 40-character shas, never the
-    /// input refs, and records the input's name and drift entries unchanged.
+    /// input refs, and records the derived name and drift entries.
     #[test]
     fn emit_replaces_refs_with_shas_and_keeps_name_and_drift() {
         let (_tmp, workspace, sha) = workspace_with_repo();
@@ -2581,7 +2629,7 @@ allow_pin_drift:
         .unwrap();
         let resolved = resolve_set(&workspace, &set).unwrap();
 
-        let emitted = emit(&set, &resolved, true).unwrap();
+        let emitted = emit("2026-09-17", &set, &resolved, true).unwrap();
         assert_eq!(emitted.version, 1);
         assert_eq!(emitted.name, "2026-09-17");
         assert_eq!(emitted.repositories["zl-zpr-core"], sha);
@@ -2877,6 +2925,7 @@ allow_pin_drift:
     ) -> BuildInputs<'a> {
         BuildInputs {
             set,
+            name: "t",
             resolved,
             workspace,
             manifest,
@@ -2920,25 +2969,17 @@ allow_pin_drift:
         prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
 
         let recipes = vec![ok_recipe()];
+        let selection = no_tiers();
         let mut build_inputs = inputs(
-            &set,
-            &resolved,
-            &workspace,
-            &manifest,
-            &build_dir,
-            &recipes,
-            true,
-            false,
-            &no_tiers(),
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
         );
         build_inputs.name = "2026-09-25";
         let ok = execute_build(&build_inputs).unwrap();
         assert!(ok);
 
         // The emitted manifest is named and stamped with the derived name.
-        let text =
-            std::fs::read_to_string(build_dir.join("dist").join("zpr-set-2026-09-25.yaml"))
-                .unwrap();
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-2026-09-25.yaml"))
+            .unwrap();
         let reread = parse(&text).unwrap();
         assert_eq!(reread.name.as_deref(), Some("2026-09-25"));
     }
