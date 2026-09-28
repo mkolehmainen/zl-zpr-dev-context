@@ -1,6 +1,6 @@
 # Policy-install re-authentication; bootstrap authentication does not expire
 
-**Status:** IN FLIGHT — umbrella zipline#TBD.
+**Status:** IN FLIGHT — umbrella zipline#118.
 **Date:** 2026-09-28
 **Repo state this plan was written against:** `zl-zpr-core` @ `25f9e93`, `zl-zpr-visaservice` @ `881f7ba`, `zl-zpr-vsapi` (via `zl-zpr-common` v0.29.0), `zl-zpr-dev-context` @ `2225875`, all on `zipline`. Line references are against those commits.
 
@@ -113,14 +113,14 @@ V1 + V3 ─► I1 integration: one-node-policy-reauth-test.sh                   
 
 | Task | Repo | Issue |
 |---|---|---|
-| Umbrella | — | zipline#TBD |
-| V1 | `zl-zpr-visaservice` | zipline#TBD |
-| V2 | `zl-zpr-visaservice` | zipline#TBD |
-| N1 | `zl-zpr-core` | zipline#TBD |
-| N2 | `zl-zpr-core` | zipline#TBD |
-| V3 | `zl-zpr-visaservice` | zipline#TBD |
-| I1 | `zl-zpr-core` | zipline#TBD |
-| Z1 | `zl-zpr-dev-context` | zipline#TBD |
+| Umbrella | — | zipline#118 |
+| V1 | `zl-zpr-visaservice` | zipline#119 |
+| V2 | `zl-zpr-visaservice` | zipline#120 |
+| N1 | `zl-zpr-core` | zipline#121 |
+| N2 | `zl-zpr-core` | zipline#122 |
+| V3 | `zl-zpr-visaservice` | zipline#123 |
+| I1 | `zl-zpr-core` | zipline#124 |
+| Z1 | `zl-zpr-dev-context` | zipline#125 |
 
 ---
 
