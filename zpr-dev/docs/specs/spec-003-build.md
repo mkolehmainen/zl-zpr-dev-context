@@ -344,7 +344,7 @@ step's output is available to the next:
 | Tier | What runs | Prerequisites | Default |
 |---|---|---|---|
 | `unit` | `make test` in each built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | run |
-| `netns` | the nine `zl-zpr-core/integration-test/` scripts | Linux, and either (passwordless `sudo` or `--prompt-for-sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | `--test netns` |
+| `netns` | the ten `zl-zpr-core/integration-test/` scripts | Linux, and either (passwordless `sudo` or `--prompt-for-sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | `--test netns` |
 | `docker` | `dns-demo` deploy, `test-dns.sh`, `docker compose down -v` | `docker`, `docker compose` | `--test docker` |
 
 - A tier that was asked for and cannot run is an error under `--test all`; a
@@ -364,7 +364,7 @@ step's output is available to the next:
   (zipline#92/#93). The host route wins whenever its own prerequisites —
   passwordless `sudo` or a primed credential, `valkey-server`, `python3` —
   all hold; otherwise, when a Docker daemon is reachable (`docker info`
-  succeeds), the same nine scripts run as root inside the privileged
+  succeeds), the same ten scripts run as root inside the privileged
   container of `zl-zpr-core/integration-test/`'s `make docker-test`, one
   `make` invocation per script with `WORKSPACE=<build-dir>`; when neither
   route works, the tier skips — or errors when explicitly requested — with
