@@ -325,8 +325,12 @@ and was tagged **`v0.30.0`**, then `zl-zpr-compiler`, `zl-zpr-visaservice` and
 `zl-zpr-core` bumped their `capnp*` crates and their `zpr` pin to that tag in
 the same set, because generated capnp code and the `zpr` re-exports must agree
 on the capnp version. A future capnp bump follows the same shape: common
-first, tag it, then every consumer in one round (gate 1 catches a half-applied
-bump).
+first, tag it, then every consumer in one round. Gate 1 catches a
+half-applied **`zpr` tag** bump only — it compares git dependency pins, and
+the lock scan likewise ignores registry crates — so the direct crates.io
+`capnp*` requirements are invisible to it and must be checked separately:
+verify every consumer's `capnp`, `capnp-rpc` and `capnpc` requirements moved
+in the same round.
 `zl-zpr-core` used to patch the capnp crates to a fork
 (`emilazy/capnproto-rust`) for the fd-passing `capnp-ancillary` feature; the
 fork did not compile for Windows and the feature was deleted with it
