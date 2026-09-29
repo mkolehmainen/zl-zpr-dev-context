@@ -113,6 +113,16 @@ stay possible.
    fork: Cargo prefers a matching patch even when its version is lower. So
    the fix is a required `cargo update` in F3. Raising the fork's crate
    versions isn't needed, and would break the fork's no-bump rule.
+10. **A mainline build must drop the feature's declaration, not just leave
+    the feature off** (raised by Codex on dev-context#42; tested 2026-09-29 with a
+    scratch crate). crates.io `capnp-futures` 0.26/0.27 declares no features at
+    all. A manifest whose `capnp-ancillary` feature lists
+    `capnp-futures/tokio-unix-fd-stream` fails dependency resolution against
+    mainline (`capnp-futures does not have that feature`). That happens with
+    default features, with `--no-default-features`, and for the Windows target
+    alike, because Cargo checks every declared feature. With the fork patch in
+    place, the feature exists on every target, so normal builds, Windows
+    included, are unaffected. D4 lists the edits a mainline build needs.
 
 ## Decisions
 
@@ -143,10 +153,20 @@ stay possible.
   feature, on by default. It pulls `capnp-futures/tokio-unix-fd-stream` only
   from `[target.'cfg(unix)'.dependencies]`. Code is gated on
   `cfg(all(unix, feature = "capnp-ancillary"))`. Everywhere else,
-  `setCaptureFile` returns `capture_unsupported()`. Builds with
-  `--no-default-features` compile with no fork-only API use. So "build against
-  mainline" (org-zpr#1399 requirement 2) is just "delete the
-  `[patch.crates-io]` block".
+  `setCaptureFile` returns `capture_unsupported()`. Builds without the
+  feature use no fork-only API.
+
+  **Building against mainline** (org-zpr#1399 requirement 2) takes two manifest
+  edits, not one (finding 10):
+  1. Delete the `[patch.crates-io]` block.
+  2. In `adapter/ph/Cargo.toml` and `adapter/cli/Cargo.toml`, delete the
+     `capnp-ancillary` feature (and remove it from `default`), and the
+     optional `capnp-futures` dependency it enables.
+
+  Turning the feature off with `--no-default-features` isn't enough: Cargo
+  rejects the manifest as long as any feature names
+  `capnp-futures/tokio-unix-fd-stream`. The result builds and runs, and
+  `setCaptureFile` returns Unsupported.
 - **D5 — `capture.sock` is deleted, not kept as a fallback.** This follows the
   org-zpr#1399 plan: `set_capture_file_worker.rs`, `capture_path`,
   `--capture-path`, ph-cli `-c/--cap-socket`, the `*_CAP_SOCK` variables in the
@@ -324,7 +344,8 @@ check that #135's PR met the points below; if it missed one, fix it in F3.
   block that says:
   - why the patch exists,
   - that it must build on every target,
-  - that deleting it gives a mainline build without FD capture;
+  - that a mainline build without FD capture also needs the
+    `capnp-ancillary` feature and its `capnp-futures` dependency removed (D4);
   - that after changing it you must run the `cargo update` below.
 - **Re-resolve the lockfile onto the fork (finding 9):**
   `cargo update -p capnp -p capnp-futures -p capnp-rpc -p capnpc`. Without it,
@@ -371,8 +392,15 @@ check that #135's PR met the points below; if it missed one, fix it in F3.
 - `cargo fmt --check`, the `-D warnings` build (workspace, plus
   `libnode2 --all-features`) and `cargo test` are green.
 - `cargo build -p ph --no-default-features --features io-uring,rcu-crossbeam-epoch`
-  and `cargo build -p ph-cli --no-default-features --features pcap` are green
-  (mainline-compatible shape).
+  and `cargo build -p ph-cli --no-default-features --features pcap` are green:
+  the configuration without the feature.
+- **An actual mainline build, done once and not committed.** In a scratch
+  worktree, make the two D4 edits and run
+  `cargo update -p capnp -p capnp-futures -p capnp-rpc -p capnpc`. Then:
+  - `cargo build -p ph -p ph-cli` and `cargo test -p ph -p ph-cli` are green;
+  - `Cargo.lock` has only registry `capnp*` entries.
+
+  Quote it in the PR. This is what proves org-zpr#1399 requirement 2.
 - Windows: the #126 Windows build and test steps are still green for `ph` and
   `ph-cli`, and `capture set-file` still reports Unsupported there.
 - The netns tier is green, including `capture-test.sh`, which now runs over the
