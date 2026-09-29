@@ -49,6 +49,7 @@ paths, so they can be opened directly.
 | Changing how `zpr-dev build` gates or runs the netns test tier, or its Docker fallback | `zpr-dev/docs/specs/spec-003-build.md` ("Test tiers"), `docs/BUILD.md` |
 | Changing how the visa service assigns, pins or checks a ZPR address | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Working an issue under the Windows compatibility umbrella (`ph adapter` on Windows: Wintun, `WaitSet`, named-pipe control channel) | `docs/plans/2026-09-28-windows.md`, `docs/SYSTEM_OVERVIEW.md` |
+| Working an issue under the capnp FD-passing umbrella (the `mkolehmainen/capnproto-rust` fork, unix-only `capnp-ancillary`, retiring `capture.sock`), or changing core's capnp `[patch]` | `docs/plans/2026-09-29-capnp-fd-passing-unix.md`, `docs/BUILD.md`, the fork's `ZIPLINE.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Changing authentication, identity, attributes, or trusted services | `docs/SECURITY_MODEL.md`, `docs/VISA_SERVICE.md` |
