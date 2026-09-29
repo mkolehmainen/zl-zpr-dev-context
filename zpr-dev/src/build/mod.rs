@@ -274,6 +274,12 @@ pub struct BuildArgs {
     /// run, so the netns tier can run without a NOPASSWD sudoers entry
     /// (zipline#70). Opt-in, and refused when stdin is not a terminal.
     pub prompt_for_sudo: bool,
+    /// `--jobs <N>`: how many scripts the netns tier's container route runs
+    /// at once (zipline#144). `None` keeps [`tiers::NETNS_CONTAINER_JOBS`];
+    /// the host route is always serial — its scripts share one kernel's
+    /// fixed netns names — so the flag never widens it. `NonZeroUsize`
+    /// because clap already rejected `0` at parse time.
+    pub jobs: Option<std::num::NonZeroUsize>,
     /// `--note <text>`, repeatable: operator sentences appended verbatim to
     /// the emitted manifest's `notes` after the generated ones (zipline#87).
     pub note: Vec<String>,
@@ -617,6 +623,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         docker_skip,
         valkey,
         verbose: ctx.verbose,
+        jobs: args.jobs,
         sudo_refresher: std::cell::Cell::new(sudo_refresher),
         notes: &args.note,
     })?;
@@ -1556,6 +1563,9 @@ struct BuildInputs<'a> {
     valkey: Option<PathBuf>,
     /// `--verbose`: the netns scripts get `ZPR_TEST_VERBOSE=1`.
     verbose: bool,
+    /// The operator's `--jobs` override for the netns tier's container
+    /// route width (zipline#144); `None` keeps the default.
+    jobs: Option<std::num::NonZeroUsize>,
     /// The operator's `--note` text, appended verbatim to the manifest's
     /// `notes` after the generated lines (zipline#87).
     notes: &'a [String],
@@ -1824,6 +1834,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                         inputs.verbose,
                         &runner,
                         inputs.build_dir,
+                        inputs.jobs,
                     ) {
                         Err(error) => {
                             eprintln!("error: {error:#}");
@@ -2943,6 +2954,7 @@ allow_pin_drift:
             docker_skip: None,
             valkey: None,
             verbose: false,
+            jobs: None,
             sudo_refresher: std::cell::Cell::new(None),
             notes: &[],
         }

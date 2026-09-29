@@ -145,6 +145,12 @@ enum Command {
         #[arg(long)]
         prompt_for_sudo: bool,
 
+        /// Concurrent scripts on the netns tier's container route (default
+        /// 4); the host route is always serial, its scripts share one
+        /// kernel's fixed netns names
+        #[arg(long, value_name = "N")]
+        jobs: Option<std::num::NonZeroUsize>,
+
         /// Record this sentence in the emitted manifest's `notes` (repeatable):
         /// operator context on the run's shortcomings, e.g. why a tier was left out
         #[arg(long, value_name = "TEXT")]
@@ -164,6 +170,7 @@ enum Command {
                 "allow_pin_drift",
                 "no_tarball",
                 "prompt_for_sudo",
+                "jobs",
                 "note"
             ]
         )]
@@ -264,6 +271,7 @@ fn run() -> Result<ExitCode> {
             allow_pin_drift,
             no_tarball,
             prompt_for_sudo,
+            jobs,
             note,
             clean,
         } => build::run(
@@ -279,6 +287,7 @@ fn run() -> Result<ExitCode> {
                 allow_pin_drift: *allow_pin_drift,
                 no_tarball: *no_tarball,
                 prompt_for_sudo: *prompt_for_sudo,
+                jobs: *jobs,
                 note: note.clone(),
                 clean: *clean,
             },
@@ -314,5 +323,36 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    /// `build --jobs N` parses to the tier width (zipline#144), is absent by
+    /// default so each route keeps its own default, and rejects `0` at parse
+    /// time — a zero-wide tier is a request to run nothing, which `--test
+    /// none` already says honestly.
+    #[test]
+    fn build_jobs_flag_parses_and_rejects_zero() {
+        let cli =
+            Cli::try_parse_from(["zpr-dev", "build", "--jobs", "6"]).expect("--jobs 6 parses");
+        match cli.command {
+            Command::Build { jobs, .. } => {
+                assert_eq!(jobs.map(std::num::NonZeroUsize::get), Some(6))
+            }
+            other => panic!("parsed to {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["zpr-dev", "build"]).expect("build without --jobs parses");
+        match cli.command {
+            Command::Build { jobs, .. } => assert_eq!(jobs, None),
+            other => panic!("parsed to {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["zpr-dev", "build", "--jobs", "0"]).is_err(),
+            "--jobs 0 must be a parse error"
+        );
+        // `--clean` is a mode: it conflicts with every build-shaping flag,
+        // and --jobs shapes the build.
+        assert!(
+            Cli::try_parse_from(["zpr-dev", "build", "--clean", "--jobs", "2"]).is_err(),
+            "--clean --jobs must conflict"
+        );
     }
 }
