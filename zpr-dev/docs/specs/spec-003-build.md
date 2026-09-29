@@ -366,7 +366,8 @@ step's output is available to the next:
   all hold; otherwise, when a Docker daemon is reachable (`docker info`
   succeeds), the same nine scripts run as root inside the privileged
   container of `zl-zpr-core/integration-test/`'s `make docker-test`, one
-  `make` invocation per script with `WORKSPACE=<build-dir>`; when neither
+  `make` invocation per script with `WORKSPACE=<build-dir>`, up to four at
+  once (the host route runs them one at a time); when neither
   route works, the tier skips — or errors when explicitly requested — with
   a reason naming both routes' gaps. A container run records the tier's
   provenance as `sudo: container` in the emitted manifest and adds a
@@ -593,6 +594,20 @@ beats the Makefile's `:=` — the first draft wrongly scheduled a `?=` change
 in `zl-zpr-core` (zipline#91, withdrawn); `:=` is better anyway, since an
 exported `WORKSPACE` in the operator's shell cannot leak into the mount.
 ([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+
+**Container-route scripts run four at a time; host-route scripts run
+serially.** Every script creates the same fixed netns names (`zpr-node`,
+`zpr-vs`, ...) and ports, so on the host two at once would collide. Each
+`make docker-test` is its own `docker run`, with a private network
+namespace, `/run/netns`, `/tmp` and valkey, and the scripts write their
+scratch files to `mktemp -d` rather than the bind-mounted workspace, so
+container runs are independent. Most of a script's time is spent in fixed
+`sleep`s, so the tier takes roughly as long as its slowest script instead
+of the sum of all of them. Prep builds (a2a's security-testing `ph`) all
+run first, serially, so a cargo build does not compete with running tests.
+The width is a constant (`NETNS_CONTAINER_JOBS`), not a flag: those fixed
+`sleep`s make heavy CPU contention a flake risk, and no host has needed
+another value yet.
 
 **`VALKEY_SERVER_BIN` is removed from the child environment, not merely
 omitted.** The Makefile forwards it into the container, where a host path
