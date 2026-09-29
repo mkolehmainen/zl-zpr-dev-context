@@ -372,9 +372,12 @@ pub const DEFAULT_AUTH_EXPIRATION: Duration = Duration::from_secs(4 * 60 * 60);
 ```
 
 It is a compile-time constant, not even a `vs.toml` setting, and nothing
-derives it from anything. It is a placeholder, and it is not set in stone. It
-still applies to `device.zpr.authority` — a device lifetime knob is deferred
-(see *Deferred*) — but it no longer governs a user authentication: an OIDC login's
+derives it from anything. It is a placeholder, and it is not set in stone.
+Since zipline#118/#119 it no longer applies to a bootstrap
+`device.zpr.authority`, which is stamped far-future (see *RSA bootstrap has no
+source-imposed expiry* below); it survives as the fallback identity-attribute
+lifetime where no authority sets one, and as the visa service's last-seen
+cull age for nodes at startup. It also does not govern a user authentication: an OIDC login's
 `user.zpr.authority` expiry comes from the dual clock below, driven by the
 trusted service's own `expiration_seconds` and `max_auth_age_seconds`.
 
@@ -482,12 +485,21 @@ on the calling node. The connect path's nonce check is untouched.
 the visa-expiry clamp keep working untouched — visas still clamp to the
 authentication, they just clamp to a value that now moves forward.
 
-**RSA bootstrap has no source-imposed expiry.** The source is the visa service
+**RSA bootstrap has no source-imposed expiry, and since zipline#118 it has no
+clock-driven expiry at all.** The source is the visa service
 checking a public key from its own policy. Re-proving possession of a static key
 file demonstrates nothing new: revocation in ZPR is immediate, every packet is
 visa-checked and A2A-integrity-checked, and attribute freshness is handled by
-*attribute* expiry, which refreshes independently. The device lifetime is
-therefore a policy knob with no natural value.
+*attribute* expiry, which refreshes independently. Bootstrap
+`device.zpr.authority` is therefore stamped far-future (zipline#119). What
+enforces a policy change instead is the install itself: every policy install
+obliges every connected actor — the node and each docked adapter — to
+re-authenticate every authority it holds under the new policy generation
+within the visa service's `reauth_deadline`, the RSA leg against the new
+snapshot's bootstrap keys and the OIDC leg silently through the auth agent;
+whoever cannot is revoked at the deadline (zipline#123). A bootstrap key
+removed from policy thus takes effect within one deadline of the install,
+which is a tighter and better-targeted bound than any timer.
 
 Device and user lifetimes are **independent**. Tying the device lifetime to the
 user's was considered and rejected: it couples an unattended credential to an
@@ -906,10 +918,9 @@ likely to model wrongly.
 
 | Item | Why deferred |
 |---|---|
-| Device authentication lifetime from policy (`[bootstrap] expiration_seconds`) | Needs a new `Policy`-level capnp field, compiler and VS support; independent of OIDC. Device authority stays at `DEFAULT_AUTH_EXPIRATION` |
-| Graceful degradation on user-auth expiry | Needs partial revocation in the visa service; `revokeAuthentication` is per actor. Disconnect was chosen instead (see *Credential lifetimes*) |
+| Graceful degradation on user-auth expiry | Needs partial revocation in the visa service; `revokeAuthentication` is per actor. Disconnect was chosen instead (see *Credential lifetimes*) — and install-driven re-authentication kept the rule: re-auth is all-or-nothing over the actor's namespaces (zipline#118) |
 | OS-keyring persistence for the refresh token | The token is kept in the agent process's memory; persistence is additive (a storage trait behind a flag) |
-| VS-pushed renewal via `requestAuthentication` | Node-driven pull covers renewal and works while the VS is disconnected; push is for "policy changed, re-prove now" |
+| VS-pushed renewal via `requestAuthentication` | **Done for policy install** (zipline#121/#123): the VS fans out `requestAuthentication` on every install and the node re-authenticates itself and its docked adapters. Node-driven pull still covers clock-driven renewal and works while the VS is disconnected |
 | A user-held keypair bound to `sub` at first login | The cryptographically stronger alternative to skipping the nonce on `reauthorize`; revisit if that relaxation fails security review |
 | Remove `ac @1` from `AuthBlob` and `zpr-oauthrsa` from `ZPR_L7_BUILTINS` | Schema and compiler breaks; the producing client is already deleted (zipline#15), so this waits for a coordinated bump |
 | `[bootstrap]` entries declared as user credentials | Admissible by design; no current need |

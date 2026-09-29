@@ -132,7 +132,14 @@ trusted services is named in policy rather than discovered.
   source; **policy can shorten them but not extend them**.
 - **An identity has a lifetime too** — the minimum across all the
   authentications composing it, again reducible by policy. On expiry the
-  endpoint must re-authenticate to keep using the network.
+  endpoint must re-authenticate to keep using the network. Bootstrap (RSA)
+  authentication is the deliberate exception: it does not expire on a clock,
+  because re-proving possession of a static key on a timer demonstrates
+  nothing new. What bounds it instead is the policy generation: every policy
+  install obliges every connected actor to re-authenticate under the new
+  policy within the visa service's `reauth_deadline`, and an actor that
+  cannot — its key removed from policy, say — is revoked at the deadline
+  (zipline#118).
 - **Identities carry provenance.** Each component records the trusted source
   that produced it plus a digital signature attesting authenticity.
 - **Identity attributes are immutable and unique.** An authentication service
@@ -209,6 +216,20 @@ connect path is untouched, and the two paths deliberately do not share a
 validation function taking a "skip the nonce" boolean — the nonce expectation
 is an enum, so the connect arm cannot be constructed with checking off by
 accident.
+
+**The SS (bootstrap-signature) arm.** `reauthorize` also accepts a
+self-signed blob, so a device authority is re-proved the same way install-driven
+re-authentication demands (zipline#120). One `reauthorize` carries at most one
+blob per namespace, and the namespace set must equal the live actor's
+authorities exactly — an actor that authenticated as RSA+OIDC re-proves both
+or fails. The SS arm requires all of: the target is a live actor admitted
+through the calling node; the actor holds a bootstrap `device.zpr.authority`;
+the blob's CN equals its authenticated CN; the signature verifies against the
+**pinned new snapshot's** bootstrap key; and the blob's timestamp is within
+the maximum clock skew (180 s). There is no monotonic-timestamp rule:
+freshness comes from the node-minted, HMAC'd challenge (at most 120 s old),
+and only the docking node could replay — a compromised docking node is
+already Case 2.
 
 **What this hands to an attacker, and why it is not a new threat.** The
 binding is enforced by the visa service against its own session record, and
@@ -453,7 +474,12 @@ not read the RFCs as a description of current guarantees.
   whose expiration has passed and drops the actor, batched one
   `revokeAuthentication` per docking node and removed only on a positive ack,
   so a transport outage defers rather than half-removes. The node honors the
-  revocation through its normal disconnect path. This is what makes the
+  revocation through its normal disconnect path. The same sweep enforces
+  install-driven re-authentication (zipline#123): a policy install records the
+  new generation and a deadline, the sweep re-sends `requestAuthentication` to
+  actors still authenticated under an older generation, and once the deadline
+  passes it revokes them — adapters through the same batched
+  `revokeAuthentication`, nodes by disconnect. This is what makes the
   identity-lifetime rule above an enforced bound rather than a stored value.
 - **Session-bound renewal** — the `reauthorize` bindings in *Silent
   re-authentication* above are implemented and unit-tested per row

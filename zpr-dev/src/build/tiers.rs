@@ -512,7 +512,7 @@ pub enum SudoProvenance {
 }
 
 /// Keeps a primed sudo credential alive across a run that outlives sudo's
-/// timestamp timeout (15 minutes by default; a compile plus nine netns
+/// timestamp timeout (15 minutes by default; a compile plus ten netns
 /// scripts routinely does — zipline#70 Step 4): a thread running
 /// `sudo -n -v` on `interval`, from [`SudoRefresher::start`] until
 /// [`SudoRefresher::stop`] or drop. Dropping stops it too, so an early `?`
@@ -901,7 +901,7 @@ pub fn run_unit(plans: &[RepoPlan], logs: &Path, quiet: bool) -> TierOutcome {
 // The netns tier (issue62 step 3)
 // ---------------------------------------------------------------------------
 
-/// The nine integration scripts the netns tier runs, in order. An explicit
+/// The ten integration scripts the netns tier runs, in order. An explicit
 /// list, never a glob: `integration-test/unused_or_outdated/` stays out, and
 /// adding a script to the set's gate is a reviewed change (zipline#62).
 /// The list is guarded against drift by [`netns_script_drift`] (zipline#103):
@@ -918,6 +918,7 @@ const NETNS_SCRIPTS: &[&str] = &[
     "a2a-pubkey-test.sh",
     "attr-query-test.sh",
     "one-node-oidc-renewal-test.sh",
+    "one-node-policy-reauth-test.sh",
 ];
 
 /// Top-level `integration-test/*-test.sh` scripts the netns tier
@@ -1064,7 +1065,7 @@ pub struct NetnsPlan {
 pub const NETNS_CONTAINER_JOBS: usize = 4;
 
 /// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
-/// the nine blessed scripts in order, each with the `*_BIN` overrides the
+/// the ten blessed scripts in order, each with the `*_BIN` overrides the
 /// scripts already honour pointed at `dist/` — nothing is copied into
 /// `integration-test/`. `a2a-pubkey-test.sh` alone runs the worktree-local
 /// `enable-security-testing` `ph` (a debug build that must never reach
@@ -2548,13 +2549,16 @@ mod tests {
         }
     }
 
-    /// The plan runs exactly the nine blessed scripts, in order — an
+    /// The plan runs exactly the ten blessed scripts, in order — an
     /// explicit list, not a glob: `unused_or_outdated/` and any new script
     /// stay out until reviewed in (zipline#62, zipline#103). The order is
     /// the documented one: `attr-query-test.sh` after `a2a-pubkey-test.sh`,
-    /// `one-node-oidc-renewal-test.sh` last (approved Q1 on zipline#103).
+    /// `one-node-oidc-renewal-test.sh` after that (approved Q1 on
+    /// zipline#103), and `one-node-policy-reauth-test.sh` — the
+    /// policy-install re-authentication e2e (zipline#124) — last, newest
+    /// last as with renewal (zipline#125).
     #[test]
-    fn netns_plan_lists_the_nine_scripts_in_order() {
+    fn netns_plan_lists_the_ten_scripts_in_order() {
         let plan = netns_plan(
             Path::new("/wt/zl-zpr-core"),
             Path::new("/b/dist"),
@@ -2580,6 +2584,7 @@ mod tests {
                 "a2a-pubkey-test.sh",
                 "attr-query-test.sh",
                 "one-node-oidc-renewal-test.sh",
+                "one-node-policy-reauth-test.sh",
             ]
         );
         assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));

@@ -449,7 +449,7 @@ workspace does not check out.
 | Tier | What runs | Prerequisites | Probe-gated |
 |---|---|---|---|
 | `unit` | `make test` per built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | no |
-| `netns` | the nine `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, and either (passwordless `sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | yes |
+| `netns` | the ten `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, and either (passwordless `sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | yes |
 | `docker` | `dns-demo` deploy + `test-dns.sh` + `docker compose down -v` | `docker`, `docker compose` | yes |
 
 `--test` selects: `none`, `default` (the flag absent means the same), `all`,
@@ -556,6 +556,7 @@ Other entry points, each a standalone script:
 | `one-node-oidc-test.sh` | OIDC login through the fake IdP, plus JWKS key rotation |
 | `oidc-file-interplay-test.sh` | an `oidc` and a `file` trusted service in one policy |
 | `one-node-oidc-renewal-test.sh` | silent OIDC renewal and disconnect-on-revocation. Takes several minutes: the renewal cadence is a real wall clock. It was the acceptance criterion for the node-to-adapter credential request, which landed as zipline#66; its CI job is no longer gated off, but the test has not yet been observed passing (see `docs/OIDC.md`, *Not yet*) |
+| `one-node-policy-reauth-test.sh` | policy-install re-authentication end to end (zipline#124): every policy install obliges every connected actor — the node and each docked adapter, OIDC and bootstrap-key arms both — to re-authenticate under the new policy generation within `reauth_deadline`, and whoever cannot is revoked. Takes several minutes: real installs under a continuous ping |
 | `fake-idp-smoke-test.sh` | the fake IdP's own endpoints. **Needs no root and no netns** — run it first when an OIDC test misbehaves |
 
 Useful overrides: `DEBUG_TARGETS` (default `all=INFO`), `PH_BIN`, `VS_BIN`,

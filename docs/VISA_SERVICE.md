@@ -213,11 +213,29 @@ of what it requested, and its adapter's record supersedes the one its startup
 self-authorization wrote there. A merely claimed `vs.zpr` gets nothing
 (zipline#102).
 
-Authentication expires. As expiry approaches the visa service tells the docking
-node over the VSS-API so the actor can re-authenticate; the grace period is a
-visa service setting. Default authentication lifetime is **4 hours** — except
-the visa service's own identity attributes, which are pinned ~100 years out so
-it can never expire itself.
+Authentication lifetimes depend on how the actor authenticated. **Bootstrap
+(RSA) authentication does not expire**: re-proving possession of a static key
+on a timer demonstrates nothing new, so bootstrap `device.zpr.authority` is
+stamped far-future, and the `zpr.vs.bootstrap.ident` identity attribute
+follows the actor's authority expiry instead of gating on its own
+(zipline#119). OIDC lifetimes come from the trusted service's tokens and are
+renewed silently through the resident auth agent (`docs/OIDC.md`). The visa
+service's own identity attributes are pinned ~100 years out so it can never
+expire itself.
+
+What forces re-authentication is a **policy install**, not a clock. Every
+install records the new policy generation and a deadline (`now +
+reauth_deadline`), then asks each connected node over the VSS-API
+(`requestAuthentication`) to re-authenticate itself and its docked adapters
+under the new generation; the sweep re-sends to actors still owing, and once
+the deadline passes it revokes whoever has not re-authenticated —
+adapters through the batched `revokeAuthentication`, nodes by disconnect
+(zipline#123). Authenticating under the newest generation satisfies all older
+obligations, so a stream of installs cannot postpone enforcement. This is how
+a bootstrap key removed from policy takes effect for a connected actor:
+within one `reauth_deadline` of the install. Node culling at visa-service
+startup is by last-seen age (the 4-hour default lifetime), since with
+non-expiring bootstrap authentication expiry can no longer be the criterion.
 
 ### Granting a visa
 
@@ -367,7 +385,10 @@ policy that assumes these values:
 | Admin HTTPS port | 8182 |
 | Minimum policy compiler version | 0.15.0 |
 
-Other operational bounds: 4-hour default authentication lifetime, 180-second
+Other operational bounds: 4-hour default authentication lifetime (the
+fallback where no authority sets one — bootstrap authentication itself does
+not expire, see *Authenticating actors*), a 300-second default
+`reauth_deadline` for re-authentication after a policy install, 180-second
 maximum clock skew during node authentication, 20 visas per request, 1024
 request workers and queue depth, a 7-second VSS ping with 3 failures before the
 node is dropped, and a 30-second database lock refresh against a 90-second
@@ -429,6 +450,8 @@ shipped. Full plan text is in git history:
   [zipline#95](https://github.com/mkolehmainen/zipline/issues/95)
 - `git show b817c70:docs/plans/2026-09-25-retire-authored-address-pins.md` —
   umbrella [zipline#106](https://github.com/mkolehmainen/zipline/issues/106)
+- `git show 43d56bd:docs/plans/2026-09-28-reauth-on-policy-install-plan.md` —
+  umbrella [zipline#118](https://github.com/mkolehmainen/zipline/issues/118)
 
 ### Trusted-service interplay (an `oidc` authenticator plus a `file` overlay)
 
@@ -574,6 +597,73 @@ references it, and every fixture would need a throwaway reference — the trap
 this work was meant to end.
 ([zipline#105](https://github.com/mkolehmainen/zipline/issues/105))
 
+### Policy-install re-authentication; bootstrap authentication does not expire
+
+Carried over from the retired plan
+(`git show 43d56bd:docs/plans/2026-09-28-reauth-on-policy-install-plan.md`),
+umbrella [zipline#118](https://github.com/mkolehmainen/zipline/issues/118).
+
+**Bootstrap authentication does not expire; the policy install is the clock.**
+Re-proving possession of a static key on a timer demonstrates nothing new, so
+bootstrap `device.zpr.authority` is stamped far-future and
+`zpr.vs.bootstrap.ident` follows the actor's authority expiry instead of
+gating on its own (fixing the latent pin where an RSA+OIDC actor was swept at
+connect + 4 h however often OIDC renewed). An earlier draft renewed RSA on a
+timer with a policy lifetime knob; it was dropped because timer renewal of a
+static key adds nothing, while install-driven re-auth enforces what actually
+changes. ([zipline#119](https://github.com/mkolehmainen/zipline/issues/119))
+
+**Every install asks every connected actor to re-authenticate — no diffing.**
+Diffing policy to re-auth only affected actors was rejected: one uniform rule
+is easy to audit; revisit only if install-time load matters.
+([zipline#123](https://github.com/mkolehmainen/zipline/issues/123))
+
+**Enforcement is by deadline, not by reply.** The install records `(V = new
+policy generation, T = now + reauth_deadline)`; once `now > T`, any actor
+whose `zpr.vinst < V` is revoked — adapters through the batched
+`revokeAuthentication`, nodes by disconnect. A rejection does not revoke
+early: the actor stays until `T` and a retry may still succeed. With several
+installs the earliest unmet deadline applies, and authenticating under the
+newest generation satisfies all older ones, so a stream of installs cannot
+postpone enforcement. `zpr.vinst` — stamped by `approve_connection`, which
+only connect and reauthorize run — is the whole tracking state; no new
+per-actor bookkeeping exists.
+([zipline#123](https://github.com/mkolehmainen/zipline/issues/123))
+
+**Every authority is re-proved, and the set must match exactly.**
+`reauthorize` takes one blob per namespace, and the namespace set must equal
+the live actor's authorities — all-or-nothing, so an OIDC actor whose agent
+cannot refresh silently is revoked at the deadline and logs in again. The SS
+arm's freshness comes from the node-minted, HMAC'd challenge (at most 120 s
+old) plus the VS skew check; a monotonic-timestamp rule was rejected because
+only the docking node could replay, and a compromised docking node is already
+SECURITY_MODEL Case 2.
+([zipline#120](https://github.com/mkolehmainen/zipline/issues/120))
+
+**A node re-authenticates in place.** It re-runs
+`connect(Reconnect)`/`challenge`/`authenticate` on its existing `vs_service`
+capability and swaps the handle only on success — no TCP restart, and visas,
+docked adapters and router links are undisturbed.
+([zipline#121](https://github.com/mkolehmainen/zipline/issues/121))
+
+**Node culling at visa-service startup is by last-seen age.** `refresh_state`
+culled nodes by authentication expiry, which with non-expiring bootstrap auth
+would keep dead nodes forever; it now culls nodes not seen for the 4-hour
+default lifetime, preserving the old behavior.
+([zipline#119](https://github.com/mkolehmainen/zipline/issues/119))
+
+**No compatibility shims.** An old node answers `requestAuthentication` with
+capnp "unimplemented" and an old adapter answers the renewal request without
+SS; both are revoked at the deadline and reconnect fresh — acceptable under
+the early-release rule, and the dependency-graph ordering kept the tree from
+ever doing it to itself.
+([zipline#118](https://github.com/mkolehmainen/zipline/issues/118))
+
+**Findings worth keeping.** `libeval`'s `NEVER_EXPIRES` carries an extra `60`
+factor (~6000 years); harmless. `default`'s `cert_path` is written to policy
+but never read by the visa service.
+([zipline#118](https://github.com/mkolehmainen/zipline/issues/118))
+
 ### Deferred
 
 No tracker issues are filed for these unless linked.
@@ -583,6 +673,18 @@ No tracker issues are filed for these unless linked.
   deployment needs two concurrent user authorities.
 - **Compile-time pool check.** Once the pool ranges are stable enough to share
   through `zl-zpr-common`.
+- **Bootstrap key revocation independent of a policy install.** Policy-install
+  re-authentication covers removal from policy; a dedicated administrative
+  revocation of an authentication root is future work.
+  [zipline#136](https://github.com/mkolehmainen/zipline/issues/136)
+- **VS-side clock-skew check on `ssb.timestamp` on the adapter connect path.**
+  Signed but unchecked there; the reauthorize SS arm and node authentication
+  both check it. Independent hardening.
+  [zipline#137](https://github.com/mkolehmainen/zipline/issues/137)
+- **`ctype=Reset` orphans adapter actor records.** `actor_mgr` removes the
+  node record directly instead of tearing down its docked adapters like a
+  disconnect. Pre-existing bug found while planning zipline#118.
+  [zipline#138](https://github.com/mkolehmainen/zipline/issues/138)
 
 ---
 
