@@ -1046,8 +1046,22 @@ pub struct NetnsScript {
 pub struct NetnsPlan {
     /// `<zl-zpr-core worktree>/integration-test`.
     pub dir: PathBuf,
+    /// How many scripts may run at once: 1 on the host route, whose
+    /// scripts share one kernel's fixed netns names; [`NETNS_CONTAINER_JOBS`]
+    /// on the container route, where each script has its own container.
+    pub jobs: usize,
     pub scripts: Vec<NetnsScript>,
 }
+
+/// Concurrent scripts on the netns container route. Each `make docker-test`
+/// is its own `docker run`, so its network namespaces, `/run/netns`, `/tmp`
+/// and valkey are private and the scripts' fixed netns names and ports
+/// cannot collide; their scratch files go to `mktemp -d` inside the
+/// container, not the bind-mounted workspace.
+// ponytail: fixed width, not a flag. The scripts wait on fixed `sleep`s, so
+// too many at once on a small machine risks timing flakes; add a `--jobs`
+// knob if 4 proves wrong for some host.
+pub const NETNS_CONTAINER_JOBS: usize = 4;
 
 /// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
 /// the nine blessed scripts in order, each with the `*_BIN` overrides the
@@ -1164,23 +1178,32 @@ pub fn netns_plan(
         } else {
             integration
         },
+        jobs: if container { NETNS_CONTAINER_JOBS } else { 1 },
         scripts,
     })
 }
 
-/// Runs a netns plan: each script in order in the plan's directory, under
-/// its env overrides, logging as `logs/netns-<script>.log` in `run_unit`'s
-/// shape. A failing script — or a failing prep build — fails the tier and
+/// Runs a netns plan, logging each script as `logs/netns-<script>.log` in
+/// `run_unit`'s shape. Prep builds (a2a's security-testing `ph`) run first,
+/// one at a time, on the host; then the scripts whose prep passed run on
+/// up to `plan.jobs` worker threads, each taking the next script in plan
+/// order. A failing script — or a failing prep build — fails the tier and
 /// the sweep **keeps going**, so one run reports every broken script
 /// (zipline#62: continue after a failing script; record each).
 pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let mut outcome = TierOutcome {
         passed: true,
         repos: BTreeMap::new(),
     };
+
+    // Phase 1, serial: the prep builds. Their failure fails that script
+    // alone; the rest of the tier still runs. Running them before any
+    // script keeps a cargo build from competing with timing-sensitive tests.
+    let mut runnable: Vec<&NetnsScript> = Vec::new();
     for script in &plan.scripts {
-        // The prep build first: a2a's security-testing ph. Its failure
-        // fails this script alone; the rest of the tier still runs.
         if let Some(prep) = &script.prep {
             if let Err(error) = run_env_command(
                 "netns",
@@ -1204,36 +1227,55 @@ pub fn run_netns(plan: &NetnsPlan, logs: &Path, quiet: bool) -> TierOutcome {
                 continue;
             }
         }
-        let program = &script.program;
-        match run_env_command(
-            "netns",
-            script.script,
-            program,
-            &script.args,
-            &script.env,
-            &script.env_remove,
-            &plan.dir,
-            logs,
-            quiet,
-        ) {
-            Ok(()) => {
-                if !quiet {
-                    println!("{}: passed", script.script);
+        runnable.push(script);
+    }
+
+    // Phase 2, up to `plan.jobs` wide: the scripts. Each worker claims the
+    // next unclaimed index until none remain; results are collected by
+    // script name, so the outcome does not depend on finishing order.
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<(&str, Result<()>)>> = Mutex::new(Vec::new());
+    let workers = plan.jobs.clamp(1, runnable.len().max(1));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                while let Some(script) = runnable.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let result = run_env_command(
+                        "netns",
+                        script.script,
+                        &script.program,
+                        &script.args,
+                        &script.env,
+                        &script.env_remove,
+                        &plan.dir,
+                        logs,
+                        quiet,
+                    );
+                    if !quiet {
+                        let verdict = if result.is_ok() { "passed" } else { "FAILED" };
+                        println!("{}: {verdict}", script.script);
+                    }
+                    results
+                        .lock()
+                        .expect("a netns worker panicked while recording a result")
+                        .push((script.script, result));
                 }
-                outcome
-                    .repos
-                    .insert(script.script.to_string(), "passed".to_string());
-            }
-            Err(error) => {
-                if !quiet {
-                    println!("{}: FAILED", script.script);
-                }
-                outcome.passed = false;
-                outcome
-                    .repos
-                    .insert(script.script.to_string(), format!("failed: {error}"));
-            }
+            });
         }
+    });
+
+    let results = results
+        .into_inner()
+        .expect("a netns worker panicked while recording a result");
+    for (script, result) in results {
+        let entry = match result {
+            Ok(()) => "passed".to_string(),
+            Err(error) => {
+                outcome.passed = false;
+                format!("failed: {error}")
+            }
+        };
+        outcome.repos.insert(script.to_string(), entry);
     }
     outcome
 }
@@ -1312,6 +1354,10 @@ fn run_env_command(
         return Ok(());
     }
     if !quiet {
+        // Hold stderr for the whole dump: netns scripts can run
+        // concurrently, and two interleaved tails would be unreadable.
+        // The lock is re-entrant, so `eprintln!` below still works.
+        let _stderr = std::io::stderr().lock();
         let text = std::fs::read_to_string(&log_path).unwrap_or_default();
         let lines: Vec<&str> = text.lines().collect();
         let start = lines.len().saturating_sub(40);
@@ -2397,6 +2443,9 @@ mod tests {
         .expect("a fixture-free plan is clean");
         // The workdir is the worktree; `-C` names the Makefile's directory.
         assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core"));
+        // Each container is its own network namespace, so scripts run
+        // concurrently.
+        assert_eq!(plan.jobs, NETNS_CONTAINER_JOBS);
         for script in &plan.scripts {
             assert_eq!(script.program, "make", "{}", script.script);
             assert_eq!(
@@ -2515,6 +2564,9 @@ mod tests {
             Path::new("/b"),
         )
         .expect("a worktree with no integration-test/ plans cleanly");
+        // The host route shares one kernel's fixed netns names (`zpr-node`,
+        // `zpr-vs`, ...), so its scripts must run one at a time.
+        assert_eq!(plan.jobs, 1);
         let names: Vec<&str> = plan.scripts.iter().map(|script| script.script).collect();
         assert_eq!(
             names,
@@ -2950,6 +3002,7 @@ mod tests {
 
         let plan = NetnsPlan {
             dir: dir.clone(),
+            jobs: 1,
             scripts: vec![
                 NetnsScript {
                     script: "ok.sh",
@@ -2995,6 +3048,67 @@ mod tests {
         // ...and the earlier pass proves the sweep visited every script.
         let ok_log = std::fs::read_to_string(logs.join("netns-ok.sh.log")).unwrap();
         assert!(ok_log.contains("fine"), "{ok_log}");
+    }
+
+    /// With `jobs` workers the netns runner really overlaps scripts: three
+    /// fixture scripts each mark their arrival and then wait for the other
+    /// two. Run one at a time, the first would wait alone and time out; run
+    /// three wide, all meet and pass. Results still land under each
+    /// script's name, and a script whose prep failed never runs.
+    #[test]
+    fn run_netns_runs_scripts_concurrently_up_to_jobs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let logs = tmp.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let meet = tmp.path().join("meet");
+        std::fs::create_dir_all(&meet).unwrap();
+
+        // Touch our own marker, then poll up to ~10s for all three.
+        let rendezvous = format!(
+            "#!/bin/sh\ntouch {meet}/$1\n\
+             for i in $(seq 100); do\n\
+             [ $(ls {meet} | wc -l) -ge 3 ] && exit 0\n\
+             sleep 0.1\ndone\nexit 1\n",
+            meet = meet.display()
+        );
+        let path = dir.join("meet.sh");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::write(&path, rendezvous).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = |name: &'static str| NetnsScript {
+            script: name,
+            program: path.display().to_string(),
+            args: vec![name.to_string()],
+            env: vec![],
+            env_remove: vec![],
+            prep: None,
+        };
+        let mut never_runs = script("never.sh");
+        never_runs.prep = Some(PrepStep {
+            name: "security-ph",
+            program: "sh",
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            dir: tmp.path().to_path_buf(),
+        });
+        let plan = NetnsPlan {
+            dir: dir.clone(),
+            jobs: 3,
+            scripts: vec![script("a.sh"), never_runs, script("b.sh"), script("c.sh")],
+        };
+        let outcome = run_netns(&plan, &logs, true);
+        for name in ["a.sh", "b.sh", "c.sh"] {
+            assert_eq!(outcome.repos[name], "passed", "{name}");
+        }
+        assert!(outcome.repos["never.sh"].contains("security-ph"));
+        assert!(
+            !meet.join("never.sh").exists(),
+            "a failed prep must skip its script"
+        );
+        assert!(!outcome.passed);
     }
 
     // -- the docker tier's plan (issue62 step 4) --------------------------------

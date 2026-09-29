@@ -571,7 +571,7 @@ are Linux-only and need passwordless `sudo` to run unattended.
 **Without host `sudo`: run them in Docker.** `zpr-dev build` does this
 automatically: when the host route's prerequisites are missing but a Docker
 daemon is reachable, it runs the netns tier through `make docker-test` per
-script and records the provenance as `sudo: container` in the emitted
+script, four containers at a time, and records the provenance as `sudo: container` in the emitted
 manifest, with a coverage note naming the real host gap (see
 `zpr-dev/docs/specs/spec-003-build.md` §6). For runs outside a build, the
 same route is available by hand: `integration-test/Makefile` runs the
