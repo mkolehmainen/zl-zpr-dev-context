@@ -114,6 +114,48 @@ in `.github/` diverges from upstream. `skills/zpr/scripts/fork-ci.sh` reports th
 state and reverses it (`--enable`); re-enabling means also supplying the two
 secrets, or the same failures return.
 
+### Compiler caching with sccache (optional, per-host)
+
+The pipeline creates many worktrees and build directories whose dependency
+graphs are identical at the same tip, so the same `rustc` invocations run over
+and over. [`sccache`](https://github.com/mozilla/sccache) caches compiler
+invocations content-hashed: an identical invocation is served from the cache
+instead of re-executed. This changes **nothing** about what is built or tested
+— only whether an identical `rustc` run is repeated — so it is safe to combine
+with the no-reuse rule for build directories (zipline#60): the build directory
+is still fresh, every crate is still "compiled", but unchanged dependency
+compiles come back from the cache. Measured on this workspace's host: an
+identical dependency compile dropped from 4.33 s to 0.59 s.
+
+The setup is **host-level, not committed to any repository** — each host opts
+in for itself. On a host with `sccache` installed (`cargo install sccache`, or
+a release binary on `PATH`), a cargo config at the workspace root covers every
+checkout and worktree beneath it:
+
+```toml
+# ~/zl_src/.cargo/config.toml  (workspace root; applies to all checkouts under it)
+[build]
+rustc-wrapper = "/path/to/sccache"
+```
+
+The cache lives in `~/.cache/sccache` (10 GiB default cap);
+`sccache --show-stats` reports hit rates and cache size, and
+`sccache --zero-stats` resets the counters before a measurement. To disable,
+remove the `rustc-wrapper` line (or set `RUSTC_WRAPPER=""` for one command) —
+builds behave exactly as before, just slower.
+
+Caveats:
+
+- The config file lives *above* the repositories, so `zpr-dev validate` and
+  `git status` never see it; a host without it simply builds uncached. Do not
+  commit a `rustc-wrapper` path into a repository's own `.cargo/config.toml` —
+  the path is host-specific and would break every other machine.
+- `cargo fmt` and `cargo clippy` are unaffected (sccache wraps `rustc`, not
+  the tools), so gate results do not change.
+- Incremental compiles are not cacheable; sccache passes them through
+  unchanged (they run exactly as without it). The wins come from the
+  non-incremental dependency compiles, which dominate a fresh build dir.
+
 ---
 
 ## Per-repository builds
