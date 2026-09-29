@@ -317,9 +317,14 @@ Two consequences worth knowing:
    consumers pinning different tags of the same crate as an error, so a set
    cannot be cut while a bump is half-applied.
 
-`zl-zpr-core` also patches `capnp` and friends to a fork
-(`emilazy/capnproto-rust`) via `[patch.crates-io]`; keep that patch section in
-sync when bumping Cap'n Proto.
+Cap'n Proto crates (`capnp`, `capnp-rpc`, `capnpc`) resolve to **mainline
+crates.io everywhere** — no repository carries a `[patch.crates-io]` for them.
+`zl-zpr-core` used to patch them to a fork (`emilazy/capnproto-rust`) for the
+fd-passing `capnp-ancillary` feature; the fork did not compile for Windows and
+the feature was deleted with it (zipline#134). Unix capture goes through
+`capture.sock` instead. If fd-passing ever returns (upstream
+capnproto/capnproto-rust#666), it comes back from git history, not by
+re-patching.
 
 ### Versions and tags
 
