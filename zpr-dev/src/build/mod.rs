@@ -1586,6 +1586,51 @@ struct BuildInputs<'a> {
 /// collide.
 const REPO_BUILD_JOBS: usize = 2;
 
+/// The claim-next-recipe state for [`run_recipes`]'s workers: which table
+/// index is next, and whether a failure has stopped further claims. The two
+/// live under ONE mutex so that checking `stop` and reserving the next index
+/// are a single atomic decision — with a separate `AtomicBool` and
+/// `AtomicUsize` a worker could observe `stop == false`, be descheduled, and
+/// claim after another worker recorded a failure (PR #44 Codex P2), starting
+/// a full build after the run was already dead.
+struct RecipeClaims {
+    /// `(next index to claim, stop claiming)` — one lock, one decision.
+    state: std::sync::Mutex<(usize, bool)>,
+    /// One past the last claimable index; claims at or past it return `None`.
+    len: usize,
+}
+
+impl RecipeClaims {
+    /// Claim state over a recipe table of `len` entries, nothing claimed yet.
+    fn new(len: usize) -> Self {
+        Self {
+            state: std::sync::Mutex::new((0, false)),
+            len,
+        }
+    }
+
+    /// Claims the next recipe index in table order, or `None` when the table
+    /// is exhausted **or a failure has been recorded** — checked under the
+    /// same lock that reserves the index, so no claim can interleave with a
+    /// concurrent [`stop`](Self::stop).
+    fn claim(&self) -> Option<usize> {
+        let mut state = self.state.lock().expect("a recipe worker panicked");
+        let (next, stop) = *state;
+        if stop || next >= self.len {
+            return None;
+        }
+        state.0 = next + 1;
+        Some(next)
+    }
+
+    /// Records a failure: every subsequent [`claim`](Self::claim) returns
+    /// `None`. Builds already claimed run to completion so their logs are
+    /// whole.
+    fn stop(&self) {
+        self.state.lock().expect("a recipe worker panicked").1 = true;
+    }
+}
+
 /// Builds every worktree's recipe, up to `jobs` at a time, claiming recipes
 /// in table order — the same claim-next-work pattern the netns tier uses
 /// (zipline#144). A failure stops further claims (later repositories may
@@ -1601,23 +1646,18 @@ fn run_recipes(
     jobs: usize,
 ) -> Option<String> {
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    let next = AtomicUsize::new(0);
-    let stop = AtomicBool::new(false);
+    let claims = RecipeClaims::new(worktrees.len());
     let failures: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
     let workers = jobs.clamp(1, worktrees.len().max(1));
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                loop {
-                    if stop.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let index = next.fetch_add(1, Ordering::SeqCst);
-                    let Some((recipe, worktree)) = worktrees.get(index) else {
-                        break;
-                    };
+                // `claim` checks the stop flag and reserves the index under
+                // one lock, so a worker can never claim a recipe after
+                // another worker recorded a failure (PR #44 Codex P2).
+                while let Some(index) = claims.claim() {
+                    let (recipe, worktree) = &worktrees[index];
                     if !quiet {
                         println!("building {}...", recipe.repo);
                     }
@@ -1630,7 +1670,7 @@ fn run_recipes(
                         .and_then(|()| recipes::stage_into(recipe, worktree, dist));
                     if let Err(error) = result {
                         eprintln!("error: {error:#}");
-                        stop.store(true, Ordering::SeqCst);
+                        claims.stop();
                         failures
                             .lock()
                             .expect("a recipe worker panicked while recording a failure")
@@ -2988,6 +3028,75 @@ allow_pin_drift:
         let worktrees: Vec<(&recipes::Recipe, PathBuf)> = vec![(&a, wt_a), (&b, wt_b)];
         let failure = run_recipes(&worktrees, &dist, &logs, true, 2);
         assert_eq!(failure, None, "two-wide, both scripts meet and pass");
+    }
+
+    /// Claims come out in table order and end in `None` when the table is
+    /// exhausted (zipline#144, PR #44 Codex P2 restructure).
+    #[test]
+    fn recipe_claims_orders_and_exhausts() {
+        let claims = RecipeClaims::new(3);
+        assert_eq!(claims.claim(), Some(0));
+        assert_eq!(claims.claim(), Some(1));
+        assert_eq!(claims.claim(), Some(2));
+        assert_eq!(claims.claim(), None, "an exhausted table claims nothing");
+    }
+
+    /// No claim can succeed once a failure is recorded (PR #44 Codex P2).
+    /// This is the descheduled-worker interleaving made structural: with the
+    /// old split atomics a worker could observe `stop == false`, be
+    /// descheduled, and `fetch_add` a claim after another worker recorded a
+    /// failure. `RecipeClaims` makes the stop check and the reservation one
+    /// decision under one lock, so this sequence — stop lands between two
+    /// claims — is exactly the racing schedule, now deterministic.
+    #[test]
+    fn recipe_claims_never_claims_after_stop() {
+        let claims = RecipeClaims::new(5);
+        assert_eq!(claims.claim(), Some(0), "claims flow before any failure");
+        claims.stop();
+        assert_eq!(
+            claims.claim(),
+            None,
+            "a recipe must never be claimed after stop is recorded"
+        );
+        assert_eq!(claims.claim(), None, "stop is sticky");
+    }
+
+    /// Two-wide, a failure stops further claims while the in-flight build
+    /// finishes (PR #44 Codex P2): recipe A fails immediately, B (claimed
+    /// by the other worker before the failure) runs to completion, and C is
+    /// never claimed — B outlives A's failure by a wide margin, so by the
+    /// time B's worker loops back the stop is long recorded.
+    #[test]
+    fn run_recipes_two_wide_failure_stops_later_claims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&dist).unwrap();
+        let ran_b = tmp.path().join("ran-b");
+        let ran_c = tmp.path().join("ran-c");
+        let a = scripted_recipe("repo-a", "echo broken; exit 3\n".to_string());
+        let b = scripted_recipe("repo-b", format!("sleep 1\ntouch {}\n", ran_b.display()));
+        let c = scripted_recipe("repo-c", format!("touch {}\n", ran_c.display()));
+        let wt_a = tmp.path().join("wt-a");
+        let wt_b = tmp.path().join("wt-b");
+        let wt_c = tmp.path().join("wt-c");
+        for wt in [&wt_a, &wt_b, &wt_c] {
+            std::fs::create_dir_all(wt).unwrap();
+        }
+        let worktrees: Vec<(&recipes::Recipe, PathBuf)> = vec![(&a, wt_a), (&b, wt_b), (&c, wt_c)];
+        let failure = run_recipes(&worktrees, &dist, &logs, true, 2);
+        assert!(
+            failure
+                .expect("repo-a's failure is returned")
+                .contains("repo-a"),
+            "the first failure in table order is the one returned"
+        );
+        assert!(ran_b.exists(), "the in-flight build runs to completion");
+        assert!(
+            !ran_c.exists(),
+            "no recipe is claimed after a failure is recorded"
+        );
     }
 
     /// A failing build stops later recipes from starting (zipline#144
