@@ -48,7 +48,6 @@ paths, so they can be opened directly.
 | Building a compatible set of binaries, or working a build-set issue | `docs/BUILD.md` ("Compatible build sets"), `zpr-dev/docs/specs/spec-003-build.md` |
 | Changing how `zpr-dev build` gates or runs the netns test tier, or its Docker fallback | `zpr-dev/docs/specs/spec-003-build.md` ("Test tiers"), `docs/BUILD.md` |
 | Changing how the visa service assigns, pins or checks a ZPR address | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
-| Working an issue under the policy-install re-authentication umbrella (bootstrap auth stops expiring; a policy install makes every node and adapter re-authenticate) | `docs/plans/2026-09-28-reauth-on-policy-install-plan.md`, `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md`, `docs/OIDC.md` |
 | Working an issue under the Windows compatibility umbrella (`ph adapter` on Windows: Wintun, `WaitSet`, named-pipe control channel) | `docs/plans/2026-09-28-windows.md`, `docs/SYSTEM_OVERVIEW.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
