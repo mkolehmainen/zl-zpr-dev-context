@@ -5,9 +5,9 @@
 **Repo state this plan was written against:** `zl-zpr-core` @ `6085db1`,
 `zl-zpr-dev-context` @ `a970318`, both on `zipline`.
 **Fork pin:** `mkolehmainen/capnproto-rust` branch `zipline` @
-**`b88adfb839791534c14b69fe57a714333e3eca94`**. That is emilazy's
+**`1e1d5ad692b4b2c2b942f04f32550df6445f4216`**. That is emilazy's
 `push-xstmntksusmk` @ `cb619b2e`, plus the 8 code commits listed in F1
-(ending at `c9a2764d`), plus `ZIPLINE.md`, which is docs only.
+(ending at `c9a2764d`), plus two docs-only commits adding and correcting `ZIPLINE.md` (`b88adfb8`, `1e1d5ad6`).
 **Assumes landed first:** zipline#134 (fork dropped, `capnp-ancillary`
 deleted; merged as zl-zpr-core#49), zipline#135 (lockstep capnp 0.25 → **0.26**,
 which is F2), and the rest of #126.
@@ -100,6 +100,19 @@ stay possible.
      other platforms without it.
    None of these is in the lines F1 changed. They don't affect core, because
    core's `-D warnings` doesn't reach dependency crates.
+9. **Adding the patch to an existing lockfile doesn't switch to the fork**
+   (raised by Codex on dev-context#42; tested 2026-09-29 with a scratch crate
+   against fork `b88adfb8`). If `Cargo.lock` already has crates.io
+   `capnp-rpc` 0.26.3, which #135 will leave in core, then adding
+   `[patch.crates-io]` keeps 0.26.3. Cargo only warns
+   `patch capnp-rpc v0.26.1 (…) was not used in the crate graph`, and core's
+   `-D warnings` doesn't catch that, because it's a Cargo warning, not a
+   rustc one. The fork's `capnp`/`capnp-futures` are picked up, but
+   `capnp-rpc` isn't, so the fork-only RPC API is missing.
+   `cargo update -p capnp-rpc`, or resolving a fresh lockfile, does select the
+   fork: Cargo prefers a matching patch even when its version is lower. So
+   the fix is a required `cargo update` in F3. Raising the fork's crate
+   versions isn't needed, and would break the fork's no-bump rule.
 
 ## Decisions
 
@@ -285,7 +298,8 @@ check that #135's PR met the points below; if it missed one, fix it in F3.
   bump the `zpr` tag **in the same round** (gate 1).
 - **Use requirement `"0.26"`, not `"0.26.3"`.** crates.io has `capnp-rpc`
   0.26.3, but the fork is 0.26.1. A `>= 0.26.3` requirement in core would make
-  F3's patch silently unused.
+  F3's patch unusable no matter what. `"0.26"` still admits 0.26.3, so F3
+  must also re-resolve the lockfile (finding 9).
 - 0.26.0 changed the `Allocator` methods to take `NonNull`. #135's grep found
   no custom `Allocator` impls, so expect version bumps and regenerated code
   only.
@@ -304,13 +318,18 @@ check that #135's PR met the points below; if it missed one, fix it in F3.
 
 - Root `Cargo.toml`: add `[patch.crates-io]` for `capnp`, `capnp-futures`,
   `capnp-rpc` and `capnpc` →
-  `git = "https://github.com/mkolehmainen/capnproto-rust.git", rev = "b88adfb839791534c14b69fe57a714333e3eca94"`
+  `git = "https://github.com/mkolehmainen/capnproto-rust.git", rev = "1e1d5ad692b4b2c2b942f04f32550df6445f4216"`
   (or the latest SHA recorded in this plan's header). Add the
   `capnp-futures = "0.26"` workspace dependency. Put a comment on the patch
   block that says:
   - why the patch exists,
   - that it must build on every target,
-  - that deleting it gives a mainline build without FD capture.
+  - that deleting it gives a mainline build without FD capture;
+  - that after changing it you must run the `cargo update` below.
+- **Re-resolve the lockfile onto the fork (finding 9):**
+  `cargo update -p capnp -p capnp-futures -p capnp-rpc -p capnpc`. Without it,
+  the `capnp-rpc` 0.26.3 locked by #135 stays, and the patch is ignored
+  apart from a Cargo warning.
 - `adapter/ph/Cargo.toml`, `adapter/cli/Cargo.toml`:
   - Move `capnp-futures` (optional) under `[target.'cfg(unix)'.dependencies]`.
   - Declare `capnp-ancillary = ["dep:capnp-futures", "capnp-futures/tokio-unix-fd-stream"]`.
@@ -343,8 +362,12 @@ check that #135's PR met the points below; if it missed one, fix it in F3.
     Unsupported error.
 
 **Acceptance.**
-- `grep mkolehmainen/capnproto-rust Cargo.lock` hits all four crates, and
-  `grep emilazy Cargo.lock` finds nothing.
+- Every `capnp`, `capnp-futures`, `capnp-rpc` and `capnpc` entry in
+  `Cargo.lock` has `source = "git+https://github.com/mkolehmainen/capnproto-rust.git?rev=…"`.
+  None of them is a registry entry, and there is no `[[patch.unused]]`
+  section.
+- `cargo check` prints no `was not used in the crate graph` warning.
+- `grep emilazy Cargo.lock` finds nothing.
 - `cargo fmt --check`, the `-D warnings` build (workspace, plus
   `libnode2 --all-features`) and `cargo test` are green.
 - `cargo build -p ph --no-default-features --features io-uring,rcu-crossbeam-epoch`
