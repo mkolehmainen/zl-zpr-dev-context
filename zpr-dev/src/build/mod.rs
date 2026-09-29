@@ -274,6 +274,12 @@ pub struct BuildArgs {
     /// run, so the netns tier can run without a NOPASSWD sudoers entry
     /// (zipline#70). Opt-in, and refused when stdin is not a terminal.
     pub prompt_for_sudo: bool,
+    /// `--jobs <N>`: how many scripts the netns tier's container route runs
+    /// at once (zipline#144). `None` keeps [`tiers::NETNS_CONTAINER_JOBS`];
+    /// the host route is always serial — its scripts share one kernel's
+    /// fixed netns names — so the flag never widens it. `NonZeroUsize`
+    /// because clap already rejected `0` at parse time.
+    pub jobs: Option<std::num::NonZeroUsize>,
     /// `--note <text>`, repeatable: operator sentences appended verbatim to
     /// the emitted manifest's `notes` after the generated ones (zipline#87).
     pub note: Vec<String>,
@@ -617,6 +623,7 @@ pub fn run(ctx: &crate::Ctx, args: &BuildArgs) -> Result<std::process::ExitCode>
         docker_skip,
         valkey,
         verbose: ctx.verbose,
+        jobs: args.jobs,
         sudo_refresher: std::cell::Cell::new(sudo_refresher),
         notes: &args.note,
     })?;
@@ -1556,6 +1563,9 @@ struct BuildInputs<'a> {
     valkey: Option<PathBuf>,
     /// `--verbose`: the netns scripts get `ZPR_TEST_VERBOSE=1`.
     verbose: bool,
+    /// The operator's `--jobs` override for the netns tier's container
+    /// route width (zipline#144); `None` keeps the default.
+    jobs: Option<std::num::NonZeroUsize>,
     /// The operator's `--note` text, appended verbatim to the manifest's
     /// `notes` after the generated lines (zipline#87).
     notes: &'a [String],
@@ -1565,6 +1575,118 @@ struct BuildInputs<'a> {
     /// path leaks the thread. A `Cell` because `BuildInputs` is shared by
     /// reference and the tier must take ownership to stop it.
     sudo_refresher: std::cell::Cell<Option<tiers::SudoRefresher>>,
+}
+
+/// How many repository builds may run at once (zipline#144). Bounded to 2:
+/// each recipe is itself a parallel `cargo build` that can saturate a small
+/// host, so the win is overlapping one build's serial tail (link steps,
+/// single-crate stretches) with the next build's start — not stacking five
+/// full cargo invocations. Worktrees and target dirs are disjoint, and
+/// staging writes distinct file names into `dist/`, so two builds cannot
+/// collide.
+const REPO_BUILD_JOBS: usize = 2;
+
+/// The claim-next-recipe state for [`run_recipes`]'s workers: which table
+/// index is next, and whether a failure has stopped further claims. The two
+/// live under ONE mutex so that checking `stop` and reserving the next index
+/// are a single atomic decision — with a separate `AtomicBool` and
+/// `AtomicUsize` a worker could observe `stop == false`, be descheduled, and
+/// claim after another worker recorded a failure (PR #44 Codex P2), starting
+/// a full build after the run was already dead.
+struct RecipeClaims {
+    /// `(next index to claim, stop claiming)` — one lock, one decision.
+    state: std::sync::Mutex<(usize, bool)>,
+    /// One past the last claimable index; claims at or past it return `None`.
+    len: usize,
+}
+
+impl RecipeClaims {
+    /// Claim state over a recipe table of `len` entries, nothing claimed yet.
+    fn new(len: usize) -> Self {
+        Self {
+            state: std::sync::Mutex::new((0, false)),
+            len,
+        }
+    }
+
+    /// Claims the next recipe index in table order, or `None` when the table
+    /// is exhausted **or a failure has been recorded** — checked under the
+    /// same lock that reserves the index, so no claim can interleave with a
+    /// concurrent [`stop`](Self::stop).
+    fn claim(&self) -> Option<usize> {
+        let mut state = self.state.lock().expect("a recipe worker panicked");
+        let (next, stop) = *state;
+        if stop || next >= self.len {
+            return None;
+        }
+        state.0 = next + 1;
+        Some(next)
+    }
+
+    /// Records a failure: every subsequent [`claim`](Self::claim) returns
+    /// `None`. Builds already claimed run to completion so their logs are
+    /// whole.
+    fn stop(&self) {
+        self.state.lock().expect("a recipe worker panicked").1 = true;
+    }
+}
+
+/// Builds every worktree's recipe, up to `jobs` at a time, claiming recipes
+/// in table order — the same claim-next-work pattern the netns tier uses
+/// (zipline#144). A failure stops further claims (later repositories may
+/// need the failed one's output; a half-built set must not look built);
+/// builds already in flight run to completion so their logs are whole.
+/// Returns the first failure in table order, `None` when every recipe built
+/// and staged.
+fn run_recipes(
+    worktrees: &[(&recipes::Recipe, PathBuf)],
+    dist: &Path,
+    logs: &Path,
+    quiet: bool,
+    jobs: usize,
+) -> Option<String> {
+    use std::sync::Mutex;
+
+    let claims = RecipeClaims::new(worktrees.len());
+    let failures: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+    let workers = jobs.clamp(1, worktrees.len().max(1));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                // `claim` checks the stop flag and reserves the index under
+                // one lock, so a worker can never claim a recipe after
+                // another worker recorded a failure (PR #44 Codex P2).
+                while let Some(index) = claims.claim() {
+                    let (recipe, worktree) = &worktrees[index];
+                    if !quiet {
+                        println!("building {}...", recipe.repo);
+                    }
+                    let result = recipe
+                        .steps
+                        .iter()
+                        .try_for_each(|step| {
+                            recipes::run_step(recipe.repo, step, worktree, logs, quiet)
+                        })
+                        .and_then(|()| recipes::stage_into(recipe, worktree, dist));
+                    if let Err(error) = result {
+                        eprintln!("error: {error:#}");
+                        claims.stop();
+                        failures
+                            .lock()
+                            .expect("a recipe worker panicked while recording a failure")
+                            .push((index, error.to_string()));
+                    }
+                }
+            });
+        }
+    });
+    let mut failures = failures
+        .into_inner()
+        .expect("a recipe worker panicked while recording a failure");
+    // The FIRST failure in table order, deterministic however the in-flight
+    // builds finished.
+    failures.sort_by_key(|(index, _)| *index);
+    failures.into_iter().next().map(|(_, error)| error)
 }
 
 /// Worktrees, gates, recipes, staging, verification, the emitted manifest and
@@ -1646,26 +1768,14 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
     }
 
     // -- recipes, in table order (already build order) -----------------------
-    // The first failure stops the build: later repositories may need this
-    // one's output, and a half-built set must not look built.
-    let mut failure: Option<String> = None;
-    for (recipe, worktree) in &worktrees {
-        if !inputs.quiet {
-            println!("building {}...", recipe.repo);
-        }
-        let result = recipe
-            .steps
-            .iter()
-            .try_for_each(|step| {
-                recipes::run_step(recipe.repo, step, worktree, &logs, inputs.quiet)
-            })
-            .and_then(|()| recipes::stage_into(recipe, worktree, &dist));
-        if let Err(error) = result {
-            eprintln!("error: {error:#}");
-            failure = Some(error.to_string());
-            break;
-        }
-    }
+    // The first failure stops further claims: later repositories may need
+    // this one's output, and a half-built set must not look built. Since
+    // zipline#144 up to REPO_BUILD_JOBS recipes build concurrently — their
+    // worktrees and target dirs are disjoint, and staging writes distinct
+    // file names into dist/ — with claims made in table order, the same
+    // pattern the netns tier uses.
+    let mut failure: Option<String> =
+        run_recipes(&worktrees, &dist, &logs, inputs.quiet, REPO_BUILD_JOBS);
 
     // -- verify dist/ (task B3 step 4) ---------------------------------------
     // Against the **whole distribution** the recipe table stages — never the
@@ -1824,6 +1934,7 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                         inputs.verbose,
                         &runner,
                         inputs.build_dir,
+                        inputs.jobs,
                     ) {
                         Err(error) => {
                             eprintln!("error: {error:#}");
@@ -2872,6 +2983,149 @@ allow_pin_drift:
     // -- orchestration: worktrees, manifest, digests, tarball, pruning --------
     // (task B3 steps 5-7, driven through execute_build with fixture recipes)
 
+    /// A leaked-'static fixture recipe running one `sh -c` script — recipes
+    /// carry `&'static str`, and these tests need per-tempdir script bodies.
+    fn scripted_recipe(repo: &'static str, script: String) -> recipes::Recipe {
+        recipes::Recipe {
+            repo,
+            steps: Box::leak(Box::new([recipes::Step {
+                name: "build",
+                program: "sh",
+                args: Box::leak(Box::new(["-c", Box::leak(script.into_boxed_str())])),
+            }])),
+            staged: &[],
+        }
+    }
+
+    /// `run_recipes` with two workers really overlaps repository builds
+    /// (zipline#144): two rendezvous scripts each mark their arrival and
+    /// wait for the other. Run one at a time the first would wait alone and
+    /// time out; run two wide, both meet and pass.
+    #[test]
+    fn run_recipes_overlaps_repo_builds_up_to_jobs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let dist = tmp.path().join("dist");
+        let meet = tmp.path().join("meet");
+        for dir in [&logs, &dist, &meet] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let rendezvous = |name: &str| {
+            format!(
+                "touch {meet}/{name}\n\
+                 for i in $(seq 100); do\n\
+                 [ $(ls {meet} | wc -l) -ge 2 ] && exit 0\n\
+                 sleep 0.1\ndone\nexit 1\n",
+                meet = meet.display()
+            )
+        };
+        let a = scripted_recipe("repo-a", rendezvous("a"));
+        let b = scripted_recipe("repo-b", rendezvous("b"));
+        let wt_a = tmp.path().join("wt-a");
+        let wt_b = tmp.path().join("wt-b");
+        std::fs::create_dir_all(&wt_a).unwrap();
+        std::fs::create_dir_all(&wt_b).unwrap();
+        let worktrees: Vec<(&recipes::Recipe, PathBuf)> = vec![(&a, wt_a), (&b, wt_b)];
+        let failure = run_recipes(&worktrees, &dist, &logs, true, 2);
+        assert_eq!(failure, None, "two-wide, both scripts meet and pass");
+    }
+
+    /// Claims come out in table order and end in `None` when the table is
+    /// exhausted (zipline#144, PR #44 Codex P2 restructure).
+    #[test]
+    fn recipe_claims_orders_and_exhausts() {
+        let claims = RecipeClaims::new(3);
+        assert_eq!(claims.claim(), Some(0));
+        assert_eq!(claims.claim(), Some(1));
+        assert_eq!(claims.claim(), Some(2));
+        assert_eq!(claims.claim(), None, "an exhausted table claims nothing");
+    }
+
+    /// No claim can succeed once a failure is recorded (PR #44 Codex P2).
+    /// This is the descheduled-worker interleaving made structural: with the
+    /// old split atomics a worker could observe `stop == false`, be
+    /// descheduled, and `fetch_add` a claim after another worker recorded a
+    /// failure. `RecipeClaims` makes the stop check and the reservation one
+    /// decision under one lock, so this sequence — stop lands between two
+    /// claims — is exactly the racing schedule, now deterministic.
+    #[test]
+    fn recipe_claims_never_claims_after_stop() {
+        let claims = RecipeClaims::new(5);
+        assert_eq!(claims.claim(), Some(0), "claims flow before any failure");
+        claims.stop();
+        assert_eq!(
+            claims.claim(),
+            None,
+            "a recipe must never be claimed after stop is recorded"
+        );
+        assert_eq!(claims.claim(), None, "stop is sticky");
+    }
+
+    /// Two-wide, a failure stops further claims while the in-flight build
+    /// finishes (PR #44 Codex P2): recipe A fails immediately, B (claimed
+    /// by the other worker before the failure) runs to completion, and C is
+    /// never claimed — B outlives A's failure by a wide margin, so by the
+    /// time B's worker loops back the stop is long recorded.
+    #[test]
+    fn run_recipes_two_wide_failure_stops_later_claims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&dist).unwrap();
+        let ran_b = tmp.path().join("ran-b");
+        let ran_c = tmp.path().join("ran-c");
+        let a = scripted_recipe("repo-a", "echo broken; exit 3\n".to_string());
+        let b = scripted_recipe("repo-b", format!("sleep 1\ntouch {}\n", ran_b.display()));
+        let c = scripted_recipe("repo-c", format!("touch {}\n", ran_c.display()));
+        let wt_a = tmp.path().join("wt-a");
+        let wt_b = tmp.path().join("wt-b");
+        let wt_c = tmp.path().join("wt-c");
+        for wt in [&wt_a, &wt_b, &wt_c] {
+            std::fs::create_dir_all(wt).unwrap();
+        }
+        let worktrees: Vec<(&recipes::Recipe, PathBuf)> = vec![(&a, wt_a), (&b, wt_b), (&c, wt_c)];
+        let failure = run_recipes(&worktrees, &dist, &logs, true, 2);
+        assert!(
+            failure
+                .expect("repo-a's failure is returned")
+                .contains("repo-a"),
+            "the first failure in table order is the one returned"
+        );
+        assert!(ran_b.exists(), "the in-flight build runs to completion");
+        assert!(
+            !ran_c.exists(),
+            "no recipe is claimed after a failure is recorded"
+        );
+    }
+
+    /// A failing build stops later recipes from starting (zipline#144
+    /// keeps B3's "the first failure stops the build"): one wide, the
+    /// first recipe fails, the second never runs, and the returned failure
+    /// is the first in table order.
+    #[test]
+    fn run_recipes_failure_stops_later_claims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&dist).unwrap();
+        let marker = tmp.path().join("ran-b");
+        let a = scripted_recipe("repo-a", "echo broken; exit 3\n".to_string());
+        let b = scripted_recipe("repo-b", format!("touch {}\n", marker.display()));
+        let wt_a = tmp.path().join("wt-a");
+        let wt_b = tmp.path().join("wt-b");
+        std::fs::create_dir_all(&wt_a).unwrap();
+        std::fs::create_dir_all(&wt_b).unwrap();
+        let worktrees: Vec<(&recipes::Recipe, PathBuf)> = vec![(&a, wt_a), (&b, wt_b)];
+        let failure = run_recipes(&worktrees, &dist, &logs, true, 1);
+        assert!(failure.is_some(), "the first recipe's failure is returned");
+        assert!(
+            !marker.exists(),
+            "a failure must stop later recipes from being claimed"
+        );
+    }
+
     /// A recipe whose one step copies a committed file to an executable
     /// "binary" — enough to exercise staging, digests and the tarball without
     /// compiling anything.
@@ -2943,6 +3197,7 @@ allow_pin_drift:
             docker_skip: None,
             valkey: None,
             verbose: false,
+            jobs: None,
             sudo_refresher: std::cell::Cell::new(None),
             notes: &[],
         }

@@ -1059,9 +1059,9 @@ pub struct NetnsPlan {
 /// and valkey are private and the scripts' fixed netns names and ports
 /// cannot collide; their scratch files go to `mktemp -d` inside the
 /// container, not the bind-mounted workspace.
-// ponytail: fixed width, not a flag. The scripts wait on fixed `sleep`s, so
-// too many at once on a small machine risks timing flakes; add a `--jobs`
-// knob if 4 proves wrong for some host.
+// The default width. The scripts wait on fixed `sleep`s, so too many at
+// once on a small machine risks timing flakes; `--jobs` overrides it per
+// run where 4 proves wrong for a host (zipline#144).
 pub const NETNS_CONTAINER_JOBS: usize = 4;
 
 /// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
@@ -1084,6 +1084,11 @@ pub const NETNS_CONTAINER_JOBS: usize = 4;
 ///   image ships its own valkey, a host path would not resolve inside the
 ///   container, and the Makefile's `FORWARD_ENV` would forward an operator's
 ///   exported value.
+///
+/// `jobs` is the operator's `--jobs` override for the container route's
+/// width (zipline#144); `None` keeps [`NETNS_CONTAINER_JOBS`]. The host
+/// route is always serial regardless — its scripts share one kernel's
+/// fixed netns names, so widening it would trade correctness for speed.
 pub fn netns_plan(
     core_worktree: &Path,
     dist: &Path,
@@ -1091,6 +1096,7 @@ pub fn netns_plan(
     verbose: bool,
     runner: &NetnsRunner,
     build_dir: &Path,
+    jobs: Option<std::num::NonZeroUsize>,
 ) -> Result<NetnsPlan> {
     let display = |path: PathBuf| path.display().to_string();
     let container = matches!(runner, NetnsRunner::Container { .. });
@@ -1179,7 +1185,12 @@ pub fn netns_plan(
         } else {
             integration
         },
-        jobs: if container { NETNS_CONTAINER_JOBS } else { 1 },
+        jobs: if container {
+            jobs.map(std::num::NonZeroUsize::get)
+                .unwrap_or(NETNS_CONTAINER_JOBS)
+        } else {
+            1
+        },
         scripts,
     })
 }
@@ -2440,6 +2451,7 @@ mod tests {
             false,
             &runner,
             Path::new("/b"),
+            None,
         )
         .expect("a fixture-free plan is clean");
         // The workdir is the worktree; `-C` names the Makefile's directory.
@@ -2492,6 +2504,42 @@ mod tests {
         }
     }
 
+    /// `--jobs` overrides the container route's width (zipline#144): a
+    /// non-default value reaches `NetnsPlan.jobs` verbatim, absence keeps
+    /// [`NETNS_CONTAINER_JOBS`], and the host route stays serial regardless
+    /// — its scripts share one kernel's fixed netns names, so a wider host
+    /// tier would be a correctness bug, not a speedup.
+    #[test]
+    fn netns_plan_jobs_override_applies_to_the_container_route_only() {
+        let runner = NetnsRunner::Container {
+            host_reason: "missing: valkey-server".to_string(),
+        };
+        let six = std::num::NonZeroUsize::new(6);
+        let plan = |runner: &NetnsRunner, jobs| {
+            netns_plan(
+                Path::new("/wt/zl-zpr-core"),
+                Path::new("/b/dist"),
+                Path::new("/usr/bin/valkey-server"),
+                false,
+                runner,
+                Path::new("/b"),
+                jobs,
+            )
+            .expect("a fixture-free plan is clean")
+        };
+        assert_eq!(plan(&runner, six).jobs, 6, "--jobs 6 must reach the plan");
+        assert_eq!(
+            plan(&runner, None).jobs,
+            NETNS_CONTAINER_JOBS,
+            "no --jobs keeps the default width"
+        );
+        assert_eq!(
+            plan(&NetnsRunner::Host(SudoProvenance::Nopasswd), six).jobs,
+            1,
+            "the host route ignores --jobs: its scripts share fixed netns names"
+        );
+    }
+
     /// The host route's plan is unchanged by the runner parameter
     /// (zipline#93 step 3): direct script invocation from the
     /// integration-test directory, `VALKEY_SERVER_BIN` set, nothing removed
@@ -2505,6 +2553,7 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
+            None,
         )
         .expect("a fixture-free plan is clean");
         assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core/integration-test"));
@@ -2537,6 +2586,7 @@ mod tests {
             true,
             &runner,
             Path::new("/b"),
+            None,
         )
         .expect("a fixture-free plan is clean");
         for script in &plan.scripts {
@@ -2566,6 +2616,7 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
+            None,
         )
         .expect("a worktree with no integration-test/ plans cleanly");
         // The host route shares one kernel's fixed netns names (`zpr-node`,
@@ -2627,6 +2678,7 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
+            None,
         )
         .expect_err("an unlisted script must fail planning")
         .to_string();
@@ -2737,6 +2789,7 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
+            None,
         )
         .expect("a fixture-free plan is clean");
         // Every script except a2a runs the dist/ ph.
@@ -2770,6 +2823,7 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
+            None,
         )
         .expect("a fixture-free plan is clean");
         for script in &plan.scripts {
@@ -2884,6 +2938,7 @@ mod tests {
             true,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
+            None,
         )
         .expect("a fixture-free plan is clean");
         for script in &plan.scripts {
@@ -2909,6 +2964,7 @@ mod tests {
             false,
             &NetnsRunner::Host(SudoProvenance::Nopasswd),
             Path::new("/b"),
+            None,
         )
         .expect("a fixture-free plan is clean");
         for script in &plan.scripts {

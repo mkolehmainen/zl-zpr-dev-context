@@ -48,8 +48,9 @@ together, and landed in stages:
 ### 1.3 Out of scope (recorded, not scheduled; see §10.3)
 
 No `[patch]` or path override of `zl-zpr-common`; no container build; no CI
-wiring; no parallel repository builds or `target/` reuse; no signing or
-publishing; no per-repository tagging of a set.
+wiring; no `target/` reuse across builds; no signing or publishing; no
+per-repository tagging of a set. (Parallel repository builds were originally
+out of scope too; zipline#144 brought them in — see §5.)
 
 ---
 
@@ -315,8 +316,7 @@ which strands a registration in every source repository — recovers on its own
 with no flag and no manual `git worktree prune`. Prune is scoped by git's own
 definition: it drops only registrations whose directory is already gone, so a
 live worktree, including one a developer created themselves, is never at
-risk. Everything is a release build. Ordered so each
-step's output is available to the next:
+risk. Everything is a release build. The table is in claim order:
 
 | # | Repository | Command(s) | Staged into `dist/` |
 |---|---|---|---|
@@ -326,8 +326,26 @@ step's output is available to the next:
 | 4 | `zl-zpr-coredns` | `make build` (Go) | `coredns` |
 | 5 | `zl-zpr-demo` | none | none |
 
-- Step 1 comes first because the visa service's `pregen` and the demo's
-  policy compilation both need `zplc`.
+- **Recipes run up to two at a time** (zipline#144): workers claim recipes in
+  table order — the same claim-next-work pattern as the netns tier's
+  container route — and the stop check and the claim are one synchronized
+  decision, so no recipe is ever claimed after a failure is recorded. This is
+  safe because no recipe consumes another's output *during the build*: the
+  consumers of `dist/` (`pregen`, the demo's policy compilation, the test
+  tiers) all run after every recipe has completed, worktrees and `target/`
+  dirs are disjoint, and staging writes distinct file names into `dist/`.
+  Width is fixed at 2, not a flag: each recipe is itself a parallel `cargo
+  build` that can saturate a small host, so the win is overlapping one
+  build's serial tail with the next build's start (measured ~1.55x
+  wall-clock on an 8-core host), not stacking five cargo invocations.
+- **A failure stops further claims.** Later repositories may need the failed
+  one's output, and a half-built set must not look built. Builds already in
+  flight run to completion so their logs are whole, and the reported failure
+  is the first in table order, deterministic however the in-flight builds
+  finished.
+- Step 1 is claimed first because the visa service's `pregen` and the demo's
+  policy compilation both need `zplc` — from `dist/`, after all recipes
+  complete, so table position orders the claims rather than gating them.
 - Step 2 reuses `zl-zpr-visaservice`'s own `make release` rather than
   reimplementing its staging; the double compile that implies (release for
   `dist/`, debug for `make test`) is accepted and recorded.

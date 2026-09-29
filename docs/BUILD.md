@@ -114,6 +114,93 @@ in `.github/` diverges from upstream. `skills/zpr/scripts/fork-ci.sh` reports th
 state and reverses it (`--enable`); re-enabling means also supplying the two
 secrets, or the same failures return.
 
+### Compiler caching with sccache (optional, per-host)
+
+The pipeline creates many worktrees and build directories whose dependency
+graphs are identical at the same tip, so the same `rustc` invocations run over
+and over. [`sccache`](https://github.com/mozilla/sccache) caches compiler
+invocations content-hashed: an identical invocation is served from the cache
+instead of re-executed. This changes **nothing** about what is built or tested
+— only whether an identical `rustc` run is repeated — so it is safe to combine
+with the no-reuse rule for build directories (zipline#60): the build directory
+is still fresh, every crate is still "compiled", but unchanged dependency
+compiles come back from the cache. Measured on this workspace's host: an
+identical dependency compile dropped from 4.33 s to 0.59 s.
+
+The setup is **host-level, not committed to any repository** — each host opts
+in for itself. On a host with `sccache` installed (`cargo install sccache`, or
+a release binary on `PATH`), a cargo config at the workspace root covers every
+checkout and worktree beneath it:
+
+```toml
+# ~/zl_src/.cargo/config.toml  (workspace root; applies to all checkouts under it)
+[build]
+rustc-wrapper = "/path/to/sccache"
+```
+
+The cache lives in `~/.cache/sccache` (10 GiB default cap);
+`sccache --show-stats` reports hit rates and cache size, and
+`sccache --zero-stats` resets the counters before a measurement. To disable,
+remove the `rustc-wrapper` line (or set `RUSTC_WRAPPER=""` for one command) —
+builds behave exactly as before, just slower.
+
+Caveats:
+
+- The config file lives *above* the repositories, so `zpr-dev validate` and
+  `git status` never see it; a host without it simply builds uncached. Do not
+  commit a `rustc-wrapper` path into a repository's own `.cargo/config.toml` —
+  the path is host-specific and would break every other machine.
+- `cargo fmt` and `cargo clippy` are unaffected (sccache wraps `rustc`, not
+  the tools), so gate results do not change.
+- Incremental compiles are not cacheable; sccache passes them through
+  unchanged (they run exactly as without it). The wins come from the
+  non-incremental dependency compiles, which dominate a fresh build dir.
+
+### Integration tier: how to run it
+
+Two invocations run the netns integration scripts, and they are not the same
+speed. **The recommended one is `zpr-dev build --test netns`**, with `--jobs N`
+to widen the container route:
+
+```bash
+zpr-dev build --tip --test netns --jobs 8 --no-tarball
+```
+
+On a host with netns support (passwordless `sudo`, `valkey-server` on `PATH`)
+it runs the scripts directly on the host; on a host without it, it falls back
+automatically to per-script privileged Docker containers, `--jobs N` at a time
+(default 4), and records the fallback in the emitted manifest — see "Integration
+tests" below and `zpr-dev/docs/specs/spec-003-build.md` §6. Either way the
+scripts run in parallel where that is safe, which is what makes it the fast
+route.
+
+**`make docker-test` (in `zl-zpr-core`, also `make integration-test-docker` at
+its root) is the fallback for hosts without netns support and without
+`zpr-dev`**, and it is much slower: it runs every script serially inside a
+single privileged container. Reach for it when you need one script under
+debugging (`TEST=<script>`), a root shell (`docker-shell`), or a run outside
+any build; do not reach for it as the routine tier run.
+
+Measured on this workspace's host (8 cores, Docker fallback route in both
+cases, 2026-09-29):
+
+| Invocation | What ran | Wall clock |
+|---|---|---|
+| `zpr-dev build --tip --test netns --jobs 5 --no-tarball` | all repo builds + 10 scripts, 5-wide | **10:44** total (repo builds alone measured 2:41 warm, so the tier itself was roughly 8 minutes) |
+| `make docker-test` (`zl-zpr-core`, image cached) | 9 scripts, serial | **~17:08** for the script phase alone (22:53:32Z -> 23:10:40Z), no repo builds included |
+
+Sources: the first row is the acceptance run quoted in zl-zpr-dev-context PR
+#44 (`/usr/bin/time -v`, elapsed 10:44.63); the second is the docker gate run
+for zipline#137 the same day, quoted 9/9 PASS on zl-zpr-visaservice PR #44
+(timestamps from its run log). The script sets differ by one
+(`a2a-pubkey-test.sh` ran only in the first), which does not change the
+conclusion: the serial single-container route pays roughly the whole tier's
+cost again in lost parallelism.
+
+Renaming `make docker-test` or speeding the target itself is `zl-zpr-core`'s
+Makefile, not this repository, and is staged as a follow-up — see the comment
+thread on zipline#144.
+
 ---
 
 ## Per-repository builds
@@ -606,7 +693,10 @@ make -C integration-test docker-shell                       # root shell for deb
 ```
 
 `make integration-test-docker` at the repository root is the same as the first
-line. The container runs `--privileged` because `ip netns`, `/dev/net/tun` and
+line. Note this route runs the scripts **serially in one container** — for a
+full-tier run prefer `zpr-dev build --test netns --jobs N`, which parallelizes
+it; see "Integration tier: how to run it" above for the measured difference.
+The container runs `--privileged` because `ip netns`, `/dev/net/tun` and
 io_uring (which Docker's default seccomp profile blocks) all need it. If the
 host's glibc is newer than the image's, the binaries will not load; pass
 `BASE_IMAGE=ubuntu:<host release>` to `docker-image` / `docker-test`.
