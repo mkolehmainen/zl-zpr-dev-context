@@ -266,7 +266,7 @@ cd zpr-dev && cargo build && cargo test
 Shared Rust crates are consumed **from Git by tag**, not by local path:
 
 ```toml
-zpr       = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.28.0", ... }
+zpr       = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.30.0", ... }
 zpr-ext   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "zpr-ext-v0.5.3" }
 cbpf-rs   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "cbpf-rs-v0.2.0" }
 ```
@@ -318,13 +318,21 @@ Two consequences worth knowing:
    cannot be cut while a bump is half-applied.
 
 Cap'n Proto crates (`capnp`, `capnp-rpc`, `capnpc`) resolve to **mainline
-crates.io everywhere** — no repository carries a `[patch.crates-io]` for them.
-`zl-zpr-core` used to patch them to a fork (`emilazy/capnproto-rust`) for the
-fd-passing `capnp-ancillary` feature; the fork did not compile for Windows and
-the feature was deleted with it (zipline#134). Unix capture goes through
-`capture.sock` instead. If fd-passing ever returns (upstream
-capnproto/capnproto-rust#666), it comes back from git history, not by
-re-patching.
+crates.io everywhere, at 0.26 in lockstep** — no repository carries a
+`[patch.crates-io]` for them. The 0.25 -> 0.26 upgrade landed as one round
+across all four Rust repositories (zipline#135): `zl-zpr-common` moved first
+and was tagged **`v0.30.0`**, then `zl-zpr-compiler`, `zl-zpr-visaservice` and
+`zl-zpr-core` bumped their `capnp*` crates and their `zpr` pin to that tag in
+the same set, because generated capnp code and the `zpr` re-exports must agree
+on the capnp version. A future capnp bump follows the same shape: common
+first, tag it, then every consumer in one round (gate 1 catches a half-applied
+bump).
+`zl-zpr-core` used to patch the capnp crates to a fork
+(`emilazy/capnproto-rust`) for the fd-passing `capnp-ancillary` feature; the
+fork did not compile for Windows and the feature was deleted with it
+(zipline#134). Unix capture goes through `capture.sock` instead. If fd-passing
+ever returns (upstream capnproto/capnproto-rust#666), it comes back from git
+history, not by re-patching.
 
 ### Versions and tags
 
