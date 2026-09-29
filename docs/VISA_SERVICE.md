@@ -213,11 +213,29 @@ of what it requested, and its adapter's record supersedes the one its startup
 self-authorization wrote there. A merely claimed `vs.zpr` gets nothing
 (zipline#102).
 
-Authentication expires. As expiry approaches the visa service tells the docking
-node over the VSS-API so the actor can re-authenticate; the grace period is a
-visa service setting. Default authentication lifetime is **4 hours** — except
-the visa service's own identity attributes, which are pinned ~100 years out so
-it can never expire itself.
+Authentication lifetimes depend on how the actor authenticated. **Bootstrap
+(RSA) authentication does not expire**: re-proving possession of a static key
+on a timer demonstrates nothing new, so bootstrap `device.zpr.authority` is
+stamped far-future, and the `zpr.vs.bootstrap.ident` identity attribute
+follows the actor's authority expiry instead of gating on its own
+(zipline#119). OIDC lifetimes come from the trusted service's tokens and are
+renewed silently through the resident auth agent (`docs/OIDC.md`). The visa
+service's own identity attributes are pinned ~100 years out so it can never
+expire itself.
+
+What forces re-authentication is a **policy install**, not a clock. Every
+install records the new policy generation and a deadline (`now +
+reauth_deadline`), then asks each connected node over the VSS-API
+(`requestAuthentication`) to re-authenticate itself and its docked adapters
+under the new generation; the sweep re-sends to actors still owing, and once
+the deadline passes it revokes whoever has not re-authenticated —
+adapters through the batched `revokeAuthentication`, nodes by disconnect
+(zipline#123). Authenticating under the newest generation satisfies all older
+obligations, so a stream of installs cannot postpone enforcement. This is how
+a bootstrap key removed from policy takes effect for a connected actor:
+within one `reauth_deadline` of the install. Node culling at visa-service
+startup is by last-seen age (the 4-hour default lifetime), since with
+non-expiring bootstrap authentication expiry can no longer be the criterion.
 
 ### Granting a visa
 
@@ -367,7 +385,10 @@ policy that assumes these values:
 | Admin HTTPS port | 8182 |
 | Minimum policy compiler version | 0.15.0 |
 
-Other operational bounds: 4-hour default authentication lifetime, 180-second
+Other operational bounds: 4-hour default authentication lifetime (the
+fallback where no authority sets one — bootstrap authentication itself does
+not expire, see *Authenticating actors*), a 300-second default
+`reauth_deadline` for re-authentication after a policy install, 180-second
 maximum clock skew during node authentication, 20 visas per request, 1024
 request workers and queue depth, a 7-second VSS ping with 3 failures before the
 node is dropped, and a 30-second database lock refresh against a 90-second

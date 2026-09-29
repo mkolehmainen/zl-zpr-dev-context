@@ -301,7 +301,7 @@ suggested order:
 |---|---|
 | `[nodes.<ID>]` | Node identity, `zpr_address`, provider attributes, substrate addresses |
 | `[links.<ID>]` | Topology, plus the link `attributes` an `over` clause matches. A tag is a `#`-prefixed key with an empty value |
-| `[trusted_services.<NAME>]` | Where attributes come from: `zpr-attr/1` (networked attribute service), `validation/2` (network, unimplemented), or `file` (local JSON). `default` is special — it checks adapter Noise-certificate CNs |
+| `[trusted_services.<NAME>]` | Where attributes come from: `zpr-attr/1` (networked attribute service), `validation/2` (network, unimplemented), or `file` (local JSON). `default` is special — it is ZPR's own trusted service, the visa service itself verifying bootstrap (RSA) authentications against the policy's `[bootstrap]` keys |
 | `[bootstrap]` | Maps a Noise CN to an RSA public key, for self-authentication before trusted services are reachable |
 | `[protocols.<NAME>]` | L4 protocol and port, or ICMP type and codes |
 | `[services.<NAME>]` | One per service named in the policy; `<NAME>` must match the ZPL name |
