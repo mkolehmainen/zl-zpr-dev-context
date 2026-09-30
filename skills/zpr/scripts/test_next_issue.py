@@ -221,6 +221,71 @@ def test_assigned_is_underway_regardless_of_board_status():
         assert numbers(awaiting) == [], (status_map, awaiting)
 
 
+# --- board items from other repositories (PR #47 review, P1) -----------------
+#
+# The board carries legacy `org-zpr/zpr-*` issues alongside the tracker's. The
+# Status map is keyed by issue number, so a foreign item sharing a number with
+# a `mkolehmainen/zipline` issue must be ignored -- otherwise an unrelated
+# Ready item makes a Backlog tracker issue pickable (bypassing the operator
+# gate), and an unrelated Backlog item suppresses an authorized one.
+
+
+def board_page(*nodes, has_next=False, cursor=None):
+    """One page of BOARD_QUERY results, as gh_graphql returns it."""
+    return {"data": {"user": {"projectV2": {"items": {
+        "nodes": list(nodes),
+        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+    }}}}}
+
+
+def board_item(number, status, repo="mkolehmainen/zipline"):
+    """One board item node: an issue with a repository and a Status value."""
+    return {
+        "content": {"number": number, "repository": {"nameWithOwner": repo}},
+        "fieldValueByName": {"name": status} if status else None,
+    }
+
+
+def statuses_from(*pages):
+    """Run board_statuses against canned pages instead of the network."""
+    remaining = list(pages)
+    original = next_issue.gh_graphql
+    next_issue.gh_graphql = lambda *a, **k: remaining.pop(0)
+    try:
+        return next_issue.board_statuses()
+    finally:
+        next_issue.gh_graphql = original
+
+
+def test_foreign_backlog_item_cannot_suppress_a_tracker_ready():
+    """org-zpr/zpr-core#5 at Backlog arriving after tracker #5 at Ready must
+    not overwrite it -- that would hold back an operator-authorized issue."""
+    statuses = statuses_from(board_page(
+        board_item(5, "Ready"),
+        board_item(5, "Backlog", repo="org-zpr/zpr-core"),
+    ))
+    assert statuses.get(5) == "Ready", statuses
+
+
+def test_foreign_ready_item_cannot_make_a_tracker_issue_pickable():
+    """org-zpr/zpr-core#7 at Ready, tracker #7 not on the board: #7 must stay
+    absent from the map (= Backlog = not pickable), or the operator gate is
+    bypassed by an unrelated item."""
+    statuses = statuses_from(board_page(
+        board_item(7, "Ready", repo="org-zpr/zpr-core"),
+    ))
+    assert 7 not in statuses, statuses
+
+
+def test_tracker_items_still_map_and_pagination_still_walks():
+    statuses = statuses_from(
+        board_page(board_item(5, "Ready"), has_next=True, cursor="c1"),
+        board_page(board_item(6, "Backlog"),
+                   board_item(6, "Ready", repo="org-zpr/zpr-visaservice")),
+    )
+    assert statuses == {5: "Ready", 6: "Backlog"}, statuses
+
+
 def test_awaiting_ready_and_pre_authorized_sort_in_execution_order():
     ready, pre, awaiting, _ = next_issue.select(
         [issue(2), issue(17), issue(8, blockers=[(1, "OPEN")]),

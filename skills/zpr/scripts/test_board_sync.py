@@ -54,15 +54,17 @@ def test_before_and_after_all_iterations_is_none():
 # --- build_plan --------------------------------------------------------------
 
 
-def item(number, status=None, iteration=None, state="OPEN"):
+def item(number, status=None, iteration=None, state="OPEN",
+         repo="mkolehmainen/zipline"):
     values = []
     if status:
         values.append({"name": status, "field": {"name": "Status"}})
     if iteration:
         values.append({"title": iteration, "field": {"name": "Iteration"}})
     return {
-        "id": f"item-{number}",
-        "content": {"number": number, "state": state},
+        "id": f"item-{repo}-{number}",
+        "content": {"number": number, "state": state,
+                    "repository": {"nameWithOwner": repo}},
         "fieldValues": {"nodes": values},
     }
 
@@ -137,6 +139,36 @@ def test_umbrella_gets_no_status_suggestion_or_report():
         assert [(e["field"], e["number"]) for e in plan] == [("Iteration", 140)], plan
         assert suggestions == [], (status, suggestions)
         assert skipped == [], (status, skipped)
+
+
+# --- board items from other repositories (PR #47 review, P1) -----------------
+#
+# The board carries legacy `org-zpr/zpr-*` issues alongside the tracker's.
+# build_plan keys its decisions by bare issue number, so a foreign item sharing
+# a number with a tracker issue would be judged by the tracker issue's
+# dependency state -- and edited or suggested as if it were the tracker issue.
+# Foreign items are not this script's to touch: skip them entirely.
+
+
+def test_foreign_item_is_not_suggested_or_edited():
+    """org-zpr/zpr-core#2 shares a number with an unblocked tracker issue.
+    It must get no Ready suggestion and no Iteration backfill -- it is not
+    the tracker issue #2, whatever its number says."""
+    plan, suggestions, skipped = build(
+        board([item(2, status="Backlog", repo="org-zpr/zpr-core")]), {2}, set())
+    assert plan == [], plan
+    assert suggestions == [], suggestions
+    assert skipped == [], skipped
+
+
+def test_foreign_item_does_not_shadow_the_tracker_item():
+    """Both #2s on the board: only the tracker one is planned or suggested."""
+    plan, suggestions, _ = build(board([
+        item(2, status="Backlog", repo="org-zpr/zpr-core"),
+        item(2, status="Backlog"),
+    ]), {2}, set())
+    assert [e["item_id"] for e in plan] == ["item-mkolehmainen/zipline-2"], plan
+    assert [s["number"] for s in suggestions] == [2], suggestions
 
 
 # --- iteration backfill (unchanged duty) -------------------------------------
