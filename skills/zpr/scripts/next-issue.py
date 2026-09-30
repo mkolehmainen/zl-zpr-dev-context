@@ -78,14 +78,18 @@ query($owner:String!, $repo:String!, $cursor:String) {
 """
 
 # Board Status per issue. The board is user-owned, so the root field must be
-# `user(login:)` -- `organization(login:)` returns null for it.
+# `user(login:)` -- `organization(login:)` returns null for it. The content's
+# repository is fetched because the board also carries legacy issues from
+# `org-zpr/zpr-*` repositories: an item is only this tracker's if it lives in
+# OWNER/REPO, and keying by bare number would let a same-numbered foreign item
+# overwrite a tracker issue's Status (PR #47 review).
 BOARD_QUERY = """
 query($owner:String!, $number:Int!, $cursor:String) {
   user(login:$owner) { projectV2(number:$number) {
     items(first:100, after:$cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        content { ... on Issue { number } }
+        content { ... on Issue { number repository { nameWithOwner } } }
         fieldValueByName(name:"Status") {
           ... on ProjectV2ItemFieldSingleSelectValue { name }
         }
@@ -125,19 +129,29 @@ def all_issues():
 def board_statuses():
     """Map issue number -> board Status name, from user-owned project #1.
 
+    Only `OWNER/REPO` (tracker) items are mapped: the board also carries
+    legacy `org-zpr/zpr-*` issues, and a foreign item sharing a number with a
+    tracker issue must not overwrite its Status -- an unrelated Ready item
+    would bypass the operator gate, an unrelated Backlog item would suppress
+    an authorized issue (PR #47 review).
+
     An issue absent from this map, or mapped to None (item exists but Status is
     unset), counts as Backlog in `select` -- the operator's Q1 answer on
     zipline#155. Field values live on the board item, not the issue, so this is
     re-read every run rather than cached.
     """
+    tracker = f"{OWNER}/{REPO}"
     cursor, statuses = None, {}
     while True:
         page = gh_graphql(BOARD_QUERY, owner=OWNER, number=PROJECT_NUMBER, cursor=cursor)
         items = page["data"]["user"]["projectV2"]["items"]
         for node in items["nodes"]:
-            number = (node.get("content") or {}).get("number")
+            content = node.get("content") or {}
+            number = content.get("number")
             if number is None:  # draft items and PRs have no issue number
                 continue
+            if (content.get("repository") or {}).get("nameWithOwner") != tracker:
+                continue  # legacy upstream issue: not this tracker's number
             value = node.get("fieldValueByName") or {}
             statuses[number] = value.get("name")
         if not items["pageInfo"]["hasNextPage"]:

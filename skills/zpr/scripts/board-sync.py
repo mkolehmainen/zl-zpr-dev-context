@@ -56,6 +56,11 @@ _spec.loader.exec_module(next_issue)
 
 OWNER = "mkolehmainen"
 PROJECT_NUMBER = 1
+# The tracker whose issues this board derives from. The board also carries
+# legacy issues from `org-zpr/zpr-*` repositories; those share bare numbers
+# with tracker issues, so every per-item decision filters on the content's
+# repository first (PR #47 review).
+TRACKER = f"{next_issue.OWNER}/{next_issue.REPO}"
 # Statuses this script owns. Anything else is someone's work in flight.
 DERIVED = ("Backlog", "Ready")
 
@@ -81,7 +86,7 @@ query($owner:String!, $number:Int!) {
         configuration { duration iterations { id title startDate duration } } } } }
     items(first:100) { nodes {
       id
-      content { ... on Issue { number state } }
+      content { ... on Issue { number state repository { nameWithOwner } } }
       fieldValues(first:20) { nodes {
         ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
         ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } } } } } } } }
@@ -152,6 +157,11 @@ def build_plan(board, unblocked_unassigned, underway_numbers, today,
         content = item["content"] or {}
         number = content.get("number")
         if number is None or content.get("state") != "OPEN":
+            continue
+        if (content.get("repository") or {}).get("nameWithOwner") != TRACKER:
+            # A legacy `org-zpr/zpr-*` issue: its number is not a tracker
+            # number, so judging it by the tracker's dependency graph would
+            # edit or suggest against the wrong item. Not ours to touch.
             continue
 
         status_now = field_value(item, "Status")
@@ -224,8 +234,10 @@ def main():
     order = next_issue.execution_order(issues)
     statuses = {}
     for item in board["items"]["nodes"]:
-        number = (item["content"] or {}).get("number")
-        if number is not None:
+        content = item["content"] or {}
+        number = content.get("number")
+        repo = (content.get("repository") or {}).get("nameWithOwner")
+        if number is not None and repo == TRACKER:
             statuses[number] = field_value(item, "Status")
     ready, pre_authorized, awaiting_ready, underway = next_issue.select(
         issues, order, statuses)
