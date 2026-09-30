@@ -27,3 +27,4 @@ Retired plans, and where their rationale now lives:
 | `2026-09-24-static-address-grants.md` | [zipline#95](https://github.com/mkolehmainen/zipline/issues/95) | `docs/VISA_SERVICE.md` |
 | `2026-09-25-retire-authored-address-pins.md` (`git show b817c70:docs/plans/<file>`) | [zipline#106](https://github.com/mkolehmainen/zipline/issues/106) | `docs/VISA_SERVICE.md` |
 | `2026-09-28-reauth-on-policy-install-plan.md` (`git show 43d56bd:docs/plans/<file>`) | [zipline#118](https://github.com/mkolehmainen/zipline/issues/118) | `docs/VISA_SERVICE.md` |
+| `2026-09-28-windows.md` (`git show 44e37d0:docs/plans/<file>`) | [zipline#126](https://github.com/mkolehmainen/zipline/issues/126) | `docs/SYSTEM_OVERVIEW.md`, `docs/BUILD.md` |

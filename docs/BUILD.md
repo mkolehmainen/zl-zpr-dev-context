@@ -764,3 +764,36 @@ docker run --rm -it -v "$PWD":/work -w /work <dev-env-image> make
 | A change in `zl-zpr-common` has no effect on a consumer | the consumer pins a Git tag | tag and bump, or use a temporary `path` dependency |
 | "patch was not used in the crate graph" | a bare `[patch]` cannot override a tag pin | use a temporary `path` dependency instead; never commit a locally-pathed `Cargo.lock` |
 | `unresolved import `serde`` in `zl-zpr-common/packet_info.rs` | built without `-F all` | `make build`; `make check` fails this way on clean `main` too |
+
+---
+
+## Design decisions
+
+Rationale carried over from completed master plans, retired once shipped. Full
+plan text is in git history (the architecture decisions from the same plan are
+in [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) "Design decisions"):
+
+- `git show 44e37d0:docs/plans/2026-09-28-windows.md` — umbrella
+  [zipline#126](https://github.com/mkolehmainen/zipline/issues/126)
+
+**Crypto stays on `aws-lc-rs` for Windows.** It supports Windows MSVC; the
+build cost is CMake and NASM on the machine (or the
+`aws-lc-sys/prebuilt-nasm` feature). Switching to `ring` for Windows was
+rejected: two crypto libraries in a security product is worse than one
+build-toolchain step.
+([zipline#126](https://github.com/mkolehmainen/zipline/issues/126))
+
+**`ph-cli` builds without `pcap` on Windows.** The `pcap` default feature is
+disabled there (`--no-default-features`), so capture-filter-string compilation
+is unavailable on Windows until Npcap is worth adding
+([zipline#151](https://github.com/mkolehmainen/zipline/issues/151));
+`cbpf-rs` itself is portable.
+([zipline#132](https://github.com/mkolehmainen/zipline/issues/132))
+
+**Mainline capnp; `capnp-ancillary` deleted.** The former `[patch.crates-io]`
+fork (`emilazy/capnproto-rust`) did not compile for Windows and blocked the
+port; core moved to mainline crates.io capnp and the optional fd-passing
+feature was deleted with it — `setCaptureFile` answers Unsupported (no
+capture) or redirects to `capture.sock` (unix). Details and the later 0.26
+lockstep bump: "Cross-repository dependencies" above.
+([zipline#134](https://github.com/mkolehmainen/zipline/issues/134))
