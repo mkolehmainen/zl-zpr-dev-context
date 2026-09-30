@@ -309,6 +309,132 @@ See [BUILD.md](BUILD.md) and [REPOSITORIES.md](REPOSITORIES.md).
 
 ---
 
+## Design decisions
+
+Rationale carried over from completed master plans, retired once shipped. Full
+plan text is in git history:
+
+- `git show 44e37d0:docs/plans/2026-09-28-windows.md` — umbrella
+  [zipline#126](https://github.com/mkolehmainen/zipline/issues/126)
+
+### Windows support for `ph adapter`
+
+`ph adapter` runs on Windows 10/11 (x64, MSVC). Build and toolchain decisions
+(crypto, pcap, capnp) are in [BUILD.md](BUILD.md) "Design decisions"; the
+user-facing walkthrough is `zl-zpr-core/docs/SETUP.md` "Windows".
+
+**Adapter only, elevated console, no service.** The first release is
+`ph adapter` on an end-user PC run from an Administrator console. `ph node`
+compiles on Windows (same binary) but is documented as unsupported and
+untested; service wrapper, installer and Event Log are deferred.
+([zipline#126](https://github.com/mkolehmainen/zipline/issues/126))
+
+**Windows is a third arm of `sys/`, plus one new abstraction.** No unix
+behaviour changes. The one abstraction is the wait set (next entry); everything
+else is `sys/windows/` or a `#[cfg(windows)]` block next to the existing macOS
+ones — the same pattern the macOS port established.
+([zipline#126](https://github.com/mkolehmainen/zipline/issues/126))
+
+**The fastpath waits on a `WaitSet` of `Waitable`s, not on fds.** Unix: a
+`Waitable` is a `BorrowedFd` and `WaitSet::wait` is `poll(2)`, byte-identical
+to the old behaviour; Windows: a HANDLE and `WaitForMultipleObjects` (TUN =
+Wintun's read-wait event, UDP socket = an Event bound with
+`WSAEventSelect(FD_READ)`, `Notify` = a manual-reset Event). Landed first as a
+unix-only refactor with the netns tier green, so the Windows arm plugged into
+a proven seam. Rejected: per-source reader threads plus channels (extra copy
+and hop per packet, second datapath shape); a tokio async datapath on Windows
+only (forks the datapath, loses `batch_io`).
+([zipline#128](https://github.com/mkolehmainen/zipline/issues/128))
+
+**Wintun via the `wintun` crate; addresses and routes via `netsh`.** The
+signed `wintun.dll` ships next to `ph.exe` and is loaded at runtime;
+`PI_SIZE = 0`. Address and route changes shell out to
+`netsh interface ipv6 ...`, the same pattern as `ip` and `ifconfig`;
+`route_owner_conflict` parses `netsh` output in a `Platform::Windows` arm of
+the portable route parser so its tests run on Linux. The known risk is
+localized `netsh` output (fixtures are English); the named upgrade path is the
+IP Helper API ([zipline#153](https://github.com/mkolehmainen/zipline/issues/153)).
+Adapter lifecycle: create fresh, delete on graceful exit, and reap any stale
+adapter with our name at startup.
+([zipline#130](https://github.com/mkolehmainen/zipline/issues/130))
+
+**Windows batch_io is a `windows_unbatched` engine with no pktinfo.**
+Non-blocking `recv_from`/`send_to` on the socket side, Wintun ring
+send/receive on the TUN side. No `WSARecvMsg`/`IP_PKTINFO`: an end-user
+adapter is single-homed for our purposes and `self_addr` is configured or
+discovered once at start — the ceiling is stated in code, and multi-homing is
+deferred ([zipline#150](https://github.com/mkolehmainen/zipline/issues/150)).
+`BorrowedFd` in the `BatchIoImpl` trait became the `Waitable` handle type,
+and raw `libc::c_int` send flags a `SendFlags` newtype.
+([zipline#131](https://github.com/mkolehmainen/zipline/issues/131))
+
+**Control RPC over a tokio named pipe with an explicit DACL.**
+`\\.\pipe\zpr-control-<sid>`, created with a DACL granting access to
+`BUILTIN\Administrators` and the owning user's SID only — the default
+named-pipe DACL is not acceptable for a control channel. Cap'n Proto RPC runs
+over any `AsyncRead + AsyncWrite`, so only how the stream is obtained changed.
+The owner is the process token's user SID: both `ph` and `ph-cli` run elevated
+by the same user in this release (non-elevated `ph-cli` deferred,
+[zipline#154](https://github.com/mkolehmainen/zipline/issues/154)); paths use
+`%ProgramData%\zpr` instead of `/var/run/zpr`.
+([zipline#129](https://github.com/mkolehmainen/zipline/issues/129),
+[zipline#130](https://github.com/mkolehmainen/zipline/issues/130))
+
+**Capture is Unsupported on Windows.** The capture pipe is not created;
+`set-capture-file` returns `Unsupported`. The unix fd-passing design exists to
+keep `ph` from writing to user-chosen paths as root, and Windows has no cheap
+equivalent — passing a path was rejected as a security regression. The
+recommended follow-up is `DuplicateHandle`
+([zipline#148](https://github.com/mkolehmainen/zipline/issues/148)). The
+internal capture queue also stopped being an AF_UNIX socketpair on every OS —
+a pure simplification that removed the last `UnixDatagram` from the datapath.
+([zipline#129](https://github.com/mkolehmainen/zipline/issues/129))
+
+**Signals map onto the Windows console events.** `ctrl_c` and `ctrl_close` →
+graceful shutdown (second Ctrl-C hard-exits, as SIGINT does), `ctrl_break` →
+print counters (the SIGUSR1 role), `ctrl_shutdown` → graceful.
+([zipline#129](https://github.com/mkolehmainen/zipline/issues/129))
+
+**`zpr-ext` was fixed at the source, not worked around.** Its unix-only
+modules (`std::os::fd`, `tokio::net`, `new_unspec`) are gated `cfg(unix)` and
+`mtu` gained a Windows arm, tagged `zpr-ext-v0.6.0` with no API change on
+unix. ([zipline#127](https://github.com/mkolehmainen/zipline/issues/127))
+
+**Verification is a Windows CI job plus a hand-run smoke test.**
+`windows-latest` builds `ph`/`ph-cli` and runs unit tests (inert while Actions
+stays disabled on the forks); end-to-end traffic is verified by hand per
+`zl-zpr-core/integration-test/windows-smoke.md` against a Linux node and visa
+service. A finding worth keeping: `cargo check --target x86_64-pc-windows-msvc`
+compiles no test code, so the Windows *tests* had never been built until the
+CI work ran them — four test-only fixes resulted. An unsigned `ph.exe` runs
+from an elevated console without a SmartScreen block (`wintun.dll` is signed
+by WireGuard LLC).
+([zipline#132](https://github.com/mkolehmainen/zipline/issues/132),
+[zipline#133](https://github.com/mkolehmainen/zipline/issues/133))
+
+### Deferred
+
+Out-of-scope items from the Windows plan, each with an open issue:
+
+- Windows service and installer —
+  [zipline#147](https://github.com/mkolehmainen/zipline/issues/147)
+- Packet capture to a file via `DuplicateHandle` —
+  [zipline#148](https://github.com/mkolehmainen/zipline/issues/148)
+- `ph node` on Windows —
+  [zipline#149](https://github.com/mkolehmainen/zipline/issues/149)
+- pktinfo / multi-homed hosts and address change while running —
+  [zipline#150](https://github.com/mkolehmainen/zipline/issues/150)
+- Npcap SDK for `ph-cli` filter compilation —
+  [zipline#151](https://github.com/mkolehmainen/zipline/issues/151)
+- A Windows integration test tier —
+  [zipline#152](https://github.com/mkolehmainen/zipline/issues/152)
+- IP Helper API instead of `netsh` —
+  [zipline#153](https://github.com/mkolehmainen/zipline/issues/153)
+- Non-elevated `ph-cli` talking to an elevated `ph` —
+  [zipline#154](https://github.com/mkolehmainen/zipline/issues/154)
+
+---
+
 ## Implementation status
 
 `zl-zpr-core` is a **pre-release reference implementation**; its README says the
