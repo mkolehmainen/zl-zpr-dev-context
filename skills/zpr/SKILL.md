@@ -112,11 +112,17 @@ everything already pushed to it, including an open PR's commits.
 ## Picking the next issue
 
 **How this work is driven.** The operator says *"work on the next issue"* and this
-agent picks it, not the human. Ordering is therefore machine-readable, in two places
-and nowhere else:
+agent picks it, not the human. **Pickup is opt-in via the board (zipline#155):**
+
+```
+pickable = open ∧ unassigned ∧ all blockers closed ∧ board Status == Ready
+```
+
+The first three conditions are machine-readable ordering, in two places and
+nowhere else:
 
 - **GitHub native issue dependencies.** Every issue in `mkolehmainen/zipline` carries
-  its blockers in the `blockedBy` dependency list. An issue is **ready** when it is
+  its blockers in the `blockedBy` dependency list. An issue is **unblocked** when it is
   open, every blocker is closed, and **nobody is assigned**. This is self-maintaining:
   merging a PR and closing its issue unblocks its dependents with no bookkeeping.
 - **Each umbrella's sub-issue list**, which is kept in intended execution order. Since
@@ -166,33 +172,56 @@ and nowhere else:
   leave the file in place -- that is the state this rule exists to prevent.
 
 Everything else that states an order — the `**Blocked by:**` line in each issue body,
-the plan document's *Issue map* and dependency graph, the board's `Ready`/`Backlog`
-Status — is **documentation derived from those two**. Do not resolve ordering from
-prose; if prose and the dependency graph disagree, the dependency graph wins and the
-prose needs fixing.
+the plan document's *Issue map* and dependency graph — is **documentation derived from
+those two**. Do not resolve ordering from prose; if prose and the dependency graph
+disagree, the dependency graph wins and the prose needs fixing.
+
+**The fourth condition is not derived: `Ready` is operator-owned (zipline#155).**
+The board's `Status` field is the operator's green-light, so the operator can file
+speculative issues freely — they land in `Backlog` via the filing automation and no
+work starts on them until he flips them to `Ready` himself. Nothing promotes an
+issue to `Ready` mechanically; `board-sync.py` only *suggests* promotions (below).
+Per the operator's decision on zipline#155, an issue absent from the board, or on
+the board with no Status value, counts as `Backlog` — not pickable. The dependency
+graph is still enforced independently of `Ready`, which makes `Ready` on a blocked
+issue **pre-authorization**: the issue is held while any blocker is open and picked
+up automatically on the tick after the last one closes. `next-issue.py` reports
+these as "Ready, blocked by #N — auto-starts when #N closes", which is intended
+state, not a warning.
+
+**Reporting duty: nothing may rot silently.** Every run, `next-issue.py` lists
+unblocked, unassigned issues still sitting at `Backlog` under `awaiting-ready` —
+an issue the operator meant to green-light but forgot shows up every tick instead
+of silently never starting. A driver's tick report must carry that section through
+to the operator.
 
 ```
-python3 scripts/next-issue.py          # NEXT, the rest of the ready set, and what is underway
-python3 scripts/next-issue.py --json   # {"next": {...}, "ready": [...], "underway": [...]}
+python3 scripts/next-issue.py          # NEXT + pickable set, pre-authorized, awaiting-ready, underway
+python3 scripts/next-issue.py --json   # {"next": {...}, "ready": [...], "pre_authorized": [...],
+                                       #  "awaiting_ready": [...], "underway": [...]}
 python3 scripts/test_next_issue.py     # the selection logic's tests, no network
 ```
 
 It reads state and changes nothing, so it is always safe to run.
 
-**The board is derived, so it can be rebuilt.** `scripts/board-sync.py` recomputes the
-two mechanical fields from the same dependency graph: `Status` between `Backlog` and
-`Ready`, and `Iteration` for any open item that has none. It prints a plan and writes
-only with `--apply`. It deliberately never touches `In progress`, `In review` or `Done`
-— those are owned by whoever is doing the work — and it reports rather than guesses when
-an assigned issue is still sitting in a derived status. Reach for it whenever the board
-disagrees with the dependency graph; do not hand-edit eighteen items.
+**Board upkeep.** `scripts/board-sync.py` backfills `Iteration` for any open item
+that has none, prints Backlog→Ready promotion *suggestions* (open, unassigned,
+unblocked, still `Backlog`) for the operator to act on, and reports drift —
+assigned issues still in a derived status, and Ready-but-blocked pre-authorized
+items. It prints a plan and writes only with `--apply`, and even `--apply` never
+writes `Status`: promotion suggestions are always left to the operator, and
+`In progress`, `In review` and `Done` are owned by whoever is doing the work.
+Reach for it whenever the board's iterations lag; do not hand-edit eighteen items.
 
 **Removing an item from the board and re-adding it resets every field value and mints a
 new item id.** Field values live on the item, not the issue, so a rebuilt board comes
 back with `Status: Backlog` and no iteration, and any item id you cached stops resolving
 (`Could not resolve to a node with the global id`). Re-read item ids from the board each
 time rather than caching them, and run `board-sync.py --apply` after any bulk board
-edit. A board whose default view filters `iteration:@current` looks *completely empty*
+edit to backfill iterations — Status values the operator had set (in particular
+`Ready`) are lost in the rebuild and must be restored by the operator; the sync's
+suggestions list is the prompt for that. A board whose default view filters
+`iteration:@current` looks *completely empty*
 in that state, because no item has an iteration — the items are still there, the view
 just matches none of them.
 
@@ -430,10 +459,13 @@ What that does and does not mean for assignment:
   "missing required scopes" on any `gh project` call.
 - Status values on this board are **`Backlog` / `Ready` / `In progress` /
   `In review` / `Done`** — exact spelling, note the lowercase second word. There is
-  no `Todo`. `Backlog` means not started and not yet cleared to start; `Ready` means
-  unblocked and pickable. Something added to the board arrives in `Backlog`
-  (an automation adds `mkolehmainen/zipline` issues on filing), so promote a
-  dependency-free item to `Ready` yourself.
+  no `Todo`. `Backlog` means not cleared to start; `Ready` is the **operator's
+  green-light for pickup** (zipline#155) — never set it yourself. Something added
+  to the board arrives in `Backlog` (an automation adds `mkolehmainen/zipline`
+  issues on filing) and stays unpickable until the operator flips it to `Ready`;
+  if a dependency-free item looks forgotten in `Backlog`, it appears under
+  `next-issue.py`'s `awaiting-ready` section, which is the report to surface —
+  not a promotion to make.
 - When you start work on an issue, assign it to **yourself** and change its project
   Status to `In progress` (see pickup step 3 for why, and for the read-back check).
   There is no team to notify — the operator is in the conversation, so tell them there

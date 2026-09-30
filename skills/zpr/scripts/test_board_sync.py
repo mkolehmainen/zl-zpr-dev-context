@@ -51,28 +51,7 @@ def test_before_and_after_all_iterations_is_none():
     assert bs.current_iteration(ITERATIONS, d("2026-12-01")) is None
 
 
-# --- desired_status ----------------------------------------------------------
-
-
-def test_unblocked_and_unassigned_becomes_ready():
-    assert bs.desired_status(2, {2}, set(), "Backlog") == "Ready"
-
-
-def test_blocked_becomes_backlog():
-    assert bs.desired_status(4, {2}, set(), "Ready") == "Backlog"
-
-
-def test_work_in_flight_status_is_never_touched():
-    for status in ("In progress", "In review", "Done"):
-        assert bs.desired_status(2, {2}, set(), status) is None, status
-
-
-def test_assigned_item_is_left_for_a_human():
-    """Assigned + still derived is drift; guessing In progress vs In review is wrong."""
-    assert bs.desired_status(17, set(), {17}, "Backlog") is None
-
-
-# --- build_plan -------------------------------------------------------------
+# --- build_plan --------------------------------------------------------------
 
 
 def item(number, status=None, iteration=None, state="OPEN"):
@@ -103,28 +82,91 @@ def board(items):
     }
 
 
-def test_plan_sets_status_and_fills_empty_iteration():
-    plan, skipped = build(board([item(2, status="Backlog")]), {2}, set())
-    assert [(e["field"], e["to"]) for e in plan] == [
-        ("Iteration", "Iteration 1"), ("Status", "Ready")]
+# --- the Ready gate (zipline#155): promotion is suggest-only -----------------
+
+
+def test_promotion_is_suggested_never_planned():
+    """An unblocked, unassigned Backlog item used to get a Backlog->Ready edit.
+    Ready is operator-owned now: the item shows up as a *suggestion* and the
+    plan carries no Status edit -- so even --apply cannot promote it."""
+    plan, suggestions, skipped = build(
+        board([item(2, status="Backlog", iteration="Iteration 1")]), {2}, set())
+    assert plan == [], plan
+    assert [s["number"] for s in suggestions] == [2], suggestions
+    assert skipped == []
+
+
+def test_plan_never_contains_a_status_edit():
+    """The whole Status field is read-only to this script now, in both
+    directions -- promotion AND demotion are reporting duties."""
+    plan, _, _ = build(board([
+        item(2, status="Backlog", iteration="Iteration 1"),   # promotable
+        item(4, status="Ready", iteration="Iteration 1"),     # blocked, Ready
+        item(6, iteration="Iteration 1"),                     # no status at all
+    ]), {2, 6}, set())
+    assert [e for e in plan if e["field"] == "Status"] == [], plan
+
+
+def test_ready_but_blocked_is_reported_not_demoted():
+    """A blocked issue sitting at Ready is pre-authorization (zipline#155): it
+    auto-starts when its blockers close. Demoting it would erase the
+    operator's green-light, so it is reported and left alone."""
+    plan, suggestions, skipped = build(
+        board([item(4, status="Ready", iteration="Iteration 1")]), set(), set())
+    assert plan == [], plan
+    assert suggestions == [], suggestions
+    assert [s["number"] for s in skipped] == [4], skipped
+    assert "pre-authorized" in skipped[0]["why"], skipped
+
+
+def test_work_in_flight_status_is_never_touched_or_suggested():
+    for status in ("In progress", "In review", "Done"):
+        plan, suggestions, _ = build(
+            board([item(2, status=status, iteration="Iteration 1")]), {2}, set())
+        assert plan == [], (status, plan)
+        assert suggestions == [], (status, suggestions)
+
+
+def test_umbrella_gets_no_status_suggestion_or_report():
+    """An umbrella is a container, not work: it is never pickable, so its
+    Status is not this script's business in either direction -- no promotion
+    suggestion, no pre-authorized report. Iteration backfill still applies."""
+    for status in ("Backlog", "Ready"):
+        plan, suggestions, skipped = build(
+            board([item(140, status=status)]), set(), set(), umbrellas={140})
+        assert [(e["field"], e["number"]) for e in plan] == [("Iteration", 140)], plan
+        assert suggestions == [], (status, suggestions)
+        assert skipped == [], (status, skipped)
+
+
+# --- iteration backfill (unchanged duty) -------------------------------------
+
+
+def test_plan_fills_empty_iteration():
+    plan, suggestions, skipped = build(board([item(2, status="Backlog")]), {2}, set())
+    assert [(e["field"], e["to"]) for e in plan] == [("Iteration", "Iteration 1")], plan
+    assert [s["number"] for s in suggestions] == [2], suggestions
     assert skipped == []
 
 
 def test_existing_iteration_is_not_moved():
     """Someone parked this in Iteration 2 on purpose."""
-    plan, _ = build(board([item(2, status="Ready", iteration="Iteration 2")]), {2}, set())
+    plan, _, _ = build(board([item(2, status="Ready", iteration="Iteration 2")]), {2}, set())
     assert plan == []
 
 
 def test_closed_items_are_ignored():
-    plan, _ = build(board([item(9, status="Backlog", state="CLOSED")]), set(), set())
+    plan, suggestions, _ = build(
+        board([item(9, status="Backlog", state="CLOSED")]), set(), set())
     assert plan == []
+    assert suggestions == []
 
 
 def test_assigned_drift_is_reported_not_planned():
-    plan, skipped = build(board([item(17, status="Backlog", iteration="Iteration 1")]),
-                          set(), {17})
+    plan, suggestions, skipped = build(
+        board([item(17, status="Backlog", iteration="Iteration 1")]), set(), {17})
     assert plan == []
+    assert suggestions == []
     assert [s["number"] for s in skipped] == [17]
 
 
@@ -137,8 +179,8 @@ def test_missing_iteration_for_today_is_a_hard_error():
         raise AssertionError("expected SystemExit")
 
 
-def build(b, ready, underway, today=d("2026-09-03")):
-    return bs.build_plan(b, ready, underway, today)
+def build(b, ready, underway, today=d("2026-09-03"), umbrellas=frozenset()):
+    return bs.build_plan(b, ready, underway, today, umbrellas)
 
 
 if __name__ == "__main__":

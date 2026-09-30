@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
 """Print the next issue to work on in mkolehmainen/zipline, and the rest of the ready set.
 
-An issue is READY when it is open, every issue in its GitHub native `blockedBy`
-dependency list is closed, and it is UNASSIGNED. The NEXT issue is the ready
-issue that comes first in its umbrella's sub-issue list, which is maintained in
-execution order (see "Picking the next issue" in ../SKILL.md) -- so position in
-that list already encodes critical-path-first and no separate tiebreak is
-needed.
+An issue is PICKABLE when all four hold (zipline#155):
+
+    pickable = open AND unassigned AND all blockers closed AND board Status == Ready
+
+The first three come from the tracker (GitHub native `blockedBy` dependencies
+and assignment); the fourth comes from the project board -- user-owned project
+#1 under mkolehmainen -- and is OPERATOR-OWNED: nothing promotes an issue to
+`Ready` mechanically (board-sync.py only suggests), so pickup is opt-in per
+issue. An issue absent from the board, or on the board with no Status value,
+counts as Backlog and is not pickable (operator decision on zipline#155).
+
+The dependency graph is still enforced independently of Ready: marking a
+blocked issue Ready is *pre-authorization* -- it is held while any blocker is
+open and picked up automatically on the tick after the last blocker closes.
+Those are reported under `pre-authorized` (intended state, not a warning).
+Unblocked, unassigned issues still sitting in Backlog are reported under
+`awaiting-ready` every run so a forgotten green-light shows up instead of
+silently never starting.
+
+The NEXT issue is the pickable issue that comes first in its umbrella's
+sub-issue list, which is maintained in execution order (see "Picking the next
+issue" in ../SKILL.md) -- so position in that list already encodes
+critical-path-first and no separate tiebreak is needed.
 
 An assigned issue is treated as UNDERWAY, not ready: pickup step 3 assigns the
 issue before branching, so assignment is the marker that someone already holds
@@ -23,10 +40,11 @@ This reads state and changes nothing.
 
 Usage:
   python3 next-issue.py           # human-readable
-  python3 next-issue.py --json    # {"next": {...}, "ready": [...], "underway": [...]}
+  python3 next-issue.py --json    # {"next": {...}, "ready": [...], "pre_authorized": [...],
+                                  #  "awaiting_ready": [...], "underway": [...]}
 
-Requires: gh authenticated with the `repo` scope. Dependencies and sub-issues are
-repository data, so no project scope is needed here.
+Requires: gh authenticated with the `repo` scope, plus `read:project` (or
+`project`) for the board Status read.
 """
 import json
 import os
@@ -37,6 +55,7 @@ from ghretry import run_gh  # noqa: E402
 
 OWNER = "mkolehmainen"
 REPO = "zipline"
+PROJECT_NUMBER = 1
 
 # Every issue in every state, because a *closed* umbrella can still have open
 # children -- so the sub-issue order has to be read from closed issues too.
@@ -55,6 +74,24 @@ query($owner:String!, $repo:String!, $cursor:String) {
       }
     }
   }
+}
+"""
+
+# Board Status per issue. The board is user-owned, so the root field must be
+# `user(login:)` -- `organization(login:)` returns null for it.
+BOARD_QUERY = """
+query($owner:String!, $number:Int!, $cursor:String) {
+  user(login:$owner) { projectV2(number:$number) {
+    items(first:100, after:$cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        content { ... on Issue { number } }
+        fieldValueByName(name:"Status") {
+          ... on ProjectV2ItemFieldSingleSelectValue { name }
+        }
+      }
+    }
+  } }
 }
 """
 
@@ -83,6 +120,29 @@ def all_issues():
         if not page["pageInfo"]["hasNextPage"]:
             return out
         cursor = page["pageInfo"]["endCursor"]
+
+
+def board_statuses():
+    """Map issue number -> board Status name, from user-owned project #1.
+
+    An issue absent from this map, or mapped to None (item exists but Status is
+    unset), counts as Backlog in `select` -- the operator's Q1 answer on
+    zipline#155. Field values live on the board item, not the issue, so this is
+    re-read every run rather than cached.
+    """
+    cursor, statuses = None, {}
+    while True:
+        page = gh_graphql(BOARD_QUERY, owner=OWNER, number=PROJECT_NUMBER, cursor=cursor)
+        items = page["data"]["user"]["projectV2"]["items"]
+        for node in items["nodes"]:
+            number = (node.get("content") or {}).get("number")
+            if number is None:  # draft items and PRs have no issue number
+                continue
+            value = node.get("fieldValueByName") or {}
+            statuses[number] = value.get("name")
+        if not items["pageInfo"]["hasNextPage"]:
+            return statuses
+        cursor = items["pageInfo"]["endCursor"]
 
 
 def umbrellas(issues):
@@ -126,39 +186,66 @@ def summarize(issue, order):
     }
 
 
-def select(issues, order):
-    """Split issues into (ready, underway), both in execution order.
+def select(issues, order, statuses):
+    """Split issues into (ready, pre_authorized, awaiting_ready, underway),
+    each in execution order.
 
-    Ready = open, unblocked and unassigned, so it is safe to pick up. Underway
-    = open and unblocked but assigned, i.e. already held by someone; poll those
-    instead. Closed issues, blocked issues and umbrellas appear in neither
-    list.
+    ready           open + unassigned + unblocked + board Status Ready:
+                    pickable now.
+    pre_authorized  Ready but blocked: the operator has green-lit it ahead of
+                    time; it auto-starts on the tick after its last blocker
+                    closes. Rows carry `blocked_by`, the open blocker numbers.
+                    Intended state, not a warning.
+    awaiting_ready  open + unassigned + unblocked, but board Status is not
+                    Ready: held by the gate until the operator flips it.
+                    Reported every run so a forgotten green-light is visible.
+    underway        open + unblocked but assigned: already held by someone;
+                    poll it instead. Assignment trumps board Status -- the
+                    gate governs pickup, not work already claimed.
+
+    `statuses` maps issue number -> board Status name; an issue missing from
+    it, or mapped to None, counts as Backlog (not pickable) per the operator's
+    Q1 answer on zipline#155. Closed issues, umbrellas, and blocked non-Ready
+    issues appear in no list.
     """
     tracking = umbrellas(issues)
-    ready, underway = [], []
+    ready, pre_authorized, awaiting_ready, underway = [], [], [], []
     for issue in issues:
         if issue["state"] != "OPEN":
             continue
         if issue["number"] in tracking:
             continue
-        if any(b["state"] == "OPEN" for b in issue["blockedBy"]["nodes"]):
-            continue
+        open_blockers = [b["number"] for b in issue["blockedBy"]["nodes"]
+                         if b["state"] == "OPEN"]
         row = summarize(issue, order)
-        (underway if row["assignees"] else ready).append(row)
-    ready.sort(key=lambda r: r["position"])
-    underway.sort(key=lambda r: r["position"])
-    return ready, underway
+        if row["assignees"]:
+            if not open_blockers:
+                underway.append(row)
+            continue
+        is_ready = statuses.get(issue["number"]) == "Ready"
+        if open_blockers:
+            if is_ready:
+                row["blocked_by"] = sorted(open_blockers)
+                pre_authorized.append(row)
+            continue
+        (ready if is_ready else awaiting_ready).append(row)
+    for rows in (ready, pre_authorized, awaiting_ready, underway):
+        rows.sort(key=lambda r: r["position"])
+    return ready, pre_authorized, awaiting_ready, underway
 
 
 def main():
     as_json = "--json" in sys.argv
     issues = all_issues()
     order = execution_order(issues)
-    ready, underway = select(issues, order)
+    statuses = board_statuses()
+    ready, pre_authorized, awaiting_ready, underway = select(issues, order, statuses)
 
     if as_json:
         print(json.dumps({"next": ready[0] if ready else None,
-                          "ready": ready, "underway": underway}, indent=2))
+                          "ready": ready, "pre_authorized": pre_authorized,
+                          "awaiting_ready": awaiting_ready,
+                          "underway": underway}, indent=2))
         return
 
     if ready:
@@ -170,7 +257,26 @@ def main():
             for r in ready[1:]:
                 print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}")
     else:
-        print("Nothing ready: every open issue is blocked, assigned, or the tracker is empty.")
+        print("Nothing pickable: every open issue is blocked, assigned, "
+              "or awaiting the operator's Ready on the board.")
+
+    # Ready-but-blocked is intended state: the operator pre-authorized it and
+    # it starts by itself when the last blocker closes.
+    if pre_authorized:
+        print(f"\npre-authorized ({len(pre_authorized)}) -- "
+              f"auto-starts when blockers close:")
+        for r in pre_authorized:
+            blockers = ", ".join(f"#{n}" for n in r["blocked_by"])
+            print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}"
+                  f"  (blocked by {blockers})")
+
+    # Unblocked but not Ready: the gate is holding these for the operator.
+    # Reported every run so a forgotten green-light cannot rot silently.
+    if awaiting_ready:
+        print(f"\nawaiting your Ready ({len(awaiting_ready)}) -- "
+              f"unblocked and unassigned, but board Status is not Ready:")
+        for r in awaiting_ready:
+            print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}")
 
     # Assigned-but-unblocked issues are the work in flight. Printed because an
     # issue silently vanishing from the ready set is otherwise baffling.
