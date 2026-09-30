@@ -50,7 +50,11 @@ Windows SDK + CMake), Rust via rustup, NASM (`choco install -y nasm`, for
 with `--no-default-features` there (no libpcap). Details and the runtime
 `wintun.dll` requirement: `zl-zpr-core/docs/SETUP.md`, "Windows". To
 cross-check from Linux without a Windows box:
-`cargo xwin check -p ph -p ph-cli --no-default-features --target x86_64-pc-windows-msvc`.
+`cargo xwin check -p ph --target x86_64-pc-windows-msvc` and
+`cargo xwin check -p ph-cli --no-default-features --target x86_64-pc-windows-msvc`
+(two invocations: `ph-cli` must drop its default `pcap` feature, but `ph`
+needs its defaults — a workspace-wide `--no-default-features` strips `ph`'s
+mandatory `rcu-*` backend selection and fails to compile).
 
 ---
 
