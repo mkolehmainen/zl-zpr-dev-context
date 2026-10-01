@@ -49,6 +49,8 @@ paths, so they can be opened directly.
 | Changing how `zpr-dev build` gates or runs the netns test tier, or its Docker fallback | `zpr-dev/docs/specs/spec-003-build.md` ("Test tiers"), `docs/BUILD.md` |
 | Changing how the visa service assigns, pins or checks a ZPR address | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
 | Working on `ph adapter` Windows support (Wintun, `WaitSet`, named-pipe control channel) | `docs/SYSTEM_OVERVIEW.md` ("Design decisions"), `docs/BUILD.md` ("Design decisions") |
+| Working an issue under the `ph node` on Windows umbrella (zipline#149: node self-address via `TunCtl`, `WSAECONNRESET`, `windows-node-test.md`) | `docs/plans/2026-10-01-win-node.md`, `docs/SYSTEM_OVERVIEW.md` ("Design decisions") |
+| Working an issue under the `ph node` on macOS umbrella (macOS `new_mq` address rule, `macos-node-test.md`) | `docs/plans/2026-10-01-mac-node.md`, `docs/plans/2026-10-01-win-node.md` (task C1), `docs/SYSTEM_OVERVIEW.md` ("Design decisions") |
 | Working an issue under the capnp FD-passing umbrella (the `mkolehmainen/capnproto-rust` fork, unix-only `capnp-ancillary`, retiring `capture.sock`), or changing core's capnp `[patch]` | `docs/plans/2026-09-29-capnp-fd-passing-unix.md`, `docs/BUILD.md`, the fork's `ZIPLINE.md` |
 | Changing ZPL syntax or semantics, or the compiler | `docs/ZPL.md` |
 | Changing visa issuance, revocation, or the evaluator | `docs/VISA_SERVICE.md`, `docs/SECURITY_MODEL.md` |
