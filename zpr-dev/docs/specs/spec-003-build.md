@@ -250,8 +250,10 @@ error exits 1.
 Parse every `Cargo.toml` in every worktree, including workspace members, and
 collect each dependency declared with `git = <url>` where the URL is
 ZPR-family (`github.com/mkolehmainen/*`, `github.com/org-zpr/*`) or otherwise
-pinned by `rev` (any third-party fork a repository temporarily pins — none at
-the time of writing). Group by `(crate, url)`
+pinned by `rev` (a third-party fork a repository pins — e.g. `zl-zpr-core`'s
+`[patch.crates-io]` of the `capnp*` crates to
+`mkolehmainen/capnproto-rust`, rev-pinned per `docs/BUILD.md`
+"Cross-repository dependencies"). Group by `(crate, url)`
 and require a single `tag` (or `rev`) across the whole set. Report every
 disagreement as:
 

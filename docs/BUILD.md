@@ -417,26 +417,40 @@ Two consequences worth knowing:
    consumers pinning different tags of the same crate as an error, so a set
    cannot be cut while a bump is half-applied.
 
-Cap'n Proto crates (`capnp`, `capnp-rpc`, `capnpc`) resolve to **mainline
-crates.io everywhere, at 0.26 in lockstep** — no repository carries a
-`[patch.crates-io]` for them. The 0.25 -> 0.26 upgrade landed as one round
-across all four Rust repositories (zipline#135): `zl-zpr-common` moved first
-and was tagged **`v0.30.0`**, then `zl-zpr-compiler`, `zl-zpr-visaservice` and
-`zl-zpr-core` bumped their `capnp*` crates and their `zpr` pin to that tag in
-the same set, because generated capnp code and the `zpr` re-exports must agree
-on the capnp version. A future capnp bump follows the same shape: common
-first, tag it, then every consumer in one round. Gate 1 catches a
-half-applied **`zpr` tag** bump only — it compares git dependency pins, and
-the lock scan likewise ignores registry crates — so the direct crates.io
-`capnp*` requirements are invisible to it and must be checked separately:
-verify every consumer's `capnp`, `capnp-rpc` and `capnpc` requirements moved
-in the same round.
-`zl-zpr-core` used to patch the capnp crates to a fork
-(`emilazy/capnproto-rust`) for the fd-passing `capnp-ancillary` feature; the
-fork did not compile for Windows and the feature was deleted with it
-(zipline#134). Unix capture goes through `capture.sock` instead. If fd-passing
-ever returns (upstream capnproto/capnproto-rust#666), it comes back from git
-history, not by re-patching.
+Cap'n Proto crates (`capnp`, `capnp-rpc`, `capnpc`) are **lockstep on one
+minor across all four Rust repositories** (`zl-zpr-common`, `zl-zpr-compiler`,
+`zl-zpr-visaservice`, `zl-zpr-core`), because `zl-zpr-common` publicly
+re-exports the generated capnp modules and a `[patch]` only replaces
+requirements it is semver-compatible with. **The minor is set by the
+FD-passing fork** (below): currently **0.26**. The 0.25 -> 0.26 upgrade landed
+as one round (zipline#135): `zl-zpr-common` moved first and was tagged
+**`v0.30.0`**, then `zl-zpr-compiler`, `zl-zpr-visaservice` and `zl-zpr-core`
+bumped their `capnp*` crates and their `zpr` pin to that tag in the same set,
+because generated capnp code and the `zpr` re-exports must agree on the capnp
+version. A future capnp bump follows the same shape — the fork first, since
+its minor sets the lockstep, then common, tag it, then every consumer in one
+round. Gate 1 catches a half-applied **`zpr` tag** bump only — it compares git
+dependency pins, and the lock scan likewise ignores registry crates — so the
+direct crates.io `capnp*` requirements are invisible to it and must be checked
+separately: verify every consumer's `capnp`, `capnp-rpc` and `capnpc`
+requirements moved in the same round.
+
+`zl-zpr-common`, `zl-zpr-compiler` and `zl-zpr-visaservice` resolve the capnp
+crates to mainline crates.io. **`zl-zpr-core` patches them to the FD-passing
+fork** (zipline#142): a `[patch.crates-io]` block points `capnp`,
+`capnp-futures`, `capnp-rpc` and `capnpc` at `mkolehmainen/capnproto-rust`
+rev **`1e1d5ad692b4b2c2b942f04f32550df6445f4216`**, which is what gives unix
+builds FD passing over the admin RPC (the `capnp-ancillary` feature). Cargo
+cannot scope a patch to a target, so the patch is unconditional and **the fork
+must build on every target** — Windows included; only the FD-passing *use* is
+unix-gated. After changing the patch, re-resolve the lockfile
+(`cargo update -p capnp -p capnp-futures -p capnp-rpc -p capnpc`): against an
+existing lockfile a new patch is otherwise silently ignored apart from a Cargo
+warning. The commits the fork carries, the fast-forward-only maintenance
+rules, the verification to run before pushing it, and when to retire it live
+in the fork's
+[`ZIPLINE.md`](https://github.com/mkolehmainen/capnproto-rust/blob/zipline/ZIPLINE.md);
+the decision record is under "Design decisions" below.
 
 ### Versions and tags
 
@@ -794,6 +808,68 @@ is unavailable on Windows until Npcap is worth adding
 fork (`emilazy/capnproto-rust`) did not compile for Windows and blocked the
 port; core moved to mainline crates.io capnp and the optional fd-passing
 feature was deleted with it — `setCaptureFile` answers Unsupported (no
-capture) or redirects to `capture.sock` (unix). Details and the later 0.26
-lockstep bump: "Cross-repository dependencies" above.
+capture) or redirects to `capture.sock` (unix). *Superseded:* once the port
+finished, the fork came back fixed for every target and `capture.sock` was
+deleted — see the capnp FD-passing entries below.
 ([zipline#134](https://github.com/mkolehmainen/zipline/issues/134))
+
+- `git show c7f15ed:docs/plans/2026-09-29-capnp-fd-passing-unix.md` — umbrella
+  [zipline#140](https://github.com/mkolehmainen/zipline/issues/140)
+
+**Fork base: stay on capnp 0.26, not rebase onto 0.27 (operator direction,
+2026-09-29).** The FD-passing fork uses emilazy's PR
+capnproto/capnproto-rust#666 (0.26.2 base) plus eight fix/backport commits;
+the four repos moved 0.25 → 0.26 in one round (zipline#135, retargeted from
+0.27). The alternative — rebasing the 13 fork commits onto 0.27.2 — conflicts
+at commit 2 of 13, costs more up front, and diverges further from #666.
+([zipline#141](https://github.com/mkolehmainen/zipline/issues/141))
+
+**Security cost of 0.26 instead of 0.27: nothing security-relevant lost (F1
+audit).** Core, on the fork, has every security fix upstream shipped from
+0.26.2 through 0.27.2 — either in the base (UB with `pointer::add()`, zeroing
+miss, `BufferSegments::new()` panic, `read_message_no_alloc()` desync,
+packed-stream EOF bugs, bad-question-ID RPC panic) or cherry-picked (the
+peer-triggered re-import `unreachable!()` panic in capnp-rpc, bool
+`PrimitiveElement` bounds, `get_data_field` overflow + its regression test).
+The upstream changes not taken are a performance fix, an RPC shutdown-ordering
+change, and 0.27 API/schema-equality work — none a security fix. The other
+three repos, on crates.io 0.26.x, miss only the two 0.27-only
+defence-in-depth fixes, which guard internal APIs that generated code does
+not call with attacker-controlled values. If upstream ships a security fix
+later, follow the fork's
+[`ZIPLINE.md`](https://github.com/mkolehmainen/capnproto-rust/blob/zipline/ZIPLINE.md).
+([zipline#141](https://github.com/mkolehmainen/zipline/issues/141))
+
+**The fork lives at `mkolehmainen/capnproto-rust`, branch `zipline`, pinned by
+`rev`.** Consumers never pin a branch: emilazy's fork was force-pushed once
+already, orphaning org-zpr's old pin `cfbcb9b` — GitHub still serves an
+orphaned SHA but it can be garbage-collected, so we pin a rev on a branch we
+control. The fork also carries copies of emilazy's branches so their SHAs
+survive whatever happens upstream. Maintenance rules (fast-forward only, no
+version bumps, cherry-pick fixes with their tests) are in the fork's
+`ZIPLINE.md`, not here.
+([zipline#141](https://github.com/mkolehmainen/zipline/issues/141))
+
+**Feature shape: unconditional patch, unix-gated use.** Cargo cannot scope a
+`[patch]` to a target or feature, and a target-scoped renamed fork package
+would drag in a second, type-incompatible `capnp`. So the patch applies
+everywhere, the fork builds on every target, and `capnp-ancillary` (a
+`ph`/`ph-cli` default feature) pulls `capnp-futures/tokio-unix-fd-stream`
+only under `[target.'cfg(unix)'.dependencies]`, with code gated
+`cfg(all(unix, feature = "capnp-ancillary"))`; elsewhere `setCaptureFile`
+returns Unsupported. A mainline (fork-less) build needs two manifest edits —
+delete the patch block *and* delete the feature with its optional
+`capnp-futures` dependency — because Cargo rejects any manifest naming a
+feature mainline `capnp-futures` does not declare.
+([zipline#142](https://github.com/mkolehmainen/zipline/issues/142))
+
+**`capture.sock` is deleted, not kept as a fallback.** Per org-zpr/zpr-core#1399:
+the worker, `--capture-path`, ph-cli `-c/--cap-socket`, the `*_CAP_SOCK`
+integration-test variables and the legacy ancillary helper all went; unix
+capture hands the FD over the existing `setCaptureFile` admin RPC.
+([zipline#142](https://github.com/mkolehmainen/zipline/issues/142))
+
+**Upstreaming the fork's fixes: neither (operator decision, 2026-10-01).**
+The fixes are offered neither to emilazy (capnproto/capnproto-rust#666) nor
+to org-zpr. Recorded verbatim from the operator: "Option (D) — neither."
+([zipline#143](https://github.com/mkolehmainen/zipline/issues/143))
