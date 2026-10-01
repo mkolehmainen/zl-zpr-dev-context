@@ -403,7 +403,7 @@ unix. ([zipline#127](https://github.com/mkolehmainen/zipline/issues/127))
 **Verification is a Windows CI job plus a hand-run smoke test.**
 `windows-latest` builds `ph`/`ph-cli` and runs unit tests (inert while Actions
 stays disabled on the forks); end-to-end traffic is verified by hand per
-`zl-zpr-core/integration-test/windows-smoke.md` against a Linux node and visa
+`zl-zpr-core/integration-test/windows-adapter-test.md` against a Linux node and visa
 service. A finding worth keeping: `cargo check --target x86_64-pc-windows-msvc`
 compiles no test code, so the Windows *tests* had never been built until the
 CI work ran them — four test-only fixes resulted. An unsigned `ph.exe` runs
