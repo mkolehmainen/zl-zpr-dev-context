@@ -316,6 +316,8 @@ plan text is in git history:
 
 - `git show 44e37d0:docs/plans/2026-09-28-windows.md` — umbrella
   [zipline#126](https://github.com/mkolehmainen/zipline/issues/126)
+- `git show cc02abd:docs/plans/2026-10-01-win-node.md` — umbrella
+  [zipline#149](https://github.com/mkolehmainen/zipline/issues/149)
 
 ### Windows support for `ph adapter`
 
@@ -323,10 +325,10 @@ plan text is in git history:
 (crypto, pcap, capnp) are in [BUILD.md](BUILD.md) "Design decisions"; the
 user-facing walkthrough is `zl-zpr-core/docs/SETUP.md` "Windows".
 
-**Adapter only, elevated console, no service.** The first release is
-`ph adapter` on an end-user PC run from an Administrator console. `ph node`
-compiles on Windows (same binary) but is documented as unsupported and
-untested; service wrapper, installer and Event Log are deferred.
+**Adapter first, elevated console, no service.** The first release was
+`ph adapter` on an end-user PC run from an Administrator console; the node
+role followed under its own umbrella (next subsection). Service wrapper,
+installer and Event Log are deferred.
 ([zipline#126](https://github.com/mkolehmainen/zipline/issues/126))
 
 **Windows is a third arm of `sys/`, plus one new abstraction.** No unix
@@ -412,16 +414,93 @@ by WireGuard LLC).
 ([zipline#132](https://github.com/mkolehmainen/zipline/issues/132),
 [zipline#133](https://github.com/mkolehmainen/zipline/issues/133))
 
+### `ph node` on Windows
+
+Decisions carried over from the Windows node plan (umbrella
+[zipline#149](https://github.com/mkolehmainen/zipline/issues/149); full text
+`git show cc02abd:docs/plans/2026-10-01-win-node.md`). The user-facing
+walkthrough is `zl-zpr-core/docs/SETUP.md` "Windows".
+
+**A dev/demo node: single-homed, concrete `self_addr`, elevated console,
+single worker.** Adapters and the visa service stay on Linux. A Windows node
+must be given a concrete `self_addr` (or `advertised_substrate_addr`); the
+wildcard-bind rejection stands by design and
+[zipline#150](https://github.com/mkolehmainen/zipline/issues/150) keeps
+multi-homing. No service wrapper
+([zipline#147](https://github.com/mkolehmainen/zipline/issues/147)).
+Functional parity with Linux is the bar; throughput through one unbatched
+socket was measured and recorded, not fixed (findings below).
+([zipline#149](https://github.com/mkolehmainen/zipline/issues/149))
+
+**Nothing may assume `ph` is the only instance on the host.** A later phase
+runs a node and an adapter on one Windows machine (peer-to-peer), so the dock
+listen works with a loopback `self_addr`, `tun_if` stays per-instance, and no
+change may add a host-wide singleton. The one known pre-existing collision —
+the control path is derived from the owner uid alone (`config.rs:356`,
+`admin_api::control_socket_path`), so a node and an adapter for one user
+collide on every platform unless `--control-path` is given — is deferred as
+[zipline#169](https://github.com/mkolehmainen/zipline/issues/169).
+([zipline#149](https://github.com/mkolehmainen/zipline/issues/149))
+
+**The node applies its own ZPR address through `TunCtl`, on every platform.**
+Before the `local_zpr_addrs_missing_from_tun` check, the node adds each
+missing local ZPR address and makes the visa-service address reachable
+through the TUN (on Windows an explicit /128 route, since `netsh add address`
+ignores the prefix). Idempotent, so hand-configured setups and the
+integration scripts' out-of-band `ip addr add` are untouched; a Windows-only
+arm was rejected to keep macOS from redoing it.
+([zipline#159](https://github.com/mkolehmainen/zipline/issues/159))
+
+**The Windows substrate socket tolerates connection reset.** At bind,
+`SIO_UDP_CONNRESET` is disabled via `WSAIoctl`; belt and braces,
+`windows_unbatched::recv_from_batch` treats `ConnectionReset` as "no
+datagram". A node talks to many adapters, any of which can exit, so the
+`WSAECONNRESET` after an ICMP port unreachable would otherwise panic the
+fastpath routinely. A wildcard bind now fails as a logged startup error
+naming the fix instead of a panic.
+([zipline#160](https://github.com/mkolehmainen/zipline/issues/160))
+
+**Verification is a hand-run test document plus unit tests; no new CI tier.**
+`zl-zpr-core/integration-test/windows-node-test.md` mirrors
+`windows-adapter-test.md` with the roles inverted: the Windows VM is the
+node; the Linux host runs valkey, the visa service and its adapter, and two
+client adapters in netns. Automation remains
+[zipline#152](https://github.com/mkolehmainen/zipline/issues/152).
+([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+
+Lasting findings from the first end-to-end run (2026-10-01, the test
+document's "Findings" has the full table):
+
+**A freshly `netsh`-added address is Tentative, and a bind on it fails.**
+Duplicate-address detection made the VSS listener bind fail with 10049
+(`AddrNotAvailable`) on every start. The Windows `add_address` now waits,
+bounded at 5 s, for the address to leave the tentative state, reading DAD
+state via IP Helper `GetUnicastIpAddressEntry` — not `netsh`, whose text
+output is localized; the wait loop is `sys/dad.rs`, unit-tested on Linux.
+([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+
+**Two inbound firewall rules.** UDP 5000 (dock listener, LAN interface) is
+required — without it every dock hits a handshake timeout. TCP 8183 (VSS
+listener) is scoped to the Wintun interface, which Windows places on the
+Public profile where unsolicited inbound is dropped; the rule cannot be
+added before the node has created the adapter, and persists once created.
+([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+
+**Measured single-worker throughput.** Through one unbatched substrate
+socket with two client adapters docked: flood-ping loss 0 % (500 packets,
+`-i 0.02`), HTTP download 6,751,114 bytes/s (64 MiB in 9.94 s). Recorded,
+not tuned.
+([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+
 ### Deferred
 
-Out-of-scope items from the Windows plan, each with an open issue:
+Out-of-scope items from the Windows adapter and node plans, each with an
+open issue:
 
 - Windows service and installer —
   [zipline#147](https://github.com/mkolehmainen/zipline/issues/147)
 - Packet capture to a file via `DuplicateHandle` —
   [zipline#148](https://github.com/mkolehmainen/zipline/issues/148)
-- `ph node` on Windows —
-  [zipline#149](https://github.com/mkolehmainen/zipline/issues/149)
 - pktinfo / multi-homed hosts and address change while running —
   [zipline#150](https://github.com/mkolehmainen/zipline/issues/150)
 - Npcap SDK for `ph-cli` filter compilation —
@@ -432,6 +511,8 @@ Out-of-scope items from the Windows plan, each with an open issue:
   [zipline#153](https://github.com/mkolehmainen/zipline/issues/153)
 - Non-elevated `ph-cli` talking to an elevated `ph` —
   [zipline#154](https://github.com/mkolehmainen/zipline/issues/154)
+- Per-instance control path (node and adapter for one user on one host) —
+  [zipline#169](https://github.com/mkolehmainen/zipline/issues/169)
 
 ---
 
