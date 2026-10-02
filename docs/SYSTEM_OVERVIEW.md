@@ -492,10 +492,99 @@ socket with two client adapters docked: flood-ping loss 0 % (500 packets,
 not tuned.
 ([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
 
+### `ph node` on macOS
+
+Decisions carried over from the macOS node plan (umbrella
+[zipline#158](https://github.com/mkolehmainen/zipline/issues/158); full text
+`git show 7323267:docs/plans/2026-10-01-mac-node.md`). The user-facing
+walkthrough is `zl-zpr-core/docs/SETUP.md` "macOS".
+
+**A dev/demo node: `sudo`, single worker, adapters and visa service on
+Linux.** Apple Silicon and Intel, no OS floor beyond what the macOS adapter
+port already needed. Unlike the Windows node, wildcard and multi-homed binds
+are allowed — the unix `posix_unbatched` engine has pktinfo — so the Linux
+integration topology applies unchanged. Functional parity is the bar;
+single-worker throughput was measured and recorded, not fixed (findings
+below). No launchd service.
+([zipline#158](https://github.com/mkolehmainen/zipline/issues/158))
+
+**Nothing may assume `ph` is the only instance on the host.** Same
+constraint as the Windows node: loopback dock listen must work, `tun_if`
+stays per-instance, no new host-wide singleton. The uid-derived control-path
+collision is the same pre-existing cross-platform issue, deferred as
+[zipline#169](https://github.com/mkolehmainen/zipline/issues/169); the macOS
+plan only inherited the constraint.
+([zipline#158](https://github.com/mkolehmainen/zipline/issues/158))
+
+**The node's self-address comes from the portable `TunCtl` work (the
+Windows plan's C1, merged as
+[zl-zpr-core#61](https://github.com/mkolehmainen/zl-zpr-core/pull/61)); the
+macOS plan did not duplicate it.** The first end-to-end run confirmed the
+helper needs no macOS-specific tweak: `ifconfig <utun> inet6 <addr>/32
+alias` suffices on its own (see the route-shape finding below).
+([zipline#159](https://github.com/mkolehmainen/zipline/issues/159))
+
+**macOS `new_mq` no longer requires an address; the address picks nothing
+but the family.** The "address is required on macos" check and its `TODO:
+Temporary` are gone: `new_mq` builds the utun as IPv6 when the address is
+`None`, otherwise from the address's family, and never applies the address
+(it never did — the builder's `with_address` was dead code). On every
+platform the TUN is created unaddressed and addressed afterwards through
+`TunCtl`. The manual-fix hint the node prints when a local ZPR address is
+missing from the TUN is now a per-platform string from `sys/` (`ip -6 addr
+add` / `ifconfig … inet6 … alias` / `netsh interface ipv6 add address`).
+Rejected: applying the address inside `new_mq` via the dead builder path —
+two ways to address a TUN, and the startup-check path would differ from
+Linux and Windows.
+([zipline#161](https://github.com/mkolehmainen/zipline/issues/161))
+
+**Verification is a hand-run test document plus unit tests; no new CI
+tier.** `zl-zpr-core/integration-test/macos-node-test.md` mirrors
+`windows-node-test.md` with the Mac as the node: the Linux host runs valkey,
+the visa service and its adapter, and client adapters in netns. An automated
+macOS tier would need a macOS runner with root and a routable host — same
+shape as [zipline#152](https://github.com/mkolehmainen/zipline/issues/152),
+no issue filed.
+([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+
+Lasting findings from the first end-to-end run (2026-10-02, macOS 26.5.2 /
+Apple M2; the test document's "Findings" has the full table):
+
+**The `/32 alias` alone installs the on-link route.** After `ifconfig utun9
+inet6 fd5a:5052::2/32 alias` the kernel installs `fd5a:5052::/32 … Uc utun9`
+on-link (plus the self-address `UHL` via `lo0`) — no explicit `add_route` is
+needed to reach the visa service, and the /32 is harmless for a node since
+everything else is forwarded by the node itself. No change to the
+zipline#159 helper.
+([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+
+**Wildcard `self_addr` with pktinfo was verified through a single Mac
+address only.** All docks complete and stay up with `--self-addr
+0.0.0.0:5000`, but the remote-node test environment points every adapter at
+one `NODE_LAN_IP` and advertises a single substrate address, so the
+two-interface case is unverified; test-env multi-address support is
+[zipline#172](https://github.com/mkolehmainen/zipline/issues/172).
+([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+
+**Links that never complete the noise handshake stay in `Keying`
+indefinitely.** Mis-NATed docks from before the NAT rules were up kept
+re-timing-out the handshake for the whole run and were removed only at
+shutdown. Not macOS-specific — filed as
+[zipline#173](https://github.com/mkolehmainen/zipline/issues/173).
+([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+
+**Graceful shutdown is clean.** Ctrl-C revokes visas, resets links, exits on
+its own, and the utun — being process-scoped — takes its address and route
+with it; a second start with the same command line comes up without a stale
+route or interface. Measured single-worker numbers: flood-ping loss 0 %
+(500 packets, `-i 0.02`), HTTP download 8,432,600 bytes/s (64 MiB), over
+Wi-Fi.
+([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+
 ### Deferred
 
-Out-of-scope items from the Windows adapter and node plans, each with an
-open issue:
+Out-of-scope items from the Windows and macOS adapter and node plans, each
+with an open issue unless noted:
 
 - Windows service and installer —
   [zipline#147](https://github.com/mkolehmainen/zipline/issues/147)
@@ -513,6 +602,16 @@ open issue:
   [zipline#154](https://github.com/mkolehmainen/zipline/issues/154)
 - Per-instance control path (node and adapter for one user on one host) —
   [zipline#169](https://github.com/mkolehmainen/zipline/issues/169)
+- Second node substrate address in the remote-node test env (two-interface
+  pktinfo verification) —
+  [zipline#172](https://github.com/mkolehmainen/zipline/issues/172)
+- Never-completing links stuck in `Keying` —
+  [zipline#173](https://github.com/mkolehmainen/zipline/issues/173)
+- Documenting and hand-testing the macOS adapter role —
+  [zipline#174](https://github.com/mkolehmainen/zipline/issues/174)
+- launchd service / installer for macOS — no issue filed; file if asked
+- An automated macOS integration test tier — no issue filed; same shape as
+  [zipline#152](https://github.com/mkolehmainen/zipline/issues/152)
 
 ---
 
