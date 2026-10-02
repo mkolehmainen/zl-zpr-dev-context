@@ -566,6 +566,18 @@ two-interface case is unverified; test-env multi-address support is
 [zipline#172](https://github.com/mkolehmainen/zipline/issues/172).
 ([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
 
+**The macOS application firewall was not exercised: it was disabled on the
+test Mac.** `socketfilterfw --getglobalstate` reported `State = 0` (left off
+by choice), so the run observed neither a prompt nor a block on the inbound
+dock (UDP 5000) and VSS (TCP 8183) listeners, and no `socketfilterfw` rules
+were needed, added, or validated. On a firewall-enabled Mac the knob is
+`/usr/libexec/ApplicationFirewall/socketfilterfw`, with rules keyed on the
+executable's path — allow the copy the node actually runs, not the
+build-tree binary; the add-nothing-first procedure and expected command set
+are in `zl-zpr-core/integration-test/macos-node-test.md` ("Prerequisites,
+Mac"), unvalidated until someone runs it with the firewall on.
+([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+
 **Links that never complete the noise handshake stay in `Keying`
 indefinitely.** Mis-NATed docks from before the NAT rules were up kept
 re-timing-out the handshake for the whole run and were removed only at
