@@ -199,7 +199,7 @@ cases, 2026-09-29):
 
 | Invocation | What ran | Wall clock |
 |---|---|---|
-| `zpr-dev build --tip --test netns --jobs 5 --no-tarball` | all repo builds + 10 scripts, 5-wide | **10:44** total (repo builds alone measured 2:41 warm, so the tier itself was roughly 8 minutes) |
+| `zpr-dev build --tip --test netns --jobs 5 --no-tarball` | all repo builds + 10 scripts (11 since zipline#178 gated `node-restart-test.sh`), 5-wide | **10:44** total (repo builds alone measured 2:41 warm, so the tier itself was roughly 8 minutes) |
 | `make docker-test` (`zl-zpr-core`, image cached) | 9 scripts, serial | **~17:08** for the script phase alone (22:53:32Z -> 23:10:40Z), no repo builds included |
 
 Sources: the first row is the acceptance run quoted in zl-zpr-dev-context PR

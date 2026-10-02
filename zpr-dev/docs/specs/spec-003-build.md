@@ -385,7 +385,7 @@ risk. Everything is a release build. The table is in claim order:
   (zipline#92/#93). The host route wins whenever its own prerequisites —
   passwordless `sudo` or a primed credential, `valkey-server`, `python3` —
   all hold; otherwise, when a Docker daemon is reachable (`docker info`
-  succeeds), the same ten scripts run as root inside the privileged
+  succeeds), the same eleven scripts run as root inside the privileged
   container of `zl-zpr-core/integration-test/`'s `make docker-test`, one
   `make` invocation per script with `WORKSPACE=<build-dir>`, up to four at
   once (the host route runs them one at a time); when neither
