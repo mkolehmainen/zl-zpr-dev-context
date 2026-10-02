@@ -2773,6 +2773,20 @@ mod tests {
         );
     }
 
+    /// zipline#178: `node-restart-test.sh` (added to `zl-zpr-core` by
+    /// zl-zpr-core#65, reworked by zl-zpr-core#69) is the regression test
+    /// for zipline#167/#170/#171, so it must be gated, not excluded. The
+    /// drift guard locks the worktree side — any ungated script fails
+    /// planning — and this locks the list side: the gate cannot regress
+    /// without this test naming it.
+    #[test]
+    fn netns_scripts_gate_node_restart_test() {
+        assert!(
+            NETNS_SCRIPTS.contains(&"node-restart-test.sh"),
+            "node-restart-test.sh must be in NETNS_SCRIPTS (zipline#178)"
+        );
+    }
+
     /// Every script gets the `*_BIN` overrides pointing at `dist/` and
     /// the system valkey — nothing is ever copied into `integration-test/`
     /// (zipline#62). `ZPR_ATTR_SERVER_BIN` and `ZPDUMP_BIN` joined in
