@@ -29,3 +29,4 @@ Retired plans, and where their rationale now lives:
 | `2026-09-28-reauth-on-policy-install-plan.md` (`git show 43d56bd:docs/plans/<file>`) | [zipline#118](https://github.com/mkolehmainen/zipline/issues/118) | `docs/VISA_SERVICE.md` |
 | `2026-09-28-windows.md` (`git show 44e37d0:docs/plans/<file>`) | [zipline#126](https://github.com/mkolehmainen/zipline/issues/126) | `docs/SYSTEM_OVERVIEW.md`, `docs/BUILD.md` |
 | `2026-09-29-capnp-fd-passing-unix.md` (`git show c7f15ed:docs/plans/<file>`) | [zipline#140](https://github.com/mkolehmainen/zipline/issues/140) | `docs/BUILD.md` |
+| `2026-10-01-win-node.md` (`git show cc02abd:docs/plans/<file>`) | [zipline#149](https://github.com/mkolehmainen/zipline/issues/149) | `zl-zpr-core/docs/SETUP.md` "Windows", `docs/SYSTEM_OVERVIEW.md` "Design decisions" |
