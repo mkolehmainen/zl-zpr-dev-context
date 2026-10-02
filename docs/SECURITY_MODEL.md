@@ -173,8 +173,8 @@ service rejects a bad HMAC or a stale timestamp. The API being reachable only
 over the ZPRnet is not treated as sufficient — the connection's owner is not
 assumed to be the caller. The implemented `zpr-attr/1` attribute-service API
 deliberately departs from this: bearer token over pinned TLS, no HMAC — see
-ATTRIBUTE_SERVICE.md, "Departure from RFC-13.1", for the reasoning. The HMAC
-remains the design of record for `validation/2`, which nothing implements.
+ATTRIBUTE_SERVICE.md, "Departure from RFC-13.1", for the reasoning. No
+implemented trusted-service API uses the HMAC.
 
 ### Silent re-authentication: what replaces the nonce
 
@@ -509,9 +509,8 @@ not read the RFCs as a description of current guarantees.
   over HTTPS with a bearer token, and `POST /admin/services/{id}/changed`
   gives it push invalidation, so the attribute-expiry and push-invalidation
   machinery is exercised against a live source (netns end-to-end test,
-  zipline#81) as well as local JSON. The RFC's `validation/2` API remains
-  unimplemented, and `zpr-attr/1` departs from the RFC-13.1 per-call HMAC —
-  see ATTRIBUTE_SERVICE.md.
+  zipline#81) as well as local JSON. `zpr-attr/1` departs from the RFC-13.1
+  per-call HMAC — see ATTRIBUTE_SERVICE.md.
 - **Background renewal does not complete end to end.** Every piece is
   implemented and unit-tested, but the node reaches its renewal deadline with
   no way to reach the user's authentication agent — see the *Not yet* note in

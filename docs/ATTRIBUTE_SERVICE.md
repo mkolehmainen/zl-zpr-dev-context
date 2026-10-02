@@ -134,8 +134,8 @@ returns_attributes = [
 
 Rejected, each with its own diagnostic: `identity_attributes` (a decorating
 store is keyed on other services' identities, the same rule as `api = "file"`),
-`provider`, `client`, `cert_path` and `prefix` (BAS-era `validation/2`
-machinery with no meaning here). **`service` is reserved**: it will one day name
+`provider`, `client`, `cert_path` and `prefix` (network-service properties
+with no meaning here). **`service` is reserved**: it will one day name
 a ZPR service through which the visa service reaches an on-net attribute
 service, on the `jwks_proxy_service` pattern; in `zpr-attr/1` it is rejected
 with a message saying so. Reaching the service over ordinary IP is the only
@@ -533,8 +533,8 @@ canonicalisation machinery that every third-party implementer would have to get
 exactly right, which is the opposite of what a reference API is for. Should a
 deployment need the visa service to talk to an attribute service over a channel
 it does not trust, the right answer is the reserved `service` property and an
-on-net path, not a second signature. The RFC's HMAC remains the design of
-record for `validation/2`, which nothing implements.
+on-net path, not a second signature. No implemented trusted-service API uses
+the RFC's HMAC.
 
 ---
 
@@ -553,10 +553,10 @@ the visa service already speaks HTTPS/JSON on its admin API. Cap'n Proto RPC
 and gRPC were rejected as hostile to third-party implementers.
 ([#72](https://github.com/mkolehmainen/zipline/issues/72))
 
-**A new `api` value instead of reusing `validation/1`/`validation/2`.** Those
-are the BAS-era network API (`provider` tuples, fabric names, `cert_path`,
-HMAC-signed calls to a ZPR-internal service): the wrong shape for a hosted
-database, and nothing implements them. `zpr-attr/1` names the contract and its
+**A new `api` value instead of the RFC's network trusted-service API.** That
+API (`provider` tuples, fabric names, `cert_path`, HMAC-signed calls to a
+ZPR-internal service) is the wrong shape for a hosted database, was never
+implemented, and the compiler no longer accepts it. `zpr-attr/1` names the contract and its
 version, leaving room for `zpr-attr/2`.
 ([#72](https://github.com/mkolehmainen/zipline/issues/72))
 

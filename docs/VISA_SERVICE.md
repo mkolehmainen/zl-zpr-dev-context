@@ -697,8 +697,9 @@ No tracker issues are filed for these unless linked.
 - **Trusted-service attribute stores were file-backed only** until 2026-09-22:
   the factory accepted `api = "file"` and `api = "oidc"` and rejected
   everything else. The networked `api = "zpr-attr/1"` store landed with
-  zipline#78 (see ATTRIBUTE_SERVICE.md); the RFC's `validation/2` API remains
-  unimplemented. Authentication services are a separate service type.
+  zipline#78 (see ATTRIBUTE_SERVICE.md). The RFC's network trusted-service API
+  was never implemented, and the compiler rejects any `api` other than `file`,
+  `oidc` and `zpr-attr/1`.
 - **Route-aware evaluation is a scaffold.** Stage 2 of `libeval` is defined but
   not implemented.
 - **Configuration moved to TOML.** `config-example.yaml` at the repository root

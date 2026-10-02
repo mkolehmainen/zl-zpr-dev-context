@@ -63,12 +63,11 @@ Add OpenID Connect as an authentication method for ZPR actors, using Google as
 the first provider.
 
 The central finding of the design work is that **OIDC is not a new
-authentication architecture for ZPR.** ZPR already models a two-sided
+authentication architecture for ZPR.** The RFCs already model a two-sided
 authentication service: an actor-facing half that issues a credential and a
-visa-service-facing half that validates it and returns attributes
-(`validation/2`, see `zpr-compiler/README_ZPLC.md`). Neither half is
-implemented. OIDC is the first real implementation of that slot, with Google
-supplying the credential.
+visa-service-facing half that validates it and returns attributes. Neither
+half was implemented. OIDC is the first real implementation of that slot, with
+Google supplying the credential.
 
 The adapter is the OIDC **Relying Party**, using the RFC 8252 native-app
 pattern: a public client with no client secret, PKCE, and a loopback redirect.
@@ -90,11 +89,11 @@ during design; where they conflict, this section governs.
 | "Not sure if this requires a call to google from the visa service" | No per-authentication call. Only a periodic, cacheable, stale-tolerant JWKS fetch. |
 | "the visa service needs to be configured with a trusted service for this purpose (eg, Google)" | Correct, and the declaration must scope *what Google is trusted to assert* — see `allowed_domains`. |
 
-Additionally: `zpr-bas` and its hand-rolled `zpr-oauthrsa` protocol are
-**deprecated and out of scope**. This design does not extend them. The existing
-`OAuthRsa` client in `zpr-core/adapter/ph/src/auth.rs:431` and the hardcoded
-`HARD_CODED_BAS_TLS_CERT_PEM` at `auth.rs:44` are legacy and should be removed
-as part of this work.
+Additionally: the earlier hand-rolled `OAuthRsa` adapter login is
+**deprecated and out of scope**. This design does not extend it. The existing
+`OAuthRsa` client in `zpr-core/adapter/ph/src/auth.rs:431` and its hardcoded
+TLS certificate at `auth.rs:44` are legacy and should be removed as part of
+this work.
 
 ### Prerequisites and ordering
 
@@ -618,14 +617,10 @@ provider = [["device.zpr.adapter.cn", "proxy1.zpr"]]
 expiration_seconds = 14400   # device auth lifetime; 0 = life of the installed policy
 ```
 
-**The JWKS proxy needs no hand-written ZPL.** `service` already means "the
-service ID used in the **services** block for the visa-service facing service
-provided by this trusted service" (`README_ZPLC.md`), defaulting to
-`<TSNAME>-vs`, and the compiler already weaves visa-service-to-trusted-service
-communication rules from the trusted-service declaration for `validation/2`.
-The `CONNECT` proxy is exactly a visa-service-facing on-net service, so the
-existing property and the existing weaving apply unchanged, and the compiler
-generates the allow rule.
+**The JWKS proxy needs no hand-written ZPL.** `service` names the service ID
+used in the **services** block for the JWKS `CONNECT` proxy, an ordinary
+visa-service-facing on-net service, and the compiler weaves the
+visa-service-to-proxy allow rule from the trusted-service declaration.
 
 Compiler rules:
 
@@ -639,7 +634,7 @@ Compiler rules:
 | `allowed_domains` | **required**; `["*"]` is the explicit "any Google account" opt-in | required-with-explicit-opt-out fails closed when forgotten |
 | `identity_attributes` | **required**, must be `["sub"]` | identity attributes must be immutable and unique |
 | `issuer` | `https://`, no query or fragment | discovery is runtime; the compiler must do no network I/O or builds stop being reproducible |
-| `[services.google-*]` | **error if present** | unlike `validation/2`, there is no on-net service either side |
+| `[services.google-*]` | **error if present** (other than the declared proxy) | there is no on-net service on either side |
 
 Two deliberate calls:
 
@@ -817,10 +812,11 @@ Non-negotiable, in addition to the above:
 - Loopback redirect only, on `127.0.0.1`, single use, `state` verified.
 - **Ordinary TLS verification against system roots for all Google traffic.**
   `auth.rs:482` and `auth.rs:519` currently set
-  `danger_accept_invalid_certs(true)` with a `TODO`, which existed because BAS
-  used a self-signed certificate. Against Google that flag turns the token
-  exchange into an unauthenticated channel. It must not reach the OIDC path,
-  and it should be deleted along with the BAS certificate at `auth.rs:44`.
+  `danger_accept_invalid_certs(true)` with a `TODO`, which existed because the
+  legacy `OAuthRsa` service used a self-signed certificate. Against Google that
+  flag turns the token exchange into an unauthenticated channel. It must not
+  reach the OIDC path, and it should be deleted along with the hardcoded
+  certificate at `auth.rs:44`.
 - **The JWKS proxy must be a `CONNECT` forward proxy, never a reverse proxy,
   and the JWKS URL must never be rewritten.** This is the intuitive design and
   it is catastrophic: a reverse proxy — or any scheme that substitutes the
@@ -923,7 +919,7 @@ likely to model wrongly.
 | OS-keyring persistence for the refresh token | The token is kept in the agent process's memory; persistence is additive (a storage trait behind a flag) |
 | VS-pushed renewal via `requestAuthentication` | **Done for policy install** (zipline#121/#123): the VS fans out `requestAuthentication` on every install and the node re-authenticates itself and its docked adapters. Node-driven pull still covers clock-driven renewal and works while the VS is disconnected |
 | A user-held keypair bound to `sub` at first login | The cryptographically stronger alternative to skipping the nonce on `reauthorize`; revisit if that relaxation fails security review |
-| Remove `ac @1` from `AuthBlob` and `zpr-oauthrsa` from `ZPR_L7_BUILTINS` | Schema and compiler breaks; the producing client is already deleted (zipline#15), so this waits for a coordinated bump |
+| Remove `ac @1` from `AuthBlob` and the `Authentication` service kind from the policy schema | Schema breaks; the producing client is already deleted (zipline#15) and the compiler no longer emits the kind, so this waits for a coordinated bump |
 | `[bootstrap]` entries declared as user credentials | Admissible by design; no current need |
 | Providers other than Google | The design is provider-generic; only Google is validated |
 | A2A confidentiality, anti-replay, k-of-n concurrence | Pre-existing gaps, unrelated |
@@ -1020,7 +1016,7 @@ rejected token, 6 policy denied, 7 device blob rejected) are the point. Running
 with one about to exit. ([zipline#40](https://github.com/mkolehmainen/zipline/issues/40),
 [zipline#46](https://github.com/mkolehmainen/zipline/issues/46))
 
-**The legacy `ac @1` blob arm stays in `vs.capnp`.** The BAS / `OAuthRsa`
+**The legacy `ac @1` blob arm stays in `vs.capnp`.** The `OAuthRsa`
 client that produced it is deleted, but removing a union arm is a schema break,
 so it waits for a coordinated bump (see *Deferred*).
 ([zipline#15](https://github.com/mkolehmainen/zipline/issues/15))
@@ -1216,10 +1212,11 @@ what the *Credential lifetimes and re-authentication* section above describes.
   (`zl-zpr-core/integration-test/OIDC-RELEASE-CHECKLIST.md`), not automated —
   the fake IdP cannot prove the `hd`-absent rejection against Google's actual
   behavior.
-- The adapter's `OAuthRsa` client, the hardcoded BAS certificate and
-  `danger_accept_invalid_certs` are deleted (zipline#15), but the `ac @1` arm
-  in `vs.capnp` and the `zpr-oauthrsa` L7 builtin in the compiler remain (see
-  *Deferred*).
+- The adapter's `OAuthRsa` client, its hardcoded certificate and
+  `danger_accept_invalid_certs` are deleted (zipline#15), and the compiler no
+  longer has the `zpr-oauthrsa` L7 builtin or emits `Authentication` services.
+  The `ac @1` arm in `vs.capnp` and the visa service's handling of the
+  `Authentication` service kind remain (see *Deferred*).
 
 Line numbers cited in the design sections above are from the 2026-09-01
 checkouts and most have moved; verify against the source before relying on
