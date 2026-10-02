@@ -301,7 +301,7 @@ suggested order:
 |---|---|
 | `[nodes.<ID>]` | Node identity, `zpr_address`, provider attributes, substrate addresses |
 | `[links.<ID>]` | Topology, plus the link `attributes` an `over` clause matches. A tag is a `#`-prefixed key with an empty value |
-| `[trusted_services.<NAME>]` | Where attributes come from: `zpr-attr/1` (networked attribute service), `validation/2` (network, unimplemented), or `file` (local JSON). `default` is special — it is ZPR's own trusted service, the visa service itself verifying bootstrap (RSA) authentications against the policy's `[bootstrap]` keys |
+| `[trusted_services.<NAME>]` | Where attributes come from: `file` (local JSON), `oidc` (an OpenID Connect identity provider), or `zpr-attr/1` (networked attribute service); any other `api` is a configuration error. `default` is special — it is ZPR's own trusted service, the visa service itself verifying bootstrap (RSA) authentications against the policy's `[bootstrap]` keys |
 | `[bootstrap]` | Maps a Noise CN to an RSA public key, for self-authentication before trusted services are reachable |
 | `[protocols.<NAME>]` | L4 protocol and port, or ICMP type and codes |
 | `[services.<NAME>]` | One per service named in the policy; `<NAME>` must match the ZPL name |
@@ -313,9 +313,9 @@ Attributes crossing this boundary are namespaced `device.`, `user.`, or
 returns_attributes = [
   "roles -> user.role{}",     # {} marks multi-valued
   "govt  -> #user.government", # # marks a tag
-  "bas_id -> user.id",         # plain: single-valued
+  "sub   -> user.id",          # plain: single-valued
 ]
-identity_attributes = [ "bas_id" ]   # service-side names, not ZPL names
+identity_attributes = [ "sub" ]   # service-side names, not ZPL names; oidc only
 ```
 
 **A trusted service that vends identity attributes is always woven into the
@@ -330,11 +330,11 @@ other trusted service is retained by reference,
 with one transitive exception: the weaver marks a service used when policy
 names one of its attributes, then `resolve_trusted_service_providers` widens
 that set to a fixpoint through *provider* attributes — a service whose
-attributes appear in another retained service's `provider` (or in the provider
-of an `oidc` service's JWKS proxy) is woven too, with no direct ZPL reference.
+attributes appear in the provider of a retained `oidc` service's JWKS proxy is
+woven too, with no direct ZPL reference.
 The provider fixpoint deliberately runs *after* identity vendors are retained,
-so a retained vendor's own dependencies (a `validation/2` vendor's provider,
-an OIDC JWKS proxy) still resolve through it. Everything left outside that
+so a retained vendor's own dependencies (an OIDC JWKS proxy) still resolve
+through it. Everything left outside that
 closure is pruned. The reference test cannot decide the question for an
 identity vendor, because its attributes are the *lookup keys* of every
 attribute store in the policy — a `file` store's JSON is keyed by identity
@@ -344,9 +344,8 @@ still survive compilation: the visa service needs it to authenticate the user
 and to mint the identity attribute the file store is keyed on. The compiler
 emits an `info` diagnostic naming each service retained by the identity-vendor
 rule (and each retained as a visa-service-interpreted vendor), and a `file` or
-`validation/2` service that declares no identity
-attributes and sits outside the reference-plus-provider closure is still
-pruned as before.
+`zpr-attr/1` service (neither may declare identity attributes) that sits
+outside the reference-plus-provider closure is still pruned as before.
 
 A worked pair to read first: `zl-zpr-compiler/test-data/m3-ping-and-http.zpl` and
 its `.zplc`. For the identity-vendor retention rule, see
