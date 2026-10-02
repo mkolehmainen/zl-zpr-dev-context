@@ -567,14 +567,23 @@ A task is done only when ALL of these hold for the PR:
    **Gate escalation:** if the change touches connection authorization or addressing
    semantics — `libeval`'s `approve_connection`, `vs`'s `authorize_connection` /
    `connection_control`, or the adapter's dock/address paths — the unit gate is NOT
-   sufficient: the netns integration tier is part of THIS condition. Run it via
-   `make docker-test` in `zl-zpr-core` (or `zpr-dev build --test netns|docker` with a
-   manifest pinning the branch under test), and quote the result in the PR beside the
-   unit gate. This exists because zipline#95 merged three visa-service PRs on green
-   unit gates while #97 had broken every netns test (zipline#102); Docker provably ran
-   the full tier on this host the same day. If Docker genuinely fails, say so
-   explicitly in the PR and hand the run to the operator — never silently downgrade
-   to the unit gate.
+   sufficient: the netns integration tier is part of THIS condition. The routine
+   tier run is **`zpr-dev build --test netns`** with a manifest pinning the branch
+   under test (`--jobs N` to widen; without host netns/sudo it falls back to
+   per-script containers, 4-wide by default). For a lightweight single-PR rerun
+   that skips the repo builds, run one `make -C integration-test docker-test
+   TEST=<script>` per script in `zl-zpr-core`, at most 4 at once (e.g.
+   `xargs -P4`), one log per script with a PASS/FAIL line each — width 4 matches
+   the tested `zpr-dev` limit (spec-003 §6), because some scripts are
+   timing-sensitive. Serial `make -C integration-test docker-test` (root alias
+   `make integration-test-docker`) is the debugging fallback only: one script or
+   a root shell. Routes and measured timings live in `docs/BUILD.md`
+   ("Integration tier: how to run it"); do not restate them here. Quote the
+   tier's result in the PR beside the unit gate. This exists because zipline#95
+   merged three visa-service PRs on green unit gates while #97 had broken every
+   netns test (zipline#102); Docker provably ran the full tier on this host the
+   same day. If the tier genuinely fails, say so explicitly in the PR and hand
+   the run to the operator — never silently downgrade to the unit gate.
 3. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
    `DIRTY`, or `BLOCKED`). `UNSTABLE` is acceptable **only** when it traces to check
    runs recorded before Actions was switched off, as on `zl-zpr-core#1`; confirm that
