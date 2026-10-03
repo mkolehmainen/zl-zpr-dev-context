@@ -575,7 +575,16 @@ A task is done only when ALL of these hold for the PR:
    TEST=<script>` per script in `zl-zpr-core`, at most 4 at once (e.g.
    `xargs -P4`), one log per script with a PASS/FAIL line each — width 4 matches
    the tested `zpr-dev` limit (spec-003 §6), because some scripts are
-   timing-sensitive. Serial `make -C integration-test docker-test` (root alias
+   timing-sensitive. **The rerun must run the PR's binaries, or it does not
+   satisfy this condition.** With only `TEST=` set, the scripts fall back to the
+   core checkout's `target/debug/ph` and the `integration-test/` symlinks, which
+   `docs/BUILD.md` warns are commonly stale — a green result may not exercise
+   the PR at all. Set every binary the netns plan sets (`zpr-dev` sets them from
+   `dist/`; see `zpr-dev/src/build/tiers.rs`) — `PH_BIN`, `PH_DEBUG_BIN`,
+   `VS_BIN`, `VS_ADMIN_BIN`, `ZPR_ATTR_SERVER_BIN`, `ZPDUMP_BIN` — to the
+   artifacts just built for THIS PR's unit gate; the integration-test `Makefile`
+   forwards them into the container, and paths under the workspace root resolve
+   unchanged inside it. Serial `make -C integration-test docker-test` (root alias
    `make integration-test-docker`) is the debugging fallback only: one script or
    a root shell. Routes and measured timings live in `docs/BUILD.md`
    ("Integration tier: how to run it"); do not restate them here. Quote the
