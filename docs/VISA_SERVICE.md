@@ -289,6 +289,15 @@ authentications, or by changing topology so an existing path is no longer
 valid. The visa service sends revocation messages over the VSS-API listing
 revoked visa IDs; nodes stop forwarding immediately and tear down the sessions.
 
+A trusted-service change revokes visas too, with no policy install. Its sweep
+refreshes the actors behind live visas and re-evaluates those visas. A refresh
+that changes an actor's attributes also recomputes the services the actor
+provides (`zpr.services`) from the join policies the new attributes match, the
+same computation connect uses. So a service hosted by attribute
+(`define ssh as a service with device.tags:'server'.`) follows that attribute:
+an actor that loses it stops providing the service and its visas are revoked,
+and one that gains it provides the service from its next refresh (zipline#181).
+
 For urgent security events the admin API can revoke visas, actors, or trusted
 services without installing a policy. **The effective policy is the installed
 policy plus any administrative disconnects**, and those disconnects clear when
@@ -306,7 +315,8 @@ the new visa and the ID of the one it replaces.
 Given source and destination actors plus packet details, `libeval` compares
 them to a compiled policy. A policy holds **communication rules** and **join
 policies** — the latter govern whether an actor may connect and what attributes
-and services it receives on joining.
+and services it receives on joining. The services are recomputed whenever an
+attribute refresh changes the actor's attributes (`Policy::join_services`).
 
 ### Order of decision
 
