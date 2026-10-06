@@ -304,7 +304,8 @@ read the issue's comments first:
    `In progress` and branch `<login>/<issue#>-<topic>` off `zipline` in the fork the
    issue names — after checking for an existing remote branch for that issue.
 4. **Post the bite-sized TDD plan as an issue comment, then STOP and wait for the
-   operator's go-ahead.** This is the checkpoint: a misread issue is cheap to fix in
+   operator's go-ahead.** The comment must follow the plan comment format below —
+   open with `## Notes for humans`. This is the checkpoint: a misread issue is cheap to fix in
    a plan comment and expensive to fix in a branch. Do not start implementing on the
    strength of your own plan.
 5. On the go-ahead, implement it, run the full build gate, open the PR, and follow
@@ -312,6 +313,20 @@ read the issue's comments first:
 
 The checkpoint is the default. It is skipped only if the operator says so for a given
 issue, or asks to run straight through.
+
+**Plan comment format (operator-mandated).** The plan body is the agent's
+implementation contract and may be as detailed as the work needs, but the operator
+gates it by skimming. Every plan comment MUST OPEN with a `## Notes for humans`
+section before any detail:
+
+1. a 2-4 line plain-language strategy summary;
+2. an `**OPEN QUESTIONS (answer with your /go):**` block — numbered, bold, at most
+   one line each — or the single line
+   `None — a bare /go approves everything below.`
+
+Never bury questions mid-plan: the operator has repeatedly missed them there, and a
+bare `/go` then silently approves defaults they never saw. A revised or amended plan
+repeats the full format.
 
 **What counts as the go-ahead.** In an interactive session it is the operator saying so
 in the conversation. Running unattended there is no conversation, so the go-ahead is a
