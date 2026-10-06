@@ -217,6 +217,16 @@ validation function taking a "skip the nonce" boolean — the nonce expectation
 is an enum, so the connect arm cannot be constructed with checking off by
 accident.
 
+**The same caller binding scopes `notifyDisconnect` (zipline#182).** A live
+node's disconnect notice is accepted only for itself, an adapter docked to
+it, or an AAA actor whose registered docking node is the caller; any other
+target — another node, an adapter docked elsewhere, an unknown address — is
+refused with `invalidOperation`, logged with the caller CN and target
+address, and leaves all state unchanged. Without this, one subverted node
+could disconnect any actor or node in the ZPRnet, breaking the Case 2
+containment ("a compromised component can deny only the services it
+provides").
+
 **The SS (bootstrap-signature) arm.** `reauthorize` also accepts a
 self-signed blob, so a device authority is re-proved the same way install-driven
 re-authentication demands (zipline#120). One `reauthorize` carries at most one
@@ -484,6 +494,9 @@ not read the RFCs as a description of current guarantees.
 - **Session-bound renewal** — the `reauthorize` bindings in *Silent
   re-authentication* above are implemented and unit-tested per row
   (zipline#43).
+- **Caller-scoped disconnect** — `notifyDisconnect` accepts only the calling
+  node itself, adapters docked to it, and AAA actors registered to it; see
+  *Silent re-authentication* above for the binding (zipline#182).
 
 **Not yet, or verify before relying on it:**
 
