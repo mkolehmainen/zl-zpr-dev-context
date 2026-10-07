@@ -48,6 +48,9 @@ differs from the tracker's in two ways:
                     AND (unassigned OR assigned solely to the bot)
 
 - The Iteration field gates by time: only current-iteration items are picked.
+  Ready in a future iteration is pre-authorized (auto-starts when it begins);
+  Ready in an iteration that has already ENDED is reported separately under
+  `expired_iteration` -- it can never auto-start, so it needs rescheduling.
 - Explicit assignment to the bot is an OPT-IN, not an underway marker, so it
   does not suppress pickup by itself. The underway marker for org issues is
   board Status `In progress`/`In review` (pickup sets it at claim time, same
@@ -63,7 +66,8 @@ This reads state and changes nothing.
 Usage:
   python3 next-issue.py           # human-readable
   python3 next-issue.py --json    # {"next": {...}, "ready": [...], "pre_authorized": [...],
-                                  #  "awaiting_ready": [...], "underway": [...]}
+                                  #  "awaiting_ready": [...], "underway": [...],
+                                  #  "expired_iteration": [...]}
 
 Requires: gh authenticated with the `repo` scope, plus `read:project` (or
 `project`) for the board Status read.
@@ -244,8 +248,32 @@ def iteration_is_current(value, today):
     """
     if not value or not value.get("startDate"):
         return False
+    start, end = iteration_bounds(value)
+    return start <= today < end
+
+
+def iteration_bounds(value):
+    """(first day, first day AFTER) of an Iteration field value.
+
+    The end is exclusive: a 14-day iteration starting 2026-09-29 covers
+    2026-09-29 .. 2026-10-12 and returns end 2026-10-13.
+    """
     start = datetime.date.fromisoformat(value["startDate"])
-    return start <= today < start + datetime.timedelta(days=int(value["duration"]))
+    return start, start + datetime.timedelta(days=int(value["duration"]))
+
+
+def iteration_has_ended(value, today):
+    """True when the item's Iteration lies wholly in the past (PR #61 review).
+
+    Distinguishes an expired schedule from a scheduled-ahead one: both are
+    "not current", but only a future iteration can ever become current, so
+    only that one may be reported as auto-starting. No Iteration value means
+    unscheduled, which has not ended.
+    """
+    if not value or not value.get("startDate"):
+        return False
+    _, end = iteration_bounds(value)
+    return today >= end
 
 
 def summarize_org(content):
@@ -268,7 +296,7 @@ def summarize_org(content):
 
 def select_org(items, today, bot=BOT_LOGIN):
     """Split org project items into (ready, pre_authorized, awaiting_ready,
-    underway), each sorted by issue number.
+    underway, expired_iteration), each sorted by issue number.
 
     pickable(org) = open AND all blockers closed AND Status == Ready
                     AND Iteration == current
@@ -280,9 +308,15 @@ def select_org(items, today, bot=BOT_LOGIN):
       not suppress pickup. Underway is marked by board Status `In progress` /
       `In review`, which pickup sets at claim time. An issue assigned to
       anyone else is theirs -- skipped entirely, never reported.
-    - The Iteration field gates by time. Ready in a non-current iteration is
+    - The Iteration field gates by time. Ready in a FUTURE iteration is
       scheduled-ahead: reported under pre_authorized (with `held_by`) so it
       cannot rot silently, picked up on the tick after its iteration starts.
+      Ready in an iteration that has already ENDED can never auto-start, so
+      it goes to expired_iteration instead (row carries `iteration`, the
+      ended iteration's title, plus `blocked_by`): it needs the operator to
+      reschedule it, and saying "auto-starts" would hide that (PR #61 review).
+      Ready with no Iteration value is unscheduled and stays pre_authorized
+      with `held_by` "iteration (none scheduled)".
 
     Only org-zpr/zipline issues are candidates: the project also carries
     legacy org-zpr/zpr-* issues, which are never work for this agent (their
@@ -291,6 +325,7 @@ def select_org(items, today, bot=BOT_LOGIN):
     """
     wanted = f"{ORG_OWNER}/{ORG_REPO}"
     ready, pre_authorized, awaiting_ready, underway = [], [], [], []
+    expired = []
     for item in items:
         content = item.get("content") or {}
         if content.get("number") is None:  # drafts and PRs
@@ -319,18 +354,26 @@ def select_org(items, today, bot=BOT_LOGIN):
             continue
         open_blockers = sorted(b["number"] for b in content["blockedBy"]["nodes"]
                                if b["state"] == "OPEN")
-        current = iteration_is_current(item.get("iteration"), today)
+        iteration = item.get("iteration")
+        if iteration_has_ended(iteration, today):
+            # Can never become current again: report for rescheduling, never
+            # as pre-authorized and never as pickable.
+            row["blocked_by"] = open_blockers
+            row["iteration"] = iteration.get("title") or iteration["startDate"]
+            expired.append(row)
+            continue
+        current = iteration_is_current(iteration, today)
         if open_blockers or not current:
             row["blocked_by"] = open_blockers
             if not current:
-                it = item.get("iteration") or {}
+                it = iteration or {}
                 row["held_by"] = f"iteration ({it.get('title') or 'none scheduled'})"
             pre_authorized.append(row)
             continue
         ready.append(row)
-    for rows in (ready, pre_authorized, awaiting_ready, underway):
+    for rows in (ready, pre_authorized, awaiting_ready, underway, expired):
         rows.sort(key=lambda r: r["position"])
-    return ready, pre_authorized, awaiting_ready, underway
+    return ready, pre_authorized, awaiting_ready, underway, expired
 
 
 def umbrellas(issues):
@@ -440,7 +483,7 @@ def main():
     # position >= 100_000, so after the merged sort every tracker row precedes
     # every org row -- mkolehmainen/zipline takes precedence (operator
     # decision 2026-10-07).
-    o_ready, o_pre, o_awaiting, o_underway = select_org(
+    o_ready, o_pre, o_awaiting, o_underway, expired_iteration = select_org(
         org_items(), datetime.date.today())
     ready += o_ready
     pre_authorized += o_pre
@@ -453,7 +496,8 @@ def main():
         print(json.dumps({"next": ready[0] if ready else None,
                           "ready": ready, "pre_authorized": pre_authorized,
                           "awaiting_ready": awaiting_ready,
-                          "underway": underway}, indent=2))
+                          "underway": underway,
+                          "expired_iteration": expired_iteration}, indent=2))
         return
 
     if ready:
@@ -481,6 +525,19 @@ def main():
                 holds.append(f"held by {r['held_by']}")
             print(f"  {ref(r):<4} [{r['repo_label']}] {r['title']}"
                   f"  ({'; '.join(holds)})")
+
+    # Ready, but its Iteration has already ended (org source only). Unlike
+    # pre-authorized rows, nothing will ever start these: the operator has to
+    # move them into the current or a future iteration (PR #61 review).
+    if expired_iteration:
+        print(f"\nReady, but its iteration ended -- reschedule "
+              f"({len(expired_iteration)}); never auto-starts:")
+        for r in expired_iteration:
+            notes = [f"iteration {r['iteration']} ended"]
+            if r.get("blocked_by"):
+                notes.append(f"blocked by {', '.join(f'#{n}' for n in r['blocked_by'])}")
+            print(f"  {ref(r):<4} [{r['repo_label']}] {r['title']}"
+                  f"  ({'; '.join(notes)})")
 
     # Unblocked but not Ready: the gate is holding these for the operator.
     # Reported every run so a forgotten green-light cannot rot silently.
