@@ -396,6 +396,20 @@ section before any detail:
    one line each — or the single line
    `None — a bare /go approves everything below.`
 
+Write the `## Notes for humans` section in ASD Simplified Technical English
+(ASD-STE100). Aim for about 80% conformance, not 100%. The rules that matter most:
+
+- Keep a sentence to 20 words or fewer for an instruction, 25 for a description.
+- Put one instruction or one idea in each sentence.
+- Use the active voice. Say who or what does the action.
+- Use simple verb tenses: present, simple past, simple future. Do not use "-ing" forms
+  as verbs or modifiers.
+- Use one word for one meaning. Do not use synonyms for variety.
+- Use articles ("the", "a"). Do not stack more than three nouns.
+- Technical names (crates, files, flags, ZPR terms) are permitted as they are.
+
+The plan body after this section does not need to follow ASD-STE100.
+
 Never bury questions mid-plan: the operator has repeatedly missed them there, and a
 bare `/go` then silently approves defaults they never saw. A revised or amended plan
 repeats the full format.
