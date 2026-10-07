@@ -371,16 +371,57 @@ and raw `libc::c_int` send flags a `SendFlags` newtype.
 ([zipline#131](https://github.com/mkolehmainen/zipline/issues/131))
 
 **Control RPC over a tokio named pipe with an explicit DACL.**
-`\\.\pipe\zpr-control-<sid>`, created with a DACL granting access to
-`BUILTIN\Administrators` and the owning user's SID only — the default
-named-pipe DACL is not acceptable for a control channel. Cap'n Proto RPC runs
-over any `AsyncRead + AsyncWrite`, so only how the stream is obtained changed.
-The owner is the process token's user SID: both `ph` and `ph-cli` run elevated
-by the same user in this release (non-elevated `ph-cli` deferred,
-[zipline#154](https://github.com/mkolehmainen/zipline/issues/154)); paths use
-`%ProgramData%\zpr` instead of `/var/run/zpr`.
+`\\.\pipe\zpr-control-<sid>` (or the shared `\\.\pipe\zpr-control`),
+created with a protected DACL (`D:P`) granting access to
+`BUILTIN\Administrators`, the owning user's SID and, optionally, one
+configured local group — nothing else; the default named-pipe DACL is not
+acceptable for a control channel. Cap'n Proto RPC runs over any
+`AsyncRead + AsyncWrite`, so only how the stream is obtained changed. The
+owner is the process token's user SID. Paths use `%ProgramData%\zpr`
+instead of `/var/run/zpr`.
 ([zipline#129](https://github.com/mkolehmainen/zipline/issues/129),
 [zipline#130](https://github.com/mkolehmainen/zipline/issues/130))
+
+**Non-elevated `ph-cli` through a configured local group.** The owner-SID
+ACE alone serves only a `ph` and `ph-cli` run by the same user; it rules
+out the expected deployment, `ph` as a Windows service (LocalSystem,
+session 0) with users running `ph-cli` unelevated — a non-admin has no
+matching ACE, and an admin's unelevated token holds `Administrators`
+deny-only. So `ph` takes a group name, `control_group` in `[global]` or
+`--control-group` (no default; the flag wins), and adds one ACE for it:
+`D:P(A;;GA;;;BA)(A;;GA;;;<owner>)(A;;GA;;;<group>)`. Design points:
+
+- The lookup is local-only: `LookupAccountNameW` on `<COMPUTERNAME>\<name>`
+  then `BUILTIN\<name>`, never an unqualified name, so a same-named domain
+  group cannot stand in; the result must be `SidTypeAlias`/`SidTypeGroup`.
+  (The issue sketched `.\<name>`; that prefix is a logon-UI convention that
+  `LookupAccountName` does not document, and it would miss `BUILTIN`.)
+- The SID in the SDDL comes only from `ConvertSidToStringSidW` on the
+  binary SID the lookup returned — never from configured text — and debug
+  builds assert its `S-1-[0-9-]` shape before interpolation.
+- Configured but missing: today's two-ACE DACL plus one startup warning,
+  worded identically on every platform.
+- **Packager contract.** The packager owns the group's name and lifecycle on
+  all three platforms: it creates the group at install, deletes it at
+  uninstall, and its service units (`zipline-svc`, `zipline.service`, the
+  launchd plist) pass the name to `ph` (Zipline uses `zipline`;
+  [org-zpr/zipline#29](https://github.com/org-zpr/zipline/issues/29)).
+  Admission is an administrator adding a user to the group; nothing opens
+  by default. Membership is adapter control, and a newly added user must
+  log on again before their token carries it.
+- **Same setting on unix, and a behaviour change there.** The setting
+  replaced the hard-coded `zpr` fallback group of the unix socket: an
+  ownerless (systemd/launchd) `ph` chgrps the socket to the configured
+  group (0660) and, with none configured, no longer looks for `zpr` — a
+  host that relied on it must set `control_group = "zpr"`. A resolved
+  sudo/pkexec owner still wins on unix.
+
+Rejected: detecting the interactive session user (no such user for a
+session-0 service); a `--control-owner` flag (the group covers it); opening
+the pipe to `Authenticated Users` or `INTERACTIVE` (hands adapter control to
+every local user); per-command client identity via impersonation (add it
+only if `ph` ever needs to know which member sent a command).
+([zipline#154](https://github.com/mkolehmainen/zipline/issues/154))
 
 **Capture is Unsupported on Windows.** The capture pipe is not created;
 `set-capture-file` returns `Unsupported`. The unix fd-passing design exists to
@@ -610,8 +651,6 @@ with an open issue unless noted:
   [zipline#152](https://github.com/mkolehmainen/zipline/issues/152)
 - IP Helper API instead of `netsh` —
   [zipline#153](https://github.com/mkolehmainen/zipline/issues/153)
-- Non-elevated `ph-cli` talking to an elevated `ph` —
-  [zipline#154](https://github.com/mkolehmainen/zipline/issues/154)
 - Per-instance control path (node and adapter for one user on one host) —
   [zipline#169](https://github.com/mkolehmainen/zipline/issues/169)
 - Second node substrate address in the remote-node test env (two-interface
