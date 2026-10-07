@@ -262,18 +262,22 @@ life of that process — never on disk, never logged, never returned over the
 RPC. `docs/OIDC.md` argues this is acceptable partly because the token "lives
 in the *user's* session rather than the root daemon". Whether that holds
 depends only on how `ph` was started, because the control socket is handed
-off after bind (`adapter/ph/src/socket_access.rs`,
+off after bind (`adapter/ph/src/sys/posix/socket_access.rs`,
 `adapter/admin-api/src/socket_owner.rs`):
 
 - `ph` started via `sudo`/`pkexec`: the socket is chowned to the invoking
   user at `/var/run/zpr/<uid>/control.sock` (mode 0600), `ph-cli auth-agent`
   runs unprivileged, and the refresh token lives in a process owned by the
   invoking user's uid. **The mitigation holds.**
-- `ph` started by systemd on a host with a `zpr` group: the shared socket is
-  group `zpr` (mode 0660), group members run `ph-cli` unprivileged, and the
-  token lives under the member's uid. **The mitigation holds.**
-- Residual case — no recorded owner and no `zpr` group (systemd or direct
-  root login on an unpackaged host): the socket stays root-only, `ph-cli`
+- `ph` started by systemd with a `control_group` configured and present on
+  the host: the shared socket is in that group (mode 0660), group members
+  run `ph-cli` unprivileged, and the token lives under the member's uid.
+  **The mitigation holds.** (On Windows the same setting adds the group to
+  the control pipe's DACL, with the same effect for a service-run `ph`.)
+- Residual case — no recorded owner and no usable `control_group` (none
+  configured, or configured but absent; since zipline#154 there is no
+  implicit `zpr` group), under systemd or a direct
+  root login on an unpackaged host: the socket stays root-only, `ph-cli`
   runs under `sudo`, and the refresh token sits in a root-owned process for
   hours. The marginal risk is small — root already owns the tun device and
   could harvest an `id_token` at any interactive login, so what is added is

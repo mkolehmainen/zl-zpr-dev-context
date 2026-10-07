@@ -536,15 +536,18 @@ restarting the agent means an interactive login.
 
 **Caveat — the "user's session, not the root daemon" mitigation holds,
 conditionally.** `ph` needs root for the tun interface, but the control
-socket is handed off after bind (`adapter/ph/src/socket_access.rs`,
+socket is handed off after bind (`adapter/ph/src/sys/posix/socket_access.rs`,
 `adapter/admin-api/src/socket_owner.rs`), so which uid holds the refresh
 token depends only on how `ph` was started. `ph` started via
 `sudo`/`pkexec` chowns the socket to the invoking user at
-`/var/run/zpr/<uid>/control.sock` (0600); `ph` started by systemd on a host
-with a `zpr` group leaves the shared socket group `zpr` (0660). In both
+`/var/run/zpr/<uid>/control.sock` (0600); `ph` started by systemd with a
+`control_group` configured (and present) leaves the shared socket in that
+group (0660). In both
 deployments `ph-cli auth-agent` runs unprivileged and the token lives in the
 user's own session — the mitigation holds. The residual case is a `ph` with
-no recorded owner on a host with no `zpr` group: there the socket stays
+no recorded owner and no usable `control_group` (none configured, or
+configured but absent — since zipline#154 there is no implicit `zpr`
+group): there the socket stays
 root-only, `ph-cli` runs under `sudo`, and the refresh token sits in a
 root-owned process for hours. The marginal risk there is small — root
 already owns the tun device and could harvest an `id_token` at any
