@@ -24,12 +24,17 @@ repository under `mkolehmainen` is a fork of `org-zpr/zpr-<name>` — except
 public. **Branches and PRs live in the forks. Issues do not** — they are filed
 centrally in `mkolehmainen/zipline`, a tracker-only repository with no code, and
 each one names the fork its code belongs in. So a task is `mkolehmainen/zipline#7`
-while its branch and PR are in `mkolehmainen/zl-zpr-visaservice`. Older items may
-still be upstream `org-zpr/zpr-<name>` issues; read the URL rather than assuming.
+while its branch and PR are in `mkolehmainen/zl-zpr-visaservice`. A second issue
+source, `org-zpr/zipline` (gated by org project #5), works the same way — issue in
+`org-zpr/zipline`, code in the forks; see "Second source" under "Picking the next
+issue". Issues in any `org-zpr/zpr-<name>` repository are **never** work for this
+agent, and those repositories are never touched.
 
-The project board is **`mk zl-zpr project`, user-owned project #1 under
-`mkolehmainen`** (https://github.com/users/mkolehmainen/projects/1), private. The
-org-owned boards under `org-zpr` do not track this work.
+The project board for tracker issues is **`mk zl-zpr project`, user-owned project #1
+under `mkolehmainen`** (https://github.com/users/mkolehmainen/projects/1), private. For
+`org-zpr/zipline` issues it is the **org-owned project #5 "zipline"**
+(https://github.com/orgs/org-zpr/projects/5). No other `org-zpr` board tracks this
+work.
 
 Each fork has two long-lived branches: **`zipline`** is the working branch and the
 repository default, and **`main`** is a read-only mirror of upstream that nothing
@@ -142,7 +147,10 @@ Rules, all operator decisions (2026-10-07):
   project has no ordering field).
 - **Iteration gates by time** (14-day iterations): only current-iteration items are
   picked. Ready in a future iteration is scheduled-ahead — reported under
-  `pre-authorized`, auto-starts when the iteration begins.
+  `pre-authorized`, auto-starts when the iteration begins. Ready in an iteration that
+  has already **ended** can never auto-start: it is reported under
+  `expired_iteration` ("Ready, but its iteration ended — reschedule") and a driver's
+  tick report must carry it to the operator, same duty as `awaiting-ready`.
 - **Assignment semantics differ from the tracker.** Assigning ZprBot1 is the
   operator's opt-in and does NOT mark underway; the underway marker is board
   Status `In progress` / `In review`, which pickup sets at claim time (so claim =
@@ -253,9 +261,11 @@ of silently never starting. A driver's tick report must carry that section throu
 to the operator.
 
 ```
-python3 scripts/next-issue.py          # NEXT + pickable set, pre-authorized, awaiting-ready, underway
+python3 scripts/next-issue.py          # NEXT + pickable set, pre-authorized, expired-iteration,
+                                       # awaiting-ready, underway
 python3 scripts/next-issue.py --json   # {"next": {...}, "ready": [...], "pre_authorized": [...],
-                                       #  "awaiting_ready": [...], "underway": [...]}
+                                       #  "awaiting_ready": [...], "underway": [...],
+                                       #  "expired_iteration": [...]}
 python3 scripts/test_next_issue.py     # the selection logic's tests, no network
 ```
 
@@ -355,7 +365,9 @@ read the issue's comments first:
    they do not know which one is next. Assignment is what marks the issue underway:
    `next-issue.py` reports an assigned issue under `underway` rather than `ready`, so
    the claim is also what stops a second agent — or a second session of you — picking
-   the same issue.
+   the same issue. (Org issues: assignment to ZprBot1 is the operator's opt-in, not
+   the marker — the claim there is self-assign **plus** Status `In progress` on org
+   project #5, both read back; see "Second source".)
 
    **Then re-read the assignees and confirm you are the only one.** Claiming is not
    atomic, so two agents can assign within the same second. If someone else is also
@@ -547,6 +559,12 @@ What that does and does not mean for assignment:
   handful do. Reading the board needs `read:project` (`gh auth refresh -s
   read:project`); the broader `project` scope works too, and `read:org` alone gives
   "missing required scopes" on any `gh project` call.
+
+  Org project #5 (`org-zpr/zipline` issues) is org-owned, so its queries use the
+  `organization(login:"org-zpr")` root field instead. It has the same five Status
+  values and the same 14-day, Monday-start `Iteration N` field; there, unlike #1,
+  the Iteration value is a pickup gate (see "Second source"). ZprBot1 holds Write on
+  it for Status updates.
 - Status values on this board are **`Backlog` / `Ready` / `In progress` /
   `In review` / `Done`** — exact spelling, note the lowercase second word. There is
   no `Todo`. `Backlog` means not cleared to start; `Ready` is the **operator's
@@ -556,8 +574,8 @@ What that does and does not mean for assignment:
   if a dependency-free item looks forgotten in `Backlog`, it appears under
   `next-issue.py`'s `awaiting-ready` section, which is the report to surface —
   not a promotion to make.
-- When you start work on an issue, assign it to **yourself** and change its project
-  Status to `In progress` (see pickup step 3 for why, and for the read-back check).
+- When you start work on an issue, assign it to **yourself** and change its Status to
+  `In progress` on that source's board (see pickup step 3 for why, and for the read-back check).
   There is no team to notify — the operator is in the conversation, so tell them there
   instead of posting a notification nobody reads.
 - **Each task requires a plan first.** Create the plan and add it as a comment on the
@@ -566,23 +584,27 @@ What that does and does not mean for assignment:
 - If a task requires clarification, request details by commenting on the issue —
   **the issue comment thread is the primary two-way channel with the team.** Nothing
   pushes issue comments to you, so poll for replies with
-  `gh issue view <N> --repo <owner>/<repo> --json comments`. Check which owner: most
-  items are `mkolehmainen/zipline` issues, but the board still carries some filed
-  upstream, so an item may be an `org-zpr/zpr-<name>` issue — and either way the
-  branch and PR belong in `mkolehmainen/zl-zpr-<name>`. Read the board item's URL
-  rather than assuming.
+  `gh issue view <N> --repo <owner>/<repo> --json comments`. Check which source: an
+  issue is either a `mkolehmainen/zipline` issue (tracker, board user project #1) or an
+  `org-zpr/zipline` issue (second source, board org project #5) — read the issue's URL
+  rather than assuming, because their numbers overlap. Either way the branch and PR
+  belong in the `mkolehmainen/zl-zpr-<name>` fork the issue names. Nothing else is a
+  work source: a board item from an `org-zpr/zpr-<name>` repository (org project #5
+  still carries legacy ones) is **never** work for this agent, and no branch, push, PR
+  or comment goes to any `org-zpr/zpr-*` repository, even to resume or clarify.
 
   **Ask in the conversation, not on the issue.** The operator is present; an issue
   comment is a slower channel to the same person, and nothing pushes it to them. Use
   issue comments for the durable record — the plan, and decisions worth keeping — and
   the conversation for anything you need an answer to. Never assume silence is assent
   on something that changes design.
-- When you have a PR, **name it in a comment on the issue**, set the project Status
-  to `In review`, and **set the PR's assignee and reviewer per the next two bullets —
+- When you have a PR, **name it in a comment on the issue** (in the issue's own
+  repository — `mkolehmainen/zipline` or `org-zpr/zipline`), set the Status to
+  `In review` on that source's board (user project #1 or org project #5), and **set the PR's assignee and reviewer per the next two bullets —
   at creation time, not as an afterthought.** The issue comment is the link. A GitHub
   *closing* link is impossible here:
   closing keywords only work when the PR and the issue are in the same repository, and
-  the issues live in `mkolehmainen/zipline` while the PRs live in the forks. So
+  the issues live in `mkolehmainen/zipline` or `org-zpr/zipline` while the PRs live in the forks. So
   `Closes #17` in a fork PR is an ordinary cross-reference — `closingIssuesReferences`
   stays empty and merging closes nothing. Do not write one; it reads like a link that
   will fire, and it will not. List every PR for the issue in one comment, with what
@@ -604,9 +626,12 @@ What that does and does not mean for assignment:
   PR author. Gate it on team membership:
 
   ```sh
-  ISSUE_AUTHOR=$(gh issue view <N> --repo mkolehmainen/<repo> --json author -q .author.login)
+  ISSUE_AUTHOR=$(gh issue view <N> --repo <issue-repo> --json author -q .author.login)
   gh api orgs/org-zpr/teams/core-devs/memberships/"$ISSUE_AUTHOR" -q .state
   ```
+
+  `<issue-repo>` is the issue's own repository (`mkolehmainen/zipline` or
+  `org-zpr/zipline`), not the fork the PR lives in.
 
   - prints `active` -> member. Run
     `gh pr edit <PR> --repo mkolehmainen/<repo> --add-reviewer "$ISSUE_AUTHOR"`.
@@ -640,8 +665,12 @@ closing links do not exist (see "Git / PR conventions"), so an issue whose PRs a
 merged sits open until the operator closes it by hand. Never wait on an auto-close, and
 never read "PRs merged, issue still open" as work outstanding on your side. When the
 last PR for an issue merges, say so plainly and name the close as the operator's next
-action — `gh issue close <N> --repo mkolehmainen/zipline` — because until it happens the
-dependents stay blocked and `next-issue.py` keeps reporting the issue as underway.
+action, against **the issue's own repository** — `gh issue close <N> --repo
+mkolehmainen/zipline` for a tracker issue, `gh issue close <N> --repo org-zpr/zipline`
+for an org issue. Issue numbers overlap between the two, so a close aimed at the wrong
+repository silently closes an unrelated issue and leaves the real one open. Until the
+right issue closes, its dependents stay blocked and `next-issue.py` keeps reporting it
+as underway.
 
 ### Definition of done
 
@@ -756,10 +785,12 @@ not run `gh pr merge`.
 ## Pointers
 
 - Project board: https://github.com/users/mkolehmainen/projects/1 (`mk zl-zpr
-  project` — the only board for this work; the org-owned `zipline`, `ref impl` and
-  roadmap boards under `org-zpr` do not track it).
-- Issue tracker: https://github.com/mkolehmainen/zipline/issues (tracker-only repo;
-  the code lives in the `zl-zpr-*` forks).
+  project`) for `mkolehmainen/zipline` issues, and https://github.com/orgs/org-zpr/projects/5
+  (org project #5 "zipline") for `org-zpr/zipline` issues. The other org-owned boards
+  under `org-zpr` (`ref impl`, roadmap) do not track this work.
+- Issue trackers: https://github.com/mkolehmainen/zipline/issues (tracker-only repo;
+  the code lives in the `zl-zpr-*` forks) and https://github.com/org-zpr/zipline/issues
+  (second source, private).
 - Start reading: RFC 12 (ZPR overview), RFC 4 (terminology), RFC 15 (ZPL), RFC 16 (identity).
   Full index, including which RFCs are public: `references/rfc-index.md`.
 - Packet path walkthrough: `zl-zpr-core/packet_walk.md`.
