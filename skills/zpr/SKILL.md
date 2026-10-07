@@ -118,6 +118,48 @@ agent picks it, not the human. **Pickup is opt-in via the board (zipline#155):**
 pickable = open ∧ unassigned ∧ all blockers closed ∧ board Status == Ready
 ```
 
+### Second source: org-zpr/zipline via org project #5 (2026-10-07)
+
+Besides the tracker, issues from **`org-zpr/zipline`** (private repo) are candidates,
+gated by the **org-owned project #5 "zipline"** under `org-zpr`
+(https://github.com/orgs/org-zpr/projects/5):
+
+```
+pickable(org) = open ∧ all blockers closed ∧ Status == Ready
+                ∧ Iteration == current ∧ (unassigned ∨ assigned solely to ZprBot1)
+```
+
+Rules, all operator decisions (2026-10-07):
+
+- **Only `org-zpr/zipline` issues are candidates.** The project also carries legacy
+  `org-zpr/zpr-*` issues — never work for this agent. **Never touch an
+  `org-zpr/zpr-*` repository**: no branches, no pushes, no PRs. Implementation for
+  an org-zpr/zipline issue lands in the `mkolehmainen/zl-*` forks under all the
+  same conventions (base `zipline`, local gate, never merge). The plan comment,
+  `/go` polling and PR link comment go on the org-zpr/zipline issue itself.
+- **Tracker precedence:** every ready `mkolehmainen/zipline` issue is picked before
+  any org one. Among org candidates the tiebreak is lowest issue number (the org
+  project has no ordering field).
+- **Iteration gates by time** (14-day iterations): only current-iteration items are
+  picked. Ready in a future iteration is scheduled-ahead — reported under
+  `pre-authorized`, auto-starts when the iteration begins.
+- **Assignment semantics differ from the tracker.** Assigning ZprBot1 is the
+  operator's opt-in and does NOT mark underway; the underway marker is board
+  Status `In progress` / `In review`, which pickup sets at claim time (so claim =
+  assign yourself **and** set Status `In progress`, and verify both). An issue
+  assigned to anyone else is theirs — skip it silently.
+- **`/go` on an org-zpr/zipline issue** may come from the operator **or any active
+  `org-zpr/core-devs` member** (verify with
+  `gh api orgs/org-zpr/teams/core-devs/memberships/<login> -q .state` == `active`).
+  Tracker issues remain operator-only.
+- Access granted for this: ZprBot1 holds Triage on `org-zpr/zipline` (assign,
+  comment) and Write on org project #5 (Status updates). If a Status write or
+  self-assign fails with a permissions error, report it — the grant regressed.
+
+`next-issue.py` implements both sources and merges the reporting sections; org rows
+are printed as `org-zpr/zipline#N` and carry `"tracker": "org-zpr/zipline"` in
+`--json` output so a driver can route the follow-up conventions correctly.
+
 The first three conditions are machine-readable ordering, in two places and
 nowhere else:
 

@@ -297,6 +297,161 @@ def test_awaiting_ready_and_pre_authorized_sort_in_execution_order():
     assert numbers(ready) == [], ready
 
 
+# --- second source: org-zpr/zipline via org project #5 (2026-10-07) ----------
+#
+# pickable(org) = open AND all blockers closed AND Status == Ready
+#                 AND Iteration == current
+#                 AND (unassigned OR assigned solely to the bot)
+#
+# Only org-zpr/zipline issues are candidates; legacy org-zpr/zpr-* items on
+# the same project are never work for this agent. Assignment to the bot is an
+# opt-in, not an underway marker (underway = Status In progress / In review);
+# assignment to anyone else makes the issue theirs, skipped entirely.
+
+import datetime  # noqa: E402
+
+TODAY = datetime.date(2026, 10, 7)
+CURRENT = {"startDate": "2026-09-29", "duration": 14, "title": "Iteration 3"}
+NEXT_IT = {"startDate": "2026-10-13", "duration": 14, "title": "Iteration 4"}
+
+
+def org_item(number, status="Ready", iteration=CURRENT, assignees=(),
+             blockers=(), state="OPEN", subs=(), repo="org-zpr/zipline"):
+    """One org project #5 item node, as ORG_BOARD_QUERY returns it."""
+    return {
+        "content": {
+            "number": number,
+            "title": f"org issue {number}",
+            "url": f"https://github.com/org-zpr/zipline/issues/{number}",
+            "state": state,
+            "repository": {"nameWithOwner": repo},
+            "labels": {"nodes": []},
+            "assignees": {"nodes": [{"login": a} for a in assignees]},
+            "blockedBy": {"nodes": [{"number": n, "state": s} for n, s in blockers]},
+            "subIssues": {"nodes": [{"number": n} for n in subs]},
+        },
+        "status": {"name": status} if status else None,
+        "iteration": iteration,
+    }
+
+
+def org_sel(items):
+    return next_issue.select_org(items, TODAY, bot="ZprBot1")
+
+
+def test_org_ready_current_unassigned_is_pickable():
+    ready, pre, awaiting, underway = org_sel([org_item(29)])
+    assert numbers(ready) == [29], ready
+    assert ready[0]["tracker"] == "org-zpr/zipline"
+    for rows in (pre, awaiting, underway):
+        assert numbers(rows) == [], rows
+
+
+def test_org_bot_assignment_is_opt_in_not_underway():
+    """Explicitly assigning the bot must not suppress pickup -- that is how
+    the operator hands the bot a specific issue."""
+    ready, _, _, underway = org_sel([org_item(29, assignees=["ZprBot1"])])
+    assert numbers(ready) == [29], ready
+    assert numbers(underway) == [], underway
+
+
+def test_org_issue_assigned_to_someone_else_is_theirs():
+    """Assigned to another login (or bot + another): never picked, never
+    reported -- taking it over would violate the assignment rule."""
+    for assignees in (["mkolehmainen"], ["ZprBot1", "mkolehmainen"]):
+        ready, pre, awaiting, underway = org_sel(
+            [org_item(29, assignees=assignees)])
+        for rows in (ready, pre, awaiting, underway):
+            assert numbers(rows) == [], (assignees, rows)
+
+
+def test_org_in_progress_status_is_underway():
+    """Status In progress / In review is the org underway marker -- pickup
+    sets it at claim time, and a later tick must poll, not re-pick."""
+    for status in ("In progress", "In review"):
+        ready, _, _, underway = org_sel(
+            [org_item(29, status=status, assignees=["ZprBot1"])])
+        assert numbers(underway) == [29], (status, underway)
+        assert numbers(ready) == [], (status, ready)
+
+
+def test_org_legacy_zpr_repo_item_is_never_a_candidate():
+    """The org project carries legacy org-zpr/zpr-* issues; they are never
+    work for this agent, whatever their Status says."""
+    ready, pre, awaiting, underway = org_sel(
+        [org_item(55, repo="org-zpr/zpr-visaservice")])
+    for rows in (ready, pre, awaiting, underway):
+        assert numbers(rows) == [], rows
+
+
+def test_org_future_iteration_is_pre_authorized_not_ready():
+    """Ready in a not-yet-current iteration is scheduled-ahead: held, reported
+    under pre-authorized, auto-starts when the iteration begins."""
+    ready, pre, _, _ = org_sel([org_item(29, iteration=NEXT_IT)])
+    assert numbers(ready) == [], ready
+    assert numbers(pre) == [29], pre
+    assert "Iteration 4" in pre[0]["held_by"], pre
+
+
+def test_org_no_iteration_is_held():
+    """Ready with no Iteration value is not scheduled -> not pickable."""
+    ready, pre, _, _ = org_sel([org_item(29, iteration=None)])
+    assert numbers(ready) == [], ready
+    assert numbers(pre) == [29], pre
+
+
+def test_org_open_blocker_holds_a_ready_item():
+    ready, pre, _, _ = org_sel([org_item(29, blockers=[(28, "OPEN")])])
+    assert numbers(ready) == [], ready
+    assert numbers(pre) == [29], pre
+    assert pre[0]["blocked_by"] == [28], pre
+
+
+def test_org_backlog_unblocked_is_awaiting_ready():
+    ready, _, awaiting, _ = org_sel([org_item(29, status="Backlog")])
+    assert numbers(ready) == [], ready
+    assert numbers(awaiting) == [29], awaiting
+
+
+def test_org_absent_status_counts_as_backlog():
+    ready, _, awaiting, _ = org_sel([org_item(29, status=None)])
+    assert numbers(ready) == [], ready
+    assert numbers(awaiting) == [29], awaiting
+
+
+def test_org_closed_and_umbrella_items_are_skipped():
+    ready, pre, awaiting, underway = org_sel([
+        org_item(10, state="CLOSED"),
+        org_item(11, subs=[12, 13]),
+    ])
+    for rows in (ready, pre, awaiting, underway):
+        assert numbers(rows) == [], rows
+
+
+def test_org_rows_sort_after_every_tracker_row():
+    """Tracker precedence: an org row's position must exceed any tracker
+    row's, attached to an umbrella or not."""
+    tracker_ready, _, _, _ = sel([issue(18)], {})  # unattached: 10_000 + n
+    org_ready, _, _, _ = org_sel([org_item(1)])
+    assert org_ready[0]["position"] > tracker_ready[0]["position"]
+
+
+def test_org_tiebreak_is_lowest_issue_number():
+    ready, _, _, _ = org_sel([org_item(40), org_item(29)])
+    assert numbers(ready) == [29, 40], ready
+
+
+def test_iteration_is_current_boundaries():
+    f = next_issue.iteration_is_current
+    it = {"startDate": "2026-09-29", "duration": 14}
+    assert f(it, datetime.date(2026, 9, 29))       # first day: current
+    assert f(it, datetime.date(2026, 10, 12))      # last day: current
+    assert not f(it, datetime.date(2026, 10, 13))  # day after: next iteration
+    assert not f(it, datetime.date(2026, 9, 28))   # day before
+    assert not f(None, TODAY)                      # no value at all
+    assert not f({}, TODAY)                        # value without startDate
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

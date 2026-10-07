@@ -36,6 +36,28 @@ work itself, so it is never reported as pickable. Umbrellas are *derived* from
 the sub-issue graph rather than listed here: the tracker holds one umbrella per
 feature and filing the next one must not require editing this script.
 
+SECOND SOURCE: org-zpr/zipline, gated by org project #5 "zipline" (operator
+decision, 2026-10-07). Only issues from the org-zpr/zipline repository are
+candidates -- the org project also carries legacy org-zpr/zpr-* issues, which
+are never candidates and whose repositories must never be touched;
+implementation always lands in the mkolehmainen/zl-* forks. The predicate
+differs from the tracker's in two ways:
+
+    pickable(org) = open AND all blockers closed AND Status == Ready
+                    AND Iteration == current
+                    AND (unassigned OR assigned solely to the bot)
+
+- The Iteration field gates by time: only current-iteration items are picked.
+- Explicit assignment to the bot is an OPT-IN, not an underway marker, so it
+  does not suppress pickup by itself. The underway marker for org issues is
+  board Status `In progress`/`In review` (pickup sets it at claim time, same
+  as the tracker flow). An issue assigned to anyone else is theirs: never
+  picked, never reported as ours.
+
+mkolehmainen/zipline issues take precedence: every tracker-ready issue sorts
+before every org-ready one. Among org candidates the tiebreak is lowest issue
+number (the org project has no ordering field).
+
 This reads state and changes nothing.
 
 Usage:
@@ -46,6 +68,7 @@ Usage:
 Requires: gh authenticated with the `repo` scope, plus `read:project` (or
 `project`) for the board Status read.
 """
+import datetime
 import json
 import os
 import sys
@@ -56,6 +79,15 @@ from ghretry import run_gh  # noqa: E402
 OWNER = "mkolehmainen"
 REPO = "zipline"
 PROJECT_NUMBER = 1
+
+# Second source (operator decision 2026-10-07): org-zpr/zipline issues, gated
+# by the org-owned project #5 "zipline". The bot login is pinned rather than
+# read from `gh api user` so a fixture-driven test needs no network and a
+# mis-authed gh cannot silently widen "assigned to the bot" to someone else.
+ORG_OWNER = "org-zpr"
+ORG_REPO = "zipline"
+ORG_PROJECT_NUMBER = 5
+BOT_LOGIN = "ZprBot1"
 
 # Every issue in every state, because a *closed* umbrella can still have open
 # children -- so the sub-issue order has to be read from closed issues too.
@@ -159,6 +191,148 @@ def board_statuses():
         cursor = items["pageInfo"]["endCursor"]
 
 
+# Org project #5 items, with everything the org predicate needs in one query:
+# the issue's own state/assignees/blockers/sub-issues plus the item's Status
+# and Iteration values. The project is org-owned, so the root field is
+# `organization(login:)` -- the mirror image of the user-owned board above.
+ORG_BOARD_QUERY = """
+query($owner:String!, $number:Int!, $cursor:String) {
+  organization(login:$owner) { projectV2(number:$number) {
+    items(first:100, after:$cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        content { ... on Issue {
+          number title url state
+          repository { nameWithOwner }
+          labels(first:10) { nodes { name } }
+          assignees(first:5) { nodes { login } }
+          blockedBy(first:50) { nodes { number state } }
+          subIssues(first:100) { nodes { number } }
+        } }
+        status: fieldValueByName(name:"Status") {
+          ... on ProjectV2ItemFieldSingleSelectValue { name }
+        }
+        iteration: fieldValueByName(name:"Iteration") {
+          ... on ProjectV2ItemFieldIterationValue { startDate duration title }
+        }
+      }
+    }
+  } }
+}
+"""
+
+
+def org_items():
+    """Every item on org project #5, raw."""
+    cursor, out = None, []
+    while True:
+        page = gh_graphql(ORG_BOARD_QUERY, owner=ORG_OWNER,
+                          number=ORG_PROJECT_NUMBER, cursor=cursor)
+        items = page["data"]["organization"]["projectV2"]["items"]
+        out.extend(items["nodes"])
+        if not items["pageInfo"]["hasNextPage"]:
+            return out
+        cursor = items["pageInfo"]["endCursor"]
+
+
+def iteration_is_current(value, today):
+    """True when `today` falls inside the item's Iteration value.
+
+    The value carries its own startDate and duration (days), so currency is
+    computed from the item -- no second query for the field's configuration.
+    No Iteration value means not scheduled, which is not current.
+    """
+    if not value or not value.get("startDate"):
+        return False
+    start = datetime.date.fromisoformat(value["startDate"])
+    return start <= today < start + datetime.timedelta(days=int(value["duration"]))
+
+
+def summarize_org(content):
+    """Flatten one org project item's issue into the reported row shape.
+
+    Org rows sort after every tracker row (tracker precedence, operator
+    decision 2026-10-07) and among themselves by issue number -- the org
+    project has no ordering field.
+    """
+    return {
+        "number": content["number"],
+        "title": content["title"],
+        "url": content["url"],
+        "repo_label": ",".join(l["name"] for l in content["labels"]["nodes"]),
+        "assignees": [a["login"] for a in content["assignees"]["nodes"]],
+        "position": 100_000 + content["number"],
+        "tracker": f"{ORG_OWNER}/{ORG_REPO}",
+    }
+
+
+def select_org(items, today, bot=BOT_LOGIN):
+    """Split org project items into (ready, pre_authorized, awaiting_ready,
+    underway), each sorted by issue number.
+
+    pickable(org) = open AND all blockers closed AND Status == Ready
+                    AND Iteration == current
+                    AND (unassigned OR assigned solely to `bot`)
+
+    Differences from the tracker's `select`, both deliberate:
+
+    - Assignment to the bot is an opt-in, not an underway marker, so it does
+      not suppress pickup. Underway is marked by board Status `In progress` /
+      `In review`, which pickup sets at claim time. An issue assigned to
+      anyone else is theirs -- skipped entirely, never reported.
+    - The Iteration field gates by time. Ready in a non-current iteration is
+      scheduled-ahead: reported under pre_authorized (with `held_by`) so it
+      cannot rot silently, picked up on the tick after its iteration starts.
+
+    Only org-zpr/zipline issues are candidates: the project also carries
+    legacy org-zpr/zpr-* issues, which are never work for this agent (their
+    repositories are never touched; implementation lands in the
+    mkolehmainen/zl-* forks).
+    """
+    wanted = f"{ORG_OWNER}/{ORG_REPO}"
+    ready, pre_authorized, awaiting_ready, underway = [], [], [], []
+    for item in items:
+        content = item.get("content") or {}
+        if content.get("number") is None:  # drafts and PRs
+            continue
+        if (content.get("repository") or {}).get("nameWithOwner") != wanted:
+            continue  # legacy org-zpr/zpr-* issue: never a candidate
+        if content["state"] != "OPEN":
+            continue
+        if content["subIssues"]["nodes"]:
+            continue  # umbrella: a container for work, not work
+        assignees = [a["login"] for a in content["assignees"]["nodes"]]
+        if assignees and assignees != [bot]:
+            continue  # someone else's issue: theirs, not reported
+        status = (item.get("status") or {}).get("name")
+        row = summarize_org(content)
+        if status in ("In progress", "In review"):
+            underway.append(row)
+            continue
+        if status != "Ready":
+            # Backlog / Done / unset: held by the operator gate. Only the
+            # unblocked ones are reported -- same rule as the tracker.
+            open_blockers = [b["number"] for b in content["blockedBy"]["nodes"]
+                             if b["state"] == "OPEN"]
+            if status in (None, "Backlog") and not open_blockers:
+                awaiting_ready.append(row)
+            continue
+        open_blockers = sorted(b["number"] for b in content["blockedBy"]["nodes"]
+                               if b["state"] == "OPEN")
+        current = iteration_is_current(item.get("iteration"), today)
+        if open_blockers or not current:
+            row["blocked_by"] = open_blockers
+            if not current:
+                it = item.get("iteration") or {}
+                row["held_by"] = f"iteration ({it.get('title') or 'none scheduled'})"
+            pre_authorized.append(row)
+            continue
+        ready.append(row)
+    for rows in (ready, pre_authorized, awaiting_ready, underway):
+        rows.sort(key=lambda r: r["position"])
+    return ready, pre_authorized, awaiting_ready, underway
+
+
 def umbrellas(issues):
     """Numbers of the issues that have sub-issues, i.e. the tracking issues.
 
@@ -248,12 +422,32 @@ def select(issues, order, statuses):
     return ready, pre_authorized, awaiting_ready, underway
 
 
+def ref(row):
+    """Short reference for a row: `#N` for tracker issues, `org-zpr/zipline#N`
+    for org-source rows, so the two sources can never be confused in output."""
+    tracker = row.get("tracker")
+    return f"{tracker}#{row['number']}" if tracker else f"#{row['number']}"
+
+
 def main():
     as_json = "--json" in sys.argv
     issues = all_issues()
     order = execution_order(issues)
     statuses = board_statuses()
     ready, pre_authorized, awaiting_ready, underway = select(issues, order, statuses)
+
+    # Second source: org-zpr/zipline via org project #5. Org rows carry
+    # position >= 100_000, so after the merged sort every tracker row precedes
+    # every org row -- mkolehmainen/zipline takes precedence (operator
+    # decision 2026-10-07).
+    o_ready, o_pre, o_awaiting, o_underway = select_org(
+        org_items(), datetime.date.today())
+    ready += o_ready
+    pre_authorized += o_pre
+    awaiting_ready += o_awaiting
+    underway += o_underway
+    for rows in (ready, pre_authorized, awaiting_ready, underway):
+        rows.sort(key=lambda r: r["position"])
 
     if as_json:
         print(json.dumps({"next": ready[0] if ready else None,
@@ -264,25 +458,29 @@ def main():
 
     if ready:
         nxt = ready[0]
-        print(f"NEXT  #{nxt['number']}  [{nxt['repo_label']}]  {nxt['title']}")
+        print(f"NEXT  {ref(nxt)}  [{nxt['repo_label']}]  {nxt['title']}")
         print(f"      {nxt['url']}")
         if len(ready) > 1:
             print(f"\nalso ready ({len(ready) - 1}):")
             for r in ready[1:]:
-                print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}")
+                print(f"  {ref(r):<4} [{r['repo_label']}] {r['title']}")
     else:
         print("Nothing pickable: every open issue is blocked, assigned, "
               "or awaiting the operator's Ready on the board.")
 
     # Ready-but-blocked is intended state: the operator pre-authorized it and
-    # it starts by itself when the last blocker closes.
+    # it starts by itself when the last blocker closes (or, for org items,
+    # when the scheduled iteration becomes current).
     if pre_authorized:
         print(f"\npre-authorized ({len(pre_authorized)}) -- "
               f"auto-starts when blockers close:")
         for r in pre_authorized:
-            blockers = ", ".join(f"#{n}" for n in r["blocked_by"])
-            print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}"
-                  f"  (blocked by {blockers})")
+            holds = [f"blocked by {', '.join(f'#{n}' for n in r['blocked_by'])}"
+                     ] if r.get("blocked_by") else []
+            if r.get("held_by"):
+                holds.append(f"held by {r['held_by']}")
+            print(f"  {ref(r):<4} [{r['repo_label']}] {r['title']}"
+                  f"  ({'; '.join(holds)})")
 
     # Unblocked but not Ready: the gate is holding these for the operator.
     # Reported every run so a forgotten green-light cannot rot silently.
@@ -290,14 +488,14 @@ def main():
         print(f"\nawaiting your Ready ({len(awaiting_ready)}) -- "
               f"unblocked and unassigned, but board Status is not Ready:")
         for r in awaiting_ready:
-            print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}")
+            print(f"  {ref(r):<4} [{r['repo_label']}] {r['title']}")
 
     # Assigned-but-unblocked issues are the work in flight. Printed because an
     # issue silently vanishing from the ready set is otherwise baffling.
     if underway:
         print(f"\nunderway, not pickable ({len(underway)}) -- poll these instead:")
         for r in underway:
-            print(f"  #{r['number']:<3} [{r['repo_label']}] {r['title']}"
+            print(f"  {ref(r):<4} [{r['repo_label']}] {r['title']}"
                   f"  ({', '.join(r['assignees'])})")
 
 
