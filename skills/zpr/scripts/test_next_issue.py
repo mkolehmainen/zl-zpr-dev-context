@@ -7,6 +7,7 @@ Run: python3 test_next_issue.py
 """
 
 import importlib.util
+import json
 import os
 import sys
 
@@ -296,6 +297,254 @@ def test_awaiting_ready_and_pre_authorized_sort_in_execution_order():
     assert numbers(pre) == [9, 8], pre
     assert numbers(ready) == [], ready
 
+
+# --- second source: org-zpr/zipline via org project #5 (2026-10-07) ----------
+#
+# pickable(org) = open AND all blockers closed AND Status == Ready
+#                 AND Iteration == current
+#                 AND (unassigned OR assigned solely to the bot)
+#
+# Only org-zpr/zipline issues are candidates; legacy org-zpr/zpr-* items on
+# the same project are never work for this agent. Assignment to the bot is an
+# opt-in, not an underway marker (underway = Status In progress / In review);
+# assignment to anyone else makes the issue theirs, skipped entirely.
+
+import datetime  # noqa: E402
+
+TODAY = datetime.date(2026, 10, 7)
+CURRENT = {"startDate": "2026-09-29", "duration": 14, "title": "Iteration 3"}
+NEXT_IT = {"startDate": "2026-10-13", "duration": 14, "title": "Iteration 4"}
+
+
+def org_item(number, status="Ready", iteration=CURRENT, assignees=(),
+             blockers=(), state="OPEN", subs=(), repo="org-zpr/zipline"):
+    """One org project #5 item node, as ORG_BOARD_QUERY returns it."""
+    return {
+        "content": {
+            "number": number,
+            "title": f"org issue {number}",
+            "url": f"https://github.com/org-zpr/zipline/issues/{number}",
+            "state": state,
+            "repository": {"nameWithOwner": repo},
+            "labels": {"nodes": []},
+            "assignees": {"nodes": [{"login": a} for a in assignees]},
+            "blockedBy": {"nodes": [{"number": n, "state": s} for n, s in blockers]},
+            "subIssues": {"nodes": [{"number": n} for n in subs]},
+        },
+        "status": {"name": status} if status else None,
+        "iteration": iteration,
+    }
+
+
+def org_sel(items):
+    return next_issue.select_org(items, TODAY, bot="ZprBot1")
+
+
+def test_org_ready_current_unassigned_is_pickable():
+    ready, pre, awaiting, underway, expired = org_sel([org_item(29)])
+    assert numbers(ready) == [29], ready
+    assert ready[0]["tracker"] == "org-zpr/zipline"
+    for rows in (pre, awaiting, underway):
+        assert numbers(rows) == [], rows
+
+
+def test_org_bot_assignment_is_opt_in_not_underway():
+    """Explicitly assigning the bot must not suppress pickup -- that is how
+    the operator hands the bot a specific issue."""
+    ready, _, _, underway, _ = org_sel([org_item(29, assignees=["ZprBot1"])])
+    assert numbers(ready) == [29], ready
+    assert numbers(underway) == [], underway
+
+
+def test_org_issue_assigned_to_someone_else_is_theirs():
+    """Assigned to another login (or bot + another): never picked, never
+    reported -- taking it over would violate the assignment rule."""
+    for assignees in (["mkolehmainen"], ["ZprBot1", "mkolehmainen"]):
+        ready, pre, awaiting, underway, expired = org_sel(
+            [org_item(29, assignees=assignees)])
+        for rows in (ready, pre, awaiting, underway, expired):
+            assert numbers(rows) == [], (assignees, rows)
+
+
+def test_org_in_progress_status_is_underway():
+    """Status In progress / In review is the org underway marker -- pickup
+    sets it at claim time, and a later tick must poll, not re-pick."""
+    for status in ("In progress", "In review"):
+        ready, _, _, underway, _ = org_sel(
+            [org_item(29, status=status, assignees=["ZprBot1"])])
+        assert numbers(underway) == [29], (status, underway)
+        assert numbers(ready) == [], (status, ready)
+
+
+def test_org_legacy_zpr_repo_item_is_never_a_candidate():
+    """The org project carries legacy org-zpr/zpr-* issues; they are never
+    work for this agent, whatever their Status says."""
+    ready, pre, awaiting, underway, expired = org_sel(
+        [org_item(55, repo="org-zpr/zpr-visaservice")])
+    for rows in (ready, pre, awaiting, underway, expired):
+        assert numbers(rows) == [], rows
+
+
+def test_org_future_iteration_is_pre_authorized_not_ready():
+    """Ready in a not-yet-current iteration is scheduled-ahead: held, reported
+    under pre-authorized, auto-starts when the iteration begins."""
+    ready, pre, _, _, _ = org_sel([org_item(29, iteration=NEXT_IT)])
+    assert numbers(ready) == [], ready
+    assert numbers(pre) == [29], pre
+    assert "Iteration 4" in pre[0]["held_by"], pre
+
+
+def test_org_no_iteration_is_held():
+    """Ready with no Iteration value is not scheduled -> not pickable."""
+    ready, pre, _, _, _ = org_sel([org_item(29, iteration=None)])
+    assert numbers(ready) == [], ready
+    assert numbers(pre) == [29], pre
+
+
+def test_org_open_blocker_holds_a_ready_item():
+    ready, pre, _, _, _ = org_sel([org_item(29, blockers=[(28, "OPEN")])])
+    assert numbers(ready) == [], ready
+    assert numbers(pre) == [29], pre
+    assert pre[0]["blocked_by"] == [28], pre
+
+
+def test_org_backlog_unblocked_is_awaiting_ready():
+    ready, _, awaiting, _, _ = org_sel([org_item(29, status="Backlog")])
+    assert numbers(ready) == [], ready
+    assert numbers(awaiting) == [29], awaiting
+
+
+def test_org_absent_status_counts_as_backlog():
+    ready, _, awaiting, _, _ = org_sel([org_item(29, status=None)])
+    assert numbers(ready) == [], ready
+    assert numbers(awaiting) == [29], awaiting
+
+
+def test_org_closed_and_umbrella_items_are_skipped():
+    ready, pre, awaiting, underway, expired = org_sel([
+        org_item(10, state="CLOSED"),
+        org_item(11, subs=[12, 13]),
+    ])
+    for rows in (ready, pre, awaiting, underway, expired):
+        assert numbers(rows) == [], rows
+
+
+def test_org_rows_sort_after_every_tracker_row():
+    """Tracker precedence: an org row's position must exceed any tracker
+    row's, attached to an umbrella or not."""
+    tracker_ready, _, _, _ = sel([issue(18)], {})  # unattached: 10_000 + n
+    org_ready, _, _, _, _ = org_sel([org_item(1)])
+    assert org_ready[0]["position"] > tracker_ready[0]["position"]
+
+
+def test_org_tiebreak_is_lowest_issue_number():
+    ready, _, _, _, _ = org_sel([org_item(40), org_item(29)])
+    assert numbers(ready) == [29, 40], ready
+
+
+def test_iteration_is_current_boundaries():
+    f = next_issue.iteration_is_current
+    it = {"startDate": "2026-09-29", "duration": 14}
+    assert f(it, datetime.date(2026, 9, 29))       # first day: current
+    assert f(it, datetime.date(2026, 10, 12))      # last day: current
+    assert not f(it, datetime.date(2026, 10, 13))  # day after: next iteration
+    assert not f(it, datetime.date(2026, 9, 28))   # day before
+    assert not f(None, TODAY)                      # no value at all
+    assert not f({}, TODAY)                        # value without startDate
+
+
+# --- expired iterations (PR #61 review, Codex P2) ---------------------------
+#
+# A Ready item whose Iteration has already ENDED can never auto-start: unlike a
+# scheduled-ahead item, no future tick makes its iteration current. Reporting
+# it under pre-authorized ("auto-starts when ...") would hide an item that
+# needs rescheduling, so it gets its own section and is never pickable.
+
+PAST_IT = {"startDate": "2026-09-15", "duration": 14, "title": "Iteration 2"}
+
+
+def test_org_ended_iteration_is_expired_not_pre_authorized():
+    ready, pre, awaiting, underway, expired = org_sel(
+        [org_item(29, iteration=PAST_IT)])
+    assert numbers(expired) == [29], expired
+    assert "Iteration 2" in expired[0]["iteration"], expired
+    for rows in (ready, pre, awaiting, underway):
+        assert numbers(rows) == [], rows
+
+
+def test_org_ended_iteration_with_open_blocker_is_still_expired():
+    """A blocker closing later would not make it pickable either -- the
+    iteration is the hold that needs a human, so it is reported as expired,
+    with its open blockers carried along for the reschedule decision."""
+    ready, pre, _, _, expired = org_sel(
+        [org_item(29, iteration=PAST_IT, blockers=[(28, "OPEN")])])
+    assert numbers(ready) == [] and numbers(pre) == [], (ready, pre)
+    assert numbers(expired) == [29], expired
+    assert expired[0]["blocked_by"] == [28], expired
+
+
+def test_org_future_and_current_iterations_are_not_expired():
+    _, _, _, _, expired = org_sel(
+        [org_item(29, iteration=NEXT_IT), org_item(30, iteration=CURRENT)])
+    assert numbers(expired) == [], expired
+
+
+def test_org_expired_only_applies_to_ready_items():
+    """Backlog / In progress items in an ended iteration keep their existing
+    classification: the expired section is about Ready items that the gate
+    would otherwise hold forever without saying why."""
+    _, _, awaiting, underway, expired = org_sel([
+        org_item(29, status="Backlog", iteration=PAST_IT),
+        org_item(30, status="In progress", iteration=PAST_IT),
+    ])
+    assert numbers(expired) == [], expired
+    assert numbers(awaiting) == [29], awaiting
+    assert numbers(underway) == [30], underway
+
+
+def test_iteration_has_ended_boundaries():
+    f = next_issue.iteration_has_ended
+    it = {"startDate": "2026-09-29", "duration": 14}
+    assert not f(it, datetime.date(2026, 10, 12))  # last day: still current
+    assert f(it, datetime.date(2026, 10, 13))      # day after: ended
+    assert not f(it, datetime.date(2026, 9, 28))   # before start: future
+    assert not f(None, TODAY)                      # unscheduled is not ended
+    assert not f({}, TODAY)
+
+
+def test_main_reports_expired_iteration_in_json_and_text():
+    """End to end through main(): --json carries an `expired_iteration` key and
+    the text report a reschedule section; neither offers the item as NEXT."""
+    import contextlib
+    import io
+    long_ago = {"startDate": "2020-01-06", "duration": 14, "title": "Iteration 0"}
+    saved = (next_issue.all_issues, next_issue.board_statuses,
+             next_issue.org_items, list(sys.argv))
+    next_issue.all_issues = lambda: []
+    next_issue.board_statuses = lambda: {}
+    next_issue.org_items = lambda: [org_item(29, iteration=long_ago)]
+    try:
+        buf = io.StringIO()
+        sys.argv[:] = ["next-issue.py", "--json"]
+        with contextlib.redirect_stdout(buf):
+            next_issue.main()
+        report = json.loads(buf.getvalue())
+        assert report["next"] is None, report
+        assert numbers(report["expired_iteration"]) == [29], report
+        assert numbers(report["pre_authorized"]) == [], report
+
+        buf = io.StringIO()
+        sys.argv[:] = ["next-issue.py"]
+        with contextlib.redirect_stdout(buf):
+            next_issue.main()
+        text = buf.getvalue()
+        assert "iteration ended" in text and "reschedule" in text, text
+        assert "org-zpr/zipline#29" in text, text
+        assert "Iteration 0" in text, text
+    finally:
+        (next_issue.all_issues, next_issue.board_statuses,
+         next_issue.org_items, argv) = saved
+        sys.argv[:] = argv
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
