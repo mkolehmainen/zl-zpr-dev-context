@@ -914,7 +914,6 @@ likely to model wrongly.
 
 | Item | Why deferred |
 |---|---|
-| OIDC token reuse across a dock-link **reconnect** | Intended behavior today, not a dropped token ([zipline#166](https://github.com/mkolehmainen/zipline/issues/166), split from [zipline#157](https://github.com/mkolehmainen/zipline/issues/157)): every connect is bound to the node's fresh link challenge — the visa service requires `id_token.nonce` to equal the challenge hash — and a refresh-grant `id_token` SHOULD NOT carry a nonce (OIDC Core §12.2), so neither the cached token nor a silent refresh can satisfy a new connect. Accepting one needs a connect-time analogue of the reauth path's session binding, a visa-service change with its own security review. With zipline#157's fix (a fatal local activation failure hard-stops instead of reconnect-looping), the re-prompt costs one login per genuine link flap |
 | Graceful degradation on user-auth expiry | Needs partial revocation in the visa service; `revokeAuthentication` is per actor. Disconnect was chosen instead (see *Credential lifetimes*) — and install-driven re-authentication kept the rule: re-auth is all-or-nothing over the actor's namespaces (zipline#118) |
 | OS-keyring persistence for the refresh token | The token is kept in the agent process's memory; persistence is additive (a storage trait behind a flag) |
 | VS-pushed renewal via `requestAuthentication` | **Done for policy install** (zipline#121/#123): the VS fans out `requestAuthentication` on every install and the node re-authenticates itself and its docked adapters. Node-driven pull still covers clock-driven renewal and works while the VS is disconnected |
@@ -1020,6 +1019,21 @@ with one about to exit. ([zipline#40](https://github.com/mkolehmainen/zipline/is
 client that produced it is deleted, but removing a union arm is a schema break,
 so it waits for a coordinated bump (see *Deferred*).
 ([zipline#15](https://github.com/mkolehmainen/zipline/issues/15))
+
+**A dock-link reconnect re-prompts the user; the token is not reused (wontfix).**
+Every connect is bound to the node's fresh link challenge (the visa service
+requires `id_token.nonce` to equal the challenge hash), and a refresh-grant
+`id_token` SHOULD NOT carry a nonce (OIDC Core §12.2), so neither a cached
+token nor a silent refresh can satisfy a new connect. Accepting one would need
+a connect-time analogue of the reauth path's session binding, bound to a
+*recently disconnected* session rather than a live one: a visa-service change
+that widens the connect path's trust surface. That is not worth it. Since
+zipline#157, a fatal local activation failure hard-stops rather than
+reconnect-looping, so a re-prompt costs one login per genuine link flap.
+`test_reconnect_within_token_lifetime_rerequests_interaction` in
+`adapter/ph/src/link_state.rs` locks this behavior in.
+([zipline#157](https://github.com/mkolehmainen/zipline/issues/157),
+[zipline#166](https://github.com/mkolehmainen/zipline/issues/166))
 
 
 ## Implementation status
