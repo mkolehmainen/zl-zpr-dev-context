@@ -137,7 +137,11 @@ clearance:                             key-presence: the attribute exists
 ```
 
 `<name>:<value>` matches a single-valued attribute equal to the value **or** a
-multi-valued attribute whose set contains it.
+multi-valued attribute whose set contains it. So when one statement requires two
+values of a multi-valued attribute (a class plus an attribute, a subclass, or a
+trailing `on` clause), the compiler requires the set to contain all of them --
+the same as writing the set form. Two different values of a single-valued
+attribute are a contradiction and fail with `conflicting values for attribute`.
 
 Watch the whitespace: no space may precede the `:` (an error), and a space
 *after* it silently changes the meaning — `clearance: secret` is a
