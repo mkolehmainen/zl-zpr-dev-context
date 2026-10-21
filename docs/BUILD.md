@@ -173,29 +173,46 @@ Caveats:
 
 Two invocations run the netns integration scripts, and they are not the same
 speed. **The recommended one is `zpr-dev build --test netns`**, with `--jobs N`
-to widen the container route:
+to widen it:
 
 ```bash
 zpr-dev build --tip --test netns --jobs 8 --no-tarball
 ```
 
-On a host with netns support (passwordless `sudo`, `valkey-server` on `PATH`)
-it runs the scripts directly on the host; on a host without it, it falls back
-automatically to per-script privileged Docker containers, `--jobs N` at a time
-(default 4), and records the fallback in the emitted manifest — see "Integration
-tests" below and `zpr-dev/docs/specs/spec-003-build.md` §6. Either way the
-scripts run in parallel where that is safe, which is what makes it the fast
+On a host where unprivileged user namespaces work (`unshare -nr true`
+succeeds) and `valkey-server` is on `PATH`, it runs the scripts directly on
+the host, **with no sudo**; otherwise it falls back automatically to
+per-script privileged Docker containers and records the fallback in the
+emitted manifest — see "Integration tests" below and
+`zpr-dev/docs/specs/spec-003-build.md` §6. Either route runs `--jobs N`
+scripts at a time (default 4): each script's namespaces are private to it,
+so parallel runs cannot collide. That parallelism is what makes it the fast
 route.
 
 **`make docker-test` (in `zl-zpr-core`, also `make integration-test-docker` at
-its root) is the fallback for hosts without netns support and without
-`zpr-dev`**, and it is much slower: it runs every script serially inside a
+its root) is the fallback for hosts without unprivileged user namespaces and
+without `zpr-dev`**, and it is much slower: it runs every script serially inside a
 single privileged container. Reach for it when you need one script under
 debugging (`TEST=<script>`), a root shell (`docker-shell`), or a run outside
 any build; do not reach for it as the routine tier run.
 
-Measured on this workspace's host (8 cores, Docker fallback route in both
-cases, 2026-09-29):
+Measured on this workspace's host (8 cores, 2026-10-21), the eleven
+netns scripts only (no repo builds), 4-wide, against the same binaries
+(zipline#191's acceptance runs):
+
+| Route | Wall clock |
+|---|---|
+| Host, unprivileged user namespaces, no sudo (`./<script>`, `xargs -P4`) | **6:00** (360s) |
+| Docker fallback (`make docker-test TEST=<script>`, `xargs -P4`, image cached) | **6:33** (393s) |
+
+The host route is a little faster, with no image to build or containers to
+start, and it is the one `zpr-dev` picks whenever user namespaces work. The
+difference is small because most of each script's time is fixed `sleep`s:
+the tier takes about as long as its slowest script,
+`one-node-policy-reauth-test.sh`. Width matters far more than the route.
+
+Earlier measurements on the same host (8 cores, Docker fallback route in
+both cases, 2026-09-29, before the host route could run in parallel):
 
 | Invocation | What ran | Wall clock |
 |---|---|---|
@@ -580,7 +597,7 @@ workspace does not check out.
 | Tier | What runs | Prerequisites | Probe-gated |
 |---|---|---|---|
 | `unit` | `make test` per built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | no |
-| `netns` | the ten `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, and either (passwordless `sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | yes |
+| `netns` | the ten `zl-zpr-core/integration-test/` scripts, against `dist/` binaries | Linux, and either (unprivileged user namespaces, `valkey-server`, `python3`) or a reachable Docker daemon | yes |
 | `docker` | `dns-demo` deploy + `test-dns.sh` + `docker compose down -v` | `docker`, `docker compose` | yes |
 
 `--test` selects: `none`, `default` (the flag absent means the same), `all`,
@@ -697,13 +714,30 @@ The OIDC tests need a `vs` built from a `zl-zpr-visaservice` that carries the
 feature under test; a stale binary left in `integration-test/` from an earlier
 checkout is the usual cause of a confusing failure.
 
-These tests create network namespaces and veth pairs with `sudo ip`, so they
-are Linux-only and need passwordless `sudo` to run unattended.
+These tests are Linux-only and **need no sudo** (zipline#189). Each script
+re-execs itself in an unprivileged user + network namespace (`unshare -nr`)
+where it is mapped root, builds its network out of anonymous namespaces
+pinned by holder processes, and runs `ph` as that namespace's root. A
+crashed run leaves nothing behind in `/run/netns`, and two runs at once
+cannot see each other. The one host prerequisite is that unprivileged user
+namespaces are allowed. Ubuntu 24.04+ blocks them through AppArmor; the fix
+is a one-time admin step, which the scripts print when it is missing:
 
-**Without host `sudo`: run them in Docker.** `zpr-dev build` does this
-automatically: when the host route's prerequisites are missing but a Docker
-daemon is reachable, it runs the netns tier through `make docker-test` per
-script, four containers at a time, and records the provenance as `sudo: container` in the emitted
+```bash
+echo kernel.apparmor_restrict_unprivileged_userns=0 | sudo tee /etc/sysctl.d/60-zpr-userns.conf
+sudo sysctl --system
+```
+
+Do not start the scripts under `sudo`: they gain nothing from it.
+(`remote-node-host-env.sh`, the host side of the manual Windows/macOS node
+documents, is the exception: it stays root-based, because its namespaces
+must be reachable from a real remote machine — see its header.)
+
+**Where user namespaces are blocked: run them in Docker.** `zpr-dev build`
+does this automatically: when the host route's prerequisites are missing but
+a Docker daemon is reachable, it runs the netns tier through `make
+docker-test` per script, four containers at a time, and records the
+provenance as `privilege: container` in the emitted
 manifest, with a coverage note naming the real host gap (see
 `zpr-dev/docs/specs/spec-003-build.md` §6). For runs outside a build, the
 same route is available by hand: `integration-test/Makefile` runs the
@@ -723,7 +757,7 @@ make -C integration-test docker-shell                       # root shell for deb
 line. Note this route runs the scripts **serially in one container** — for a
 full-tier run prefer `zpr-dev build --test netns --jobs N`, which parallelizes
 it; see "Integration tier: how to run it" above for the measured difference.
-The container runs `--privileged` because `ip netns`, `/dev/net/tun` and
+The container runs `--privileged` because `unshare`, `/dev/net/tun` and
 io_uring (which Docker's default seccomp profile blocks) all need it. If the
 host's glibc is newer than the image's, the binaries will not load; pass
 `BASE_IMAGE=ubuntu:<host release>` to `docker-image` / `docker-test`.

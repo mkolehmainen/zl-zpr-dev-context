@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.7.0
+version: 2.7.1
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -702,10 +702,12 @@ A task is done only when ALL of these hold for the PR:
    `connection_control`, or the adapter's dock/address paths — the unit gate is NOT
    sufficient: the netns integration tier is part of THIS condition. The routine
    tier run is **`zpr-dev build --test netns`** with a manifest pinning the branch
-   under test (`--jobs N` to widen; without host netns/sudo it falls back to
-   per-script containers, 4-wide by default). For a lightweight single-PR rerun
-   that skips the repo builds, run one `make -C integration-test docker-test
-   TEST=<script>` per script in `zl-zpr-core`, at most 4 at once (e.g.
+   under test (`--jobs N` to widen, default 4; the scripts need no sudo, and on
+   a host without unprivileged user namespaces it falls back to per-script
+   containers). For a lightweight single-PR rerun that skips the repo builds,
+   run each script directly (`./<script>`, no sudo) or as one `make -C
+   integration-test docker-test TEST=<script>` per script in `zl-zpr-core`,
+   at most 4 at once (e.g.
    `xargs -P4`), one log per script with a PASS/FAIL line each — width 4 matches
    the tested `zpr-dev` limit (spec-003 §6), because some scripts are
    timing-sensitive. **The rerun must run the PR's binaries, or it does not
