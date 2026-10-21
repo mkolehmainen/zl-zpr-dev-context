@@ -1807,27 +1807,32 @@ fn execute_build(inputs: &BuildInputs) -> Result<bool> {
                 // skip_reason is None only when the stored runner is
                 // Some(Ok(..)); the defensive default cannot be reached
                 // while that invariant holds.
-                let runner = match &inputs.netns_runner {
+                let selected = match &inputs.netns_runner {
                     Some(Ok(runner)) => runner.clone(),
-                    _ => tiers::NetnsRunner::Host,
+                    _ => tiers::NetnsRunner::Host {
+                        docker_fallback: Err("netns runner selection missing".to_string()),
+                    },
                 };
-                // The container route's floor (zipline#93, contract 1): the
-                // worktree's Makefile must forward the environment. Checked
-                // here, not at the gate, because the worktree does not exist
-                // at gate time. `check_gate` keeps the explicitness rule:
-                // a default selection skips visibly, an explicit `--test
-                // netns` / `--test all` errors.
-                let floor = match &runner {
-                    tiers::NetnsRunner::Container { .. } => {
-                        let sha = inputs
-                            .resolved
-                            .iter()
-                            .find(|entry| entry.repo == "zl-zpr-core")
-                            .map(|entry| entry.sha.get(..7).unwrap_or(&entry.sha).to_string())
-                            .unwrap_or_default();
-                        tiers::docker_runner_floor(&core, &sha)
-                    }
-                    tiers::NetnsRunner::Host => Ok(()),
+                let sha = inputs
+                    .resolved
+                    .iter()
+                    .find(|entry| entry.repo == "zl-zpr-core")
+                    .map(|entry| entry.sha.get(..7).unwrap_or(&entry.sha).to_string())
+                    .unwrap_or_default();
+                // The routes' floors, checked here rather than at the gate
+                // because the worktree does not exist at gate time: the
+                // container route needs a Makefile that forwards the
+                // environment (zipline#93, contract 1), and the host route
+                // needs the unprivileged harness, or a build set pinning an
+                // older core would run sudo-based, shared-name scripts on
+                // the host (review of zl-zpr-dev-context#65). A host
+                // selection on an older worktree falls to the container
+                // when Docker answered at probe time. `check_gate` keeps the
+                // explicitness rule: a default selection skips visibly, an
+                // explicit `--test netns` / `--test all` errors.
+                let (runner, floor) = match tiers::apply_runner_floors(&selected, &core, &sha) {
+                    Ok(runner) => (runner, Ok(())),
+                    Err(reason) => (selected, Err(reason)),
                 };
                 if let Err(reason) = floor {
                     match tiers::check_gate(
@@ -3691,8 +3696,12 @@ allow_pin_drift:
             repos: BTreeMap::new(),
         };
 
-        let userns =
-            Tier::from_outcome(&outcome).with_privilege(tiers::NetnsRunner::Host.privilege());
+        let userns = Tier::from_outcome(&outcome).with_privilege(
+            tiers::NetnsRunner::Host {
+                docker_fallback: Ok(()),
+            }
+            .privilege(),
+        );
         let yaml = serde_yaml_ng::to_string(&userns).unwrap();
         assert!(yaml.contains("privilege: userns"), "{yaml}");
 
@@ -3837,7 +3846,7 @@ allow_pin_drift:
     /// records how it was privileged.
     #[test]
     fn execute_build_derives_the_manifest_provenance_from_the_host_runner() {
-        let (_tmp, workspace, _sha) = workspace_with_repo();
+        let (_tmp, workspace, _sha) = workspace_with_userns_harness_repo();
         let set = one_repo_set("main");
         let resolved = resolve_set(&workspace, &set).unwrap();
         let manifest = workspace_manifest();
@@ -3850,7 +3859,9 @@ allow_pin_drift:
         let mut in_ = inputs(
             &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
         );
-        in_.netns_runner = Some(Ok(tiers::NetnsRunner::Host));
+        in_.netns_runner = Some(Ok(tiers::NetnsRunner::Host {
+            docker_fallback: Ok(()),
+        }));
         let ok = execute_build(&in_).unwrap();
         assert!(!ok, "the fixture has no scripts, so the tier must fail");
 
@@ -3864,6 +3875,121 @@ allow_pin_drift:
             !text.contains("privileged Docker container"),
             "a host run must not claim the container route: {text}"
         );
+    }
+
+    /// Commits `files` (path relative to the repository, contents) into
+    /// the fixture `zl-zpr-core` checkout of `workspace` and pushes them,
+    /// returning the new sha.
+    fn commit_into_core(workspace: &Path, files: &[(&str, &str)], message: &str) -> String {
+        let repo = workspace.join("zl-zpr-core");
+        for (path, contents) in files {
+            let file = repo.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, contents).unwrap();
+        }
+        setup_git(&repo, &["config", "user.name", "zpr-dev tests"]);
+        setup_git(&repo, &["config", "user.email", "tests@example.invalid"]);
+        setup_git(&repo, &["config", "commit.gpgsign", "false"]);
+        setup_git(&repo, &["add", "-A"]);
+        setup_git(&repo, &["commit", "-m", message]);
+        setup_git(&repo, &["push", "origin", "HEAD:main"]);
+        setup_git(&repo, &["rev-parse", "HEAD"])
+    }
+
+    /// [`workspace_with_repo`] whose `zl-zpr-core` carries the unprivileged
+    /// harness marker (`pkill_own` in `integration-test/lib/common_funcs.sh`,
+    /// zipline#191), so a host selection passes the host floor.
+    fn workspace_with_userns_harness_repo() -> (tempfile::TempDir, PathBuf, String) {
+        let (tmp, workspace, _seed) = workspace_with_repo();
+        let sha = commit_into_core(
+            &workspace,
+            &[(
+                "integration-test/lib/common_funcs.sh",
+                "function pkill_own() {\n  pkill --ns $$ --nslist user \"$@\"\n}\n",
+            )],
+            "unprivileged harness",
+        );
+        (tmp, workspace, sha)
+    }
+
+    /// A host selection on a worktree that predates the unprivileged
+    /// harness, with no Docker fallback, is refused at execution (review of
+    /// zl-zpr-dev-context#65): an explicit request fails the run, the
+    /// manifest records the tier skipped with both gaps, and no `userns`
+    /// privilege is claimed for scripts that never ran.
+    #[test]
+    fn execute_build_refuses_the_host_route_on_a_pre_conversion_worktree() {
+        let (_tmp, workspace, sha) = workspace_with_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("netns")).unwrap();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.netns_runner = Some(Ok(tiers::NetnsRunner::Host {
+            docker_fallback: Err("docker not found".to_string()),
+        }));
+        let ok = execute_build(&in_).unwrap();
+        assert!(!ok, "an explicit request that cannot run must fail the run");
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("status: skipped"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "zl-zpr-core @ {} predates the unprivileged netns harness",
+                &sha[..7]
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("docker fallback unavailable: docker not found"),
+            "{text}"
+        );
+        assert!(!text.contains("privilege:"), "{text}");
+    }
+
+    /// The same pre-conversion worktree with a usable Docker fallback runs
+    /// through the container instead (review of zl-zpr-dev-context#65): the
+    /// manifest records `privilege: container`, and the coverage note
+    /// quotes the host floor as the reason the host route was unavailable.
+    #[test]
+    fn execute_build_sends_a_pre_conversion_host_selection_to_the_container() {
+        let (_tmp, workspace, _sha) = workspace_with_docker_runner_repo();
+        let set = one_repo_set("main");
+        let resolved = resolve_set(&workspace, &set).unwrap();
+        let manifest = workspace_manifest();
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("t");
+        prepare_build_dir(&build_dir, false, &workspace, &["zl-zpr-core"]).unwrap();
+
+        let recipes = vec![ok_recipe()];
+        let selection = tiers::Selection::parse(Some("netns")).unwrap();
+        let mut in_ = inputs(
+            &set, &resolved, &workspace, &manifest, &build_dir, &recipes, true, false, &selection,
+        );
+        in_.netns_runner = Some(Ok(tiers::NetnsRunner::Host {
+            docker_fallback: Ok(()),
+        }));
+        execute_build(&in_).unwrap();
+
+        let text = std::fs::read_to_string(build_dir.join("dist").join("zpr-set-t.yaml")).unwrap();
+        assert!(text.contains("privilege: container"), "{text}");
+        assert!(!text.contains("privilege: userns"), "{text}");
+        assert!(
+            text.contains("not on the host (host route unavailable: zl-zpr-core @ ")
+                && text.contains("predates the unprivileged netns harness"),
+            "{text}"
+        );
+        let log =
+            std::fs::read_to_string(build_dir.join("logs").join("netns-one-node-test.sh.log"))
+                .unwrap();
+        assert!(log.contains("container ran one-node-test.sh"), "{log}");
     }
 
     /// [`workspace_with_repo`] whose committed repository also carries an

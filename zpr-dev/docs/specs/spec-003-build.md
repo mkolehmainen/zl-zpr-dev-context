@@ -401,10 +401,17 @@ risk. Everything is a release build. The table is in claim order:
   coverage note quoting the host route's real failure — `netns integration
   tests ran in a privileged Docker container, not on the host (host route
   unavailable: <reason>)` — so a green manifest never implies the tests ran
-  on the host. The container route requires a `zl-zpr-core` worktree at or
-  after `c163628`, the commit whose `integration-test/Makefile` defines
-  `FORWARD_ENV`; an older worktree refuses the route with a reason naming
-  that floor.
+  on the host. Each route also has a floor on the `zl-zpr-core` worktree,
+  checked once the worktree exists. The host route requires a worktree at
+  or after `3ad48ed` (zipline#191), whose `integration-test/lib/common_funcs.sh`
+  defines `pkill_own`; an older worktree's scripts still call `sudo` and
+  share fixed namespace names. A host selection on an older worktree falls
+  back to the container when a Docker daemon answered at probe time,
+  quoting the host floor as the host route's failure; otherwise the tier
+  skips or errors with both gaps. The container route requires a worktree
+  at or after `c163628`, the commit whose `integration-test/Makefile`
+  defines `FORWARD_ENV`; an older worktree refuses the route with a reason
+  naming that floor.
 - `a2a-pubkey-test.sh` needs a `ph` built with `enable-security-testing`;
   that binary must never be staged into `dist/`.
 - The `docker` tier always runs `docker compose down -v`, pass or fail.
@@ -679,6 +686,17 @@ the host's network namespace (the container runs `--network host`) and the
 host NATs for them. An unprivileged user namespace has no `CAP_NET_ADMIN`
 over the host's network namespace. It is a manual tool, not part of this
 tier. ([zipline#191](https://github.com/mkolehmainen/zipline/issues/191))
+
+**The host route has a worktree floor, like the container route.** The
+route is chosen from live host probes before any worktree exists, but a
+build set can pin a `zl-zpr-core` from before zipline#191, whose scripts
+still use `sudo` and fixed namespace names; run on the host, now four at
+once, they fail or collide. So once the worktree exists the host route
+requires `pkill_own` in `common_funcs.sh` — added by `3ad48ed`, the same
+commit that converted every script — and an older worktree falls back to
+the container, or skips, exactly as a probe miss would. Found in review of
+zl-zpr-dev-context#65; the default build set at the time pinned such a core.
+([zipline#192](https://github.com/mkolehmainen/zipline/issues/192))
 
 **`--prompt-for-sudo` is retired, and the gate probes `unshare -nr true`.**
 Nothing in the tier uses sudo any more, so the prompt, the credential

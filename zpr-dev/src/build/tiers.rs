@@ -291,7 +291,16 @@ pub fn netns_gate(probes: &Probes) -> TierGate {
 pub enum NetnsRunner {
     /// The host route: the scripts run directly, each in its own
     /// unprivileged user + network namespace (manifest `privilege: userns`).
-    Host,
+    ///
+    /// `docker_fallback` records whether the container route was usable
+    /// when the host was probed: `Ok(())` when a Docker daemon answered,
+    /// otherwise `Err` with the docker gap (`docker not found` / `docker
+    /// daemon not reachable`). The host route is chosen from live probes
+    /// before any worktree exists, so [`apply_runner_floors`] can still
+    /// find that the worktree's scripts predate the unprivileged harness;
+    /// this is what it falls back to then (review of
+    /// zl-zpr-dev-context#65).
+    Host { docker_fallback: Result<(), String> },
     /// The container fallback. `host_reason` is the host route's own
     /// missing-prerequisite text — the same words the host skip would have
     /// used — because the container can be selected for unusable user
@@ -346,25 +355,38 @@ pub fn select_netns_runner(probes: &Probes) -> Result<NetnsRunner, String> {
                 .to_string(),
         );
     }
+    // Why the container route is unusable, if it is. The wording matches
+    // the docker tier's own gate.
+    let docker_gap = if !probes.docker {
+        Some("docker not found")
+    } else if !probes.docker_daemon {
+        Some("docker daemon not reachable")
+    } else {
+        None
+    };
     let Some(host_reason) = host_route_reason(probes) else {
         // The host route can run, so it wins outright — the fallback is a
         // fallback, never a preference (approved decision: automatic, no
-        // flag).
-        return Ok(NetnsRunner::Host);
+        // flag). Whether the fallback is usable is still recorded, for the
+        // execution-time host floor.
+        return Ok(NetnsRunner::Host {
+            docker_fallback: docker_gap.map_or(Ok(()), |gap| Err(gap.to_string())),
+        });
     };
-    if probes.docker && probes.docker_daemon {
-        return Ok(NetnsRunner::Container { host_reason });
+    match docker_gap {
+        None => Ok(NetnsRunner::Container { host_reason }),
+        // Neither route: the reason names both gaps so the operator can fix
+        // either one.
+        Some(gap) => Err(no_route_reason(&host_reason, gap)),
     }
-    // Neither route: the reason names both gaps so the operator can fix
-    // either one. The docker wording matches the docker tier's own gate.
-    let docker_gap = if probes.docker {
-        "docker daemon not reachable"
-    } else {
-        "docker not found"
-    };
-    Err(format!(
-        "{host_reason}; docker fallback unavailable: {docker_gap}"
-    ))
+}
+
+/// The two-route skip reason: the host route's gap and the docker
+/// route's, so the operator can fix either one. Shared by the probe-time
+/// selector and the execution-time floors so the two never word it
+/// differently.
+fn no_route_reason(host_reason: &str, docker_gap: &str) -> String {
+    format!("{host_reason}; docker fallback unavailable: {docker_gap}")
 }
 
 /// How the netns tier was privileged, recorded in the emitted manifest
@@ -385,7 +407,7 @@ impl NetnsRunner {
     /// The manifest's [`Privilege`] for a tier that ran on this route.
     pub fn privilege(&self) -> Privilege {
         match self {
-            NetnsRunner::Host => Privilege::Userns,
+            NetnsRunner::Host { .. } => Privilege::Userns,
             NetnsRunner::Container { .. } => Privilege::Container,
         }
     }
@@ -398,7 +420,7 @@ impl NetnsRunner {
 /// so it is testable with injected probes.
 pub fn netns_dry_run_text(probes: &Probes) -> String {
     match select_netns_runner(probes) {
-        Ok(NetnsRunner::Host) => "prerequisites present".to_string(),
+        Ok(NetnsRunner::Host { .. }) => "prerequisites present".to_string(),
         Ok(NetnsRunner::Container { host_reason }) => {
             format!("would run in docker (host route unavailable: {host_reason})")
         }
@@ -412,7 +434,7 @@ pub fn netns_dry_run_text(probes: &Probes) -> String {
 /// run sees the cause without opening the manifest.
 pub fn netns_tier_header(runner: &NetnsRunner) -> String {
     match runner {
-        NetnsRunner::Host => "netns tier:".to_string(),
+        NetnsRunner::Host { .. } => "netns tier:".to_string(),
         NetnsRunner::Container { host_reason } => {
             format!("netns tier (docker fallback; host route unavailable: {host_reason}):")
         }
@@ -438,6 +460,78 @@ pub fn docker_runner_floor(core_worktree: &Path, head_sha: &str) -> Result<(), S
         "zl-zpr-core @ {head_sha} predates the Docker runner \
          (integration-test/Makefile with FORWARD_ENV, zl-zpr-core c163628)"
     ))
+}
+
+/// The first `zl-zpr-core` commit whose integration scripts can run on the
+/// host route: every script re-execs itself under `unshare -nr`, needs no
+/// sudo, and scopes its `pkill`/`pgrep` to its own user namespace, so they
+/// run unprivileged and in parallel (zipline#191, merged as #83).
+pub const HOST_RUNNER_FLOOR_COMMIT: &str = "3ad48ed";
+
+/// The host route's floor check, the counterpart of
+/// [`docker_runner_floor`] (review of zl-zpr-dev-context#65): the
+/// `zl-zpr-core` worktree's `integration-test/lib/common_funcs.sh` must
+/// define `pkill_own`. That function landed in
+/// [`HOST_RUNNER_FLOOR_COMMIT`], the same commit that converted every
+/// script and removed the transitional sudo path, so its presence is the
+/// marker that the whole harness is unprivileged. An older worktree — a
+/// build set pinning core from before zipline#191 — still calls `sudo` and
+/// shares fixed `/run/netns` names, so it must not run on the host, let
+/// alone four at a time. Pure over the filesystem: no git.
+pub fn host_runner_floor(core_worktree: &Path, head_sha: &str) -> Result<(), String> {
+    let common_funcs = core_worktree
+        .join("integration-test")
+        .join("lib")
+        .join("common_funcs.sh");
+    let unprivileged_harness = std::fs::read_to_string(&common_funcs)
+        .map(|text| text.contains("function pkill_own"))
+        .unwrap_or(false);
+    if unprivileged_harness {
+        return Ok(());
+    }
+    Err(format!(
+        "zl-zpr-core @ {head_sha} predates the unprivileged netns harness \
+         (integration-test/lib/common_funcs.sh with pkill_own, zl-zpr-core \
+         {HOST_RUNNER_FLOOR_COMMIT})"
+    ))
+}
+
+/// Applies the execution-time floors to the probe-time route selection,
+/// once the `zl-zpr-core` worktree exists, and returns the route that
+/// actually runs:
+///
+/// - `Host` on a worktree that passes [`host_runner_floor`] stays `Host`.
+/// - `Host` on an older worktree falls back to `Container`, with the host
+///   floor's failure as `host_reason`, when a Docker daemon answered at
+///   probe time and the worktree also passes [`docker_runner_floor`];
+///   otherwise it is the two-route `Err`.
+/// - `Container` must pass [`docker_runner_floor`]; its failure is returned
+///   as is.
+///
+/// The caller turns an `Err` into a skip or, for an explicit request, an
+/// error, as for any gate (spec-003 §6). Pure over the filesystem.
+pub fn apply_runner_floors(
+    runner: &NetnsRunner,
+    core_worktree: &Path,
+    head_sha: &str,
+) -> Result<NetnsRunner, String> {
+    match runner {
+        NetnsRunner::Host { docker_fallback } => {
+            let Err(host_reason) = host_runner_floor(core_worktree, head_sha) else {
+                return Ok(runner.clone());
+            };
+            if let Err(docker_gap) = docker_fallback {
+                return Err(no_route_reason(&host_reason, docker_gap));
+            }
+            docker_runner_floor(core_worktree, head_sha)
+                .map_err(|docker_gap| no_route_reason(&host_reason, &docker_gap))?;
+            Ok(NetnsRunner::Container { host_reason })
+        }
+        NetnsRunner::Container { .. } => {
+            docker_runner_floor(core_worktree, head_sha)?;
+            Ok(runner.clone())
+        }
+    }
 }
 
 /// Gates the docker tier: `docker`, the compose v2 plugin, and a reachable
@@ -1652,7 +1746,12 @@ mod tests {
     #[test]
     fn selector_picks_the_host_when_both_routes_work() {
         let runner = select_netns_runner(&all_present()).unwrap();
-        assert_eq!(runner, NetnsRunner::Host);
+        assert_eq!(
+            runner,
+            NetnsRunner::Host {
+                docker_fallback: Ok(())
+            }
+        );
     }
 
     /// Unusable user namespaces alone (`unshare -nr` blocked, e.g. by
@@ -1788,7 +1887,7 @@ mod tests {
     /// sees the cause without opening the manifest.
     #[test]
     fn netns_tier_header_names_the_docker_fallback_with_the_host_reason() {
-        assert_eq!(netns_tier_header(&NetnsRunner::Host), "netns tier:");
+        assert_eq!(netns_tier_header(&host_runner()), "netns tier:");
         assert_eq!(
             netns_tier_header(&NetnsRunner::Container {
                 host_reason: "missing: valkey-server".to_string()
@@ -1838,6 +1937,174 @@ mod tests {
         assert_eq!(
             docker_runner_floor(tmp.path(), "c0ffee1"),
             Err(expected.to_string())
+        );
+    }
+
+    /// A `Host` selection whose Docker fallback was usable at probe time.
+    fn host_runner() -> NetnsRunner {
+        NetnsRunner::Host {
+            docker_fallback: Ok(()),
+        }
+    }
+
+    /// Writes `integration-test/lib/common_funcs.sh` with `body` into
+    /// `core`, the shape [`host_runner_floor`] reads.
+    fn write_common_funcs(core: &Path, body: &str) {
+        let lib = core.join("integration-test").join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("common_funcs.sh"), body).unwrap();
+    }
+
+    /// Writes an `integration-test/Makefile` that passes
+    /// [`docker_runner_floor`] into `core`.
+    fn write_docker_runner_makefile(core: &Path) {
+        let dir = core.join("integration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Makefile"), "FORWARD_ENV := PH_BIN\n").unwrap();
+    }
+
+    /// The selector records whether the Docker fallback was usable when it
+    /// picks the host, so the execution-time host floor can fall back
+    /// (review of zl-zpr-dev-context#65).
+    #[test]
+    fn selector_records_the_docker_fallback_on_a_host_selection() {
+        let mut probes = all_present();
+        probes.docker_daemon = false;
+        assert_eq!(
+            select_netns_runner(&probes).unwrap(),
+            NetnsRunner::Host {
+                docker_fallback: Err("docker daemon not reachable".to_string())
+            }
+        );
+        probes.docker = false;
+        assert_eq!(
+            select_netns_runner(&probes).unwrap(),
+            NetnsRunner::Host {
+                docker_fallback: Err("docker not found".to_string())
+            }
+        );
+    }
+
+    /// The host floor passes a worktree whose harness defines `pkill_own`
+    /// (zipline#191 and later), and fails an older one with a reason naming
+    /// the sha and the floor commit: a missing `common_funcs.sh`, the
+    /// pre-#190 sudo harness, and the #190 transitional harness, which has
+    /// `enter_test_namespace` but still runs unconverted scripts under sudo.
+    #[test]
+    fn host_runner_floor_requires_the_unprivileged_harness() {
+        let expected = "zl-zpr-core @ c0ffee1 predates the unprivileged netns harness \
+                        (integration-test/lib/common_funcs.sh with pkill_own, zl-zpr-core 3ad48ed)";
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            host_runner_floor(tmp.path(), "c0ffee1"),
+            Err(expected.to_string())
+        );
+        write_common_funcs(
+            tmp.path(),
+            "function create_network() {\n  sudo ip netns add zpr-node\n}\n",
+        );
+        assert_eq!(
+            host_runner_floor(tmp.path(), "c0ffee1"),
+            Err(expected.to_string())
+        );
+        write_common_funcs(tmp.path(), "function enter_test_namespace() {\n  :\n}\n");
+        assert_eq!(
+            host_runner_floor(tmp.path(), "c0ffee1"),
+            Err(expected.to_string())
+        );
+        write_common_funcs(tmp.path(), "function pkill_own() {\n  :\n}\n");
+        assert_eq!(host_runner_floor(tmp.path(), "c0ffee1"), Ok(()));
+    }
+
+    /// A host selection on a worktree that passes the host floor runs on
+    /// the host, whatever the fallback.
+    #[test]
+    fn floors_keep_the_host_route_on_a_converted_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_common_funcs(tmp.path(), "function pkill_own() {\n  :\n}\n");
+        let runner = NetnsRunner::Host {
+            docker_fallback: Err("docker not found".to_string()),
+        };
+        assert_eq!(
+            apply_runner_floors(&runner, tmp.path(), "c0ffee1"),
+            Ok(runner)
+        );
+    }
+
+    /// A host selection on a pre-zipline#191 worktree must not run its
+    /// sudo-based, shared-name scripts on the host (review of
+    /// zl-zpr-dev-context#65): it falls back to the container, quoting the
+    /// host floor's failure, when Docker answered and the worktree passes
+    /// the Docker floor.
+    #[test]
+    fn floors_send_a_pre_conversion_worktree_to_the_container() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_docker_runner_makefile(tmp.path());
+        let floored = apply_runner_floors(&host_runner(), tmp.path(), "c0ffee1").unwrap();
+        let NetnsRunner::Container { host_reason } = floored else {
+            panic!("expected the container route, got {floored:?}");
+        };
+        assert!(
+            host_reason.contains("predates the unprivileged netns harness"),
+            "{host_reason}"
+        );
+        assert_eq!(floored_privilege(tmp.path()), Privilege::Container);
+    }
+
+    /// The privilege a host selection ends up with on `core`.
+    fn floored_privilege(core: &Path) -> Privilege {
+        apply_runner_floors(&host_runner(), core, "c0ffee1")
+            .unwrap()
+            .privilege()
+    }
+
+    /// With no usable fallback a pre-conversion worktree is the two-route
+    /// `Err`, naming the host floor and the docker gap — and so is one
+    /// whose Makefile also predates the Docker runner.
+    #[test]
+    fn floors_refuse_a_pre_conversion_worktree_without_a_usable_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let no_docker = NetnsRunner::Host {
+            docker_fallback: Err("docker not found".to_string()),
+        };
+        let reason = apply_runner_floors(&no_docker, tmp.path(), "c0ffee1").unwrap_err();
+        assert!(
+            reason.contains("predates the unprivileged netns harness"),
+            "{reason}"
+        );
+        assert!(
+            reason.ends_with("; docker fallback unavailable: docker not found"),
+            "{reason}"
+        );
+
+        let reason = apply_runner_floors(&host_runner(), tmp.path(), "c0ffee1").unwrap_err();
+        assert!(
+            reason.contains("predates the unprivileged netns harness"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains(
+                "docker fallback unavailable: zl-zpr-core @ c0ffee1 predates the Docker runner"
+            ),
+            "{reason}"
+        );
+    }
+
+    /// A container selection keeps its own floor and its own reason.
+    #[test]
+    fn floors_check_a_container_selection_against_the_docker_floor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let container = NetnsRunner::Container {
+            host_reason: "missing: python3".to_string(),
+        };
+        assert_eq!(
+            apply_runner_floors(&container, tmp.path(), "c0ffee1"),
+            docker_runner_floor(tmp.path(), "c0ffee1").map(|()| container.clone())
+        );
+        write_docker_runner_makefile(tmp.path());
+        assert_eq!(
+            apply_runner_floors(&container, tmp.path(), "c0ffee1"),
+            Ok(container)
         );
     }
 
@@ -1949,7 +2216,7 @@ mod tests {
             )
             .expect("a fixture-free plan is clean")
         };
-        for runner in [&container, &NetnsRunner::Host] {
+        for runner in [&container, &host_runner()] {
             assert_eq!(
                 plan(runner, six).jobs,
                 6,
@@ -1974,7 +2241,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host,
+            &host_runner(),
             Path::new("/b"),
             None,
         )
@@ -2039,7 +2306,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host,
+            &host_runner(),
             Path::new("/b"),
             None,
         )
@@ -2102,7 +2369,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host,
+            &host_runner(),
             Path::new("/b"),
             None,
         )
@@ -2227,7 +2494,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host,
+            &host_runner(),
             Path::new("/b"),
             None,
         )
@@ -2261,7 +2528,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host,
+            &host_runner(),
             Path::new("/b"),
             None,
         )
@@ -2376,7 +2643,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             true,
-            &NetnsRunner::Host,
+            &host_runner(),
             Path::new("/b"),
             None,
         )
@@ -2402,7 +2669,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host,
+            &host_runner(),
             Path::new("/b"),
             None,
         )
