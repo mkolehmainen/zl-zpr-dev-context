@@ -164,9 +164,13 @@ pub fn label(tier: &str) -> &'static str {
 pub struct Probes {
     /// The target OS is Linux (the netns scripts create network namespaces).
     pub linux: bool,
-    /// `sudo -n true` succeeded: sudo works without prompting. The probe is
-    /// read-only — `-n` never prompts and `true` changes nothing.
-    pub passwordless_sudo: bool,
+    /// `unshare -nr true` succeeded: this user may create an unprivileged
+    /// user + network namespace, which is all the netns scripts need since
+    /// they re-exec themselves under `unshare -nr` (zipline#190/#191/#192).
+    /// On Ubuntu 24.04+ AppArmor blocks this unless
+    /// `kernel.apparmor_restrict_unprivileged_userns=0`. The probe is
+    /// read-only: the namespaces exist only for the lifetime of `true`.
+    pub unprivileged_userns: bool,
     /// Where `valkey-server` is: `$VALKEY_SERVER_BIN` when set (the same
     /// override the scripts honour), otherwise the first hit on `PATH`.
     pub valkey_server: Option<PathBuf>,
@@ -181,42 +185,22 @@ pub struct Probes {
     /// PATH, like `docker_compose` — a client-less host cannot have a
     /// reachable daemon worth probing.
     pub docker_daemon: bool,
-    /// What `--prompt-for-sudo` achieved, when it was given: `None` when
-    /// the flag was off (zipline#70). `NoTty` is handled by the caller as
-    /// a hard error before any gate is read.
-    pub sudo_prime: Option<PrimeOutcome>,
 }
 
 impl Probes {
-    /// Probes the live host. Every check is read-only, with one deliberate
-    /// exception: `prompt_for_sudo` (the `--prompt-for-sudo` flag,
-    /// zipline#70) runs the [`prime_sudo`] sequence, which may prompt once
-    /// on the operator's terminal and cache the sudo credential. The
-    /// outcome lands in `sudo_prime`; a `NoTty` there is the caller's cue
-    /// to refuse the run before any gate is read.
-    pub fn gather(prompt_for_sudo: bool) -> Probes {
+    /// Probes the live host. Every check is read-only, so gathering is legal
+    /// under `--dry-run` (spec-003 §7.2).
+    pub fn gather() -> Probes {
         let valkey_server = std::env::var_os("VALKEY_SERVER_BIN")
             .map(PathBuf::from)
             .filter(|path| path.is_file())
             .or_else(|| find_on_path("valkey-server"));
         let docker = find_on_path("docker").is_some();
-        // The prime replaces the plain probe when the flag is set —
-        // prime_sudo itself starts with `sudo -n true`, so sudo is probed
-        // exactly once either way.
-        let sudo_prime = prompt_for_sudo.then(|| {
-            use std::io::IsTerminal as _;
-            prime_sudo(&LiveSudo, std::io::stdin().is_terminal())
-        });
-        let passwordless_sudo = match sudo_prime {
-            // Both mean the netns scripts' sudo calls will now succeed
-            // non-interactively; the manifest keeps the two distinct.
-            Some(PrimeOutcome::AlreadyPasswordless) | Some(PrimeOutcome::Primed) => true,
-            Some(_) => false,
-            None => command_succeeds("sudo", &["-n", "true"]),
-        };
         Probes {
             linux: cfg!(target_os = "linux"),
-            passwordless_sudo,
+            // The same invocation the scripts re-exec under, so a pass here
+            // means the scripts' own `unshare -nr` will pass too.
+            unprivileged_userns: command_succeeds("unshare", &["-nr", "true"]),
             valkey_server,
             python3: find_on_path("python3").is_some(),
             docker,
@@ -226,19 +210,8 @@ impl Probes {
             // and asking without a client is a spawn failure, not a probe.
             // Read-only, so legal under --dry-run (spec-003 §7.2).
             docker_daemon: docker && command_succeeds("docker", &["info"]),
-            sudo_prime,
         }
     }
-}
-
-/// Whether `--prompt-for-sudo` should actually prime the sudo credential
-/// cache for this run. The netns tier is the only sudo consumer, so priming
-/// is pointful only when it is selected: a docker-only invocation with the
-/// flag must neither prompt for a password nor fail on a redirected stdin
-/// (PR #15 review, P2 finding on zipline#70). Pure so the decision is
-/// testable without a live sudo.
-pub fn should_prime_sudo(prompt_for_sudo: bool, selection: &Selection) -> bool {
-    prompt_for_sudo && selection.contains("netns")
 }
 
 /// True when running `program args` exits 0, treating a spawn failure as a
@@ -316,31 +289,32 @@ pub fn netns_gate(probes: &Probes) -> TierGate {
 /// no-route case is [`select_netns_runner`]'s `Err`, naming both gaps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetnsRunner {
-    /// The host route, carrying how its sudo was satisfied — the manifest's
-    /// provenance is derived from here (`nopasswd` / `primed`).
-    Host(SudoProvenance),
+    /// The host route: the scripts run directly, each in its own
+    /// unprivileged user + network namespace (manifest `privilege: userns`).
+    Host,
     /// The container fallback. `host_reason` is the host route's own
     /// missing-prerequisite text — the same words the host skip would have
-    /// used — because the container can be selected for a missing sudo *or*
-    /// a missing `valkey-server` / `python3`, and zipline#93's tier header
-    /// and coverage note must quote the real cause, never a fixed
-    /// "no passwordless sudo" (operator amendment on zipline#92).
+    /// used — because the container can be selected for unusable user
+    /// namespaces *or* a missing `valkey-server` / `python3`, and
+    /// zipline#93's tier header and coverage note must quote the real cause,
+    /// never a fixed one (operator amendment on zipline#92).
     Container { host_reason: String },
 }
 
-/// The host route's own missing-prerequisite text: `missing: <gaps>`, plus
-/// the credentials-did-not-cache diagnosis when `--prompt-for-sudo` ran and
-/// bought nothing (zipline#70 Step 3 — retained across the fallback, so the
-/// operator who typed a password still sees why it did not help). `None`
-/// when the host route can run. Linux is deliberately not listed here: the
-/// selector refuses a non-Linux host before routing, because neither route
-/// creates network namespaces elsewhere.
+/// The host route's missing user-namespace prerequisite, worded so the
+/// remedy is discoverable from the failure: on Ubuntu 24.04+ it is the
+/// AppArmor sysctl that blocks unprivileged user namespaces.
+pub const MISSING_USERNS: &str = "unprivileged user namespaces (unshare -nr failed; \
+     on Ubuntu 24.04+ set kernel.apparmor_restrict_unprivileged_userns=0)";
+
+/// The host route's own missing-prerequisite text: `missing: <gaps>`, or
+/// `None` when the host route can run. Linux is deliberately not listed
+/// here: the selector refuses a non-Linux host before routing, because
+/// neither route creates network namespaces elsewhere.
 fn host_route_reason(probes: &Probes) -> Option<String> {
     let mut missing: Vec<&str> = Vec::new();
-    if !probes.passwordless_sudo {
-        // The parenthetical makes the remedy discoverable from the failure
-        // (zipline#70 acceptance).
-        missing.push("passwordless sudo (or pass --prompt-for-sudo)");
+    if !probes.unprivileged_userns {
+        missing.push(MISSING_USERNS);
     }
     if probes.valkey_server.is_none() {
         missing.push("valkey-server");
@@ -351,11 +325,7 @@ fn host_route_reason(probes: &Probes) -> Option<String> {
     if missing.is_empty() {
         return None;
     }
-    let mut reason = format!("missing: {}", missing.join(", "));
-    if probes.sudo_prime == Some(PrimeOutcome::CacheDisabled) {
-        reason.push_str("; sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)");
-    }
-    Some(reason)
+    Some(format!("missing: {}", missing.join(", ")))
 }
 
 /// Decides which route the netns tier takes (zipline#92; the rationale is
@@ -363,10 +333,9 @@ fn host_route_reason(probes: &Probes) -> Option<String> {
 /// otherwise the container is selected when a Docker daemon is reachable —
 /// a `docker` client on PATH with no daemon is not a usable fallback; and
 /// when neither route works the `Err` names both routes' gaps, e.g.
-/// `missing: passwordless sudo (or pass --prompt-for-sudo), valkey-server;
-/// docker fallback unavailable: docker daemon not reachable`. Pure — probes
-/// are injected — so every selection rule is testable without a live docker
-/// or sudo.
+/// `missing: valkey-server; docker fallback unavailable: docker daemon not
+/// reachable`. Pure — probes are injected — so every selection rule is
+/// testable without a live docker or `unshare`.
 pub fn select_netns_runner(probes: &Probes) -> Result<NetnsRunner, String> {
     if !probes.linux {
         // The netns scripts create network namespaces; neither the host
@@ -380,15 +349,8 @@ pub fn select_netns_runner(probes: &Probes) -> Result<NetnsRunner, String> {
     let Some(host_reason) = host_route_reason(probes) else {
         // The host route can run, so it wins outright — the fallback is a
         // fallback, never a preference (approved decision: automatic, no
-        // flag). Primed credentials and a NOPASSWD host stay distinct
-        // provenances (zipline#70).
-        return Ok(NetnsRunner::Host(
-            if probes.sudo_prime == Some(PrimeOutcome::Primed) {
-                SudoProvenance::Primed
-            } else {
-                SudoProvenance::Nopasswd
-            },
-        ));
+        // flag).
+        return Ok(NetnsRunner::Host);
     };
     if probes.docker && probes.docker_daemon {
         return Ok(NetnsRunner::Container { host_reason });
@@ -405,253 +367,42 @@ pub fn select_netns_runner(probes: &Probes) -> Result<NetnsRunner, String> {
     ))
 }
 
-// ---------------------------------------------------------------------------
-// The --prompt-for-sudo prime (zipline#70 steps 2-3)
-// ---------------------------------------------------------------------------
-
-/// The three sudo invocations `--prompt-for-sudo` is allowed to make
-/// (zipline#70 constraint: `sudo -v` / `sudo -n -v` / `sudo -n true` and
-/// nothing else). A trait so [`prime_sudo`] and the refresher are testable
-/// with a scripted fake — real sudo prompts, and a test must never.
-pub trait SudoRunner {
-    /// `sudo -n true`: does sudo work right now without prompting?
-    fn probe(&self) -> bool;
-    /// `sudo -v` with inherited stdio: prompt once on the operator's own
-    /// terminal and cache the credential.
-    fn prime(&self) -> bool;
-    /// `sudo -n -v`: extend the cached credential without prompting.
-    fn refresh(&self) -> bool;
-}
-
-/// The live [`SudoRunner`]: real sudo on the real host.
-pub struct LiveSudo;
-
-impl SudoRunner for LiveSudo {
-    fn probe(&self) -> bool {
-        command_succeeds("sudo", &["-n", "true"])
-    }
-    fn prime(&self) -> bool {
-        // Inherited stdio, deliberately: the prompt must reach the
-        // operator's terminal and read their answer. This is the one place
-        // in the build that is allowed to talk to the tty.
-        std::process::Command::new("sudo")
-            .arg("-v")
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
-    fn refresh(&self) -> bool {
-        command_succeeds("sudo", &["-n", "-v"])
-    }
-}
-
-/// What priming achieved, decided by [`prime_sudo`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrimeOutcome {
-    /// `sudo -n true` already succeeded: nothing to prompt for (approved
-    /// Q2 on zipline#70). The manifest records this run as `nopasswd`.
-    AlreadyPasswordless,
-    /// The prompt ran, and the re-probe confirmed the credential cached.
-    /// The manifest records this run as `primed`.
-    Primed,
-    /// Stdin is not a terminal, so the prompt was refused before it could
-    /// hang or cache against the wrong tty ticket (issue Step 2).
-    NoTty,
-    /// `sudo -v` itself failed — wrong password, or the prompt was aborted.
-    PrimeFailed,
-    /// `sudo -v` succeeded but the re-probe still failed: a sudoers with
-    /// `timestamp_timeout=0` caches nothing, so the prime bought nothing
-    /// (issue Step 3). Degrades to the ordinary skip/error path with a
-    /// note, instead of dying mid-tier.
-    CacheDisabled,
-}
-
-/// Primes sudo's credential cache for the netns tier (zipline#70): probe,
-/// refuse without a tty, prompt once, re-probe. Pure over its inputs —
-/// `stdin_is_tty` is passed in and every sudo call goes through `runner` —
-/// so each outcome is unit-testable without a real prompt.
-pub fn prime_sudo(runner: &dyn SudoRunner, stdin_is_tty: bool) -> PrimeOutcome {
-    if runner.probe() {
-        return PrimeOutcome::AlreadyPasswordless;
-    }
-    if !stdin_is_tty {
-        // tty_tickets keys the credential cache to the controlling tty on
-        // most distros: without one the prompt would hang or cache against
-        // the wrong ticket. Fail fast instead (issue Step 2).
-        return PrimeOutcome::NoTty;
-    }
-    if !runner.prime() {
-        return PrimeOutcome::PrimeFailed;
-    }
-    // The re-probe is what turns timestamp_timeout=0 into a diagnosis
-    // rather than a mid-tier failure four scripts in (issue Step 3).
-    if runner.probe() {
-        PrimeOutcome::Primed
-    } else {
-        PrimeOutcome::CacheDisabled
-    }
-}
-
-/// How the netns tier's sudo was satisfied, recorded in the emitted
-/// manifest (zipline#70 Step 6, approved Q1; zipline#93): a run on primed
-/// credentials is not the same provenance as one on a NOPASSWD host, and a
-/// run as root inside a privileged container is a third — the manifest is
-/// the audit record, and the three are never conflated. Serializes
-/// lowercase: `nopasswd` / `primed` / `container`.
+/// How the netns tier was privileged, recorded in the emitted manifest
+/// (zipline#192) so the audit record says which route actually ran the
+/// scripts. Serializes lowercase: `userns` / `container`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum SudoProvenance {
-    /// `sudo -n true` succeeded on its own: a NOPASSWD (or cached) host.
-    Nopasswd,
-    /// `--prompt-for-sudo` prompted and primed the credential cache.
-    Primed,
+pub enum Privilege {
+    /// The host route: each script ran as the invoking user inside its own
+    /// unprivileged user + network namespace (`unshare -nr`).
+    Userns,
     /// The docker fallback (zipline#93): the scripts ran as root inside the
-    /// privileged container of `make docker-test`, so their `sudo` calls
-    /// were satisfied by already being root — no host credential existed.
+    /// privileged container of `make docker-test`.
     Container,
 }
 
-/// Keeps a primed sudo credential alive across a run that outlives sudo's
-/// timestamp timeout (15 minutes by default; a compile plus eleven netns
-/// scripts routinely does — zipline#70 Step 4): a thread running
-/// `sudo -n -v` on `interval`, from [`SudoRefresher::start`] until
-/// [`SudoRefresher::stop`] or drop. Dropping stops it too, so an early `?`
-/// between the prime and the netns tier cannot leak the thread.
-///
-/// The interval is injected so tests never sleep wall-clock time;
-/// production passes [`SUDO_REFRESH_INTERVAL`].
-pub struct SudoRefresher {
-    // ponytail: an AtomicBool polled once per interval, not a real
-    // cancellation token — stop() can wait up to one full interval for the
-    // thread to notice. Fine at 60s against a 15-minute timeout; replace
-    // with a channel/condvar if the interval ever needs to be long.
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-/// How often the refresher runs `sudo -n -v`: comfortably inside sudo's
-/// default 15-minute timestamp timeout, cheap enough to not matter.
-pub const SUDO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-
-impl SudoRefresher {
-    /// Spawns the refresher thread. Call only after a prime actually ran
-    /// (`PrimeOutcome::Primed`): on a NOPASSWD host there is no credential
-    /// to keep alive, and on a failed prime there is nothing to refresh.
-    pub fn start(
-        runner: std::sync::Arc<dyn SudoRunner + Send + Sync>,
-        interval: std::time::Duration,
-    ) -> SudoRefresher {
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop_flag = stop.clone();
-        let thread = std::thread::spawn(move || {
-            while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                // A failed refresh is not fatal here: the tier's own sudo
-                // calls will surface the failure where it can be seen, in
-                // the per-script log; killing the run from a background
-                // thread would be worse than the failure it predicts.
-                let _ = runner.refresh();
-                // Sleep in short slices so stop() is honoured promptly even
-                // against the production 60s interval.
-                let slice = std::time::Duration::from_millis(200).min(interval.max(
-                    // A zero interval (tests) must still yield, or this
-                    // loop starves the stopping thread.
-                    std::time::Duration::from_millis(1),
-                ));
-                let mut slept = std::time::Duration::ZERO;
-                while slept < interval && !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                    std::thread::sleep(slice);
-                    slept += slice;
-                }
-                if interval.is_zero() {
-                    std::thread::yield_now();
-                }
-            }
-        });
-        SudoRefresher {
-            stop,
-            thread: Some(thread),
-        }
-    }
-
-    /// Stops the thread and joins it: after `stop` returns, no further
-    /// `sudo -n -v` will run. Called when the netns tier finishes; drop
-    /// covers every early-exit path.
-    pub fn stop(mut self) {
-        self.stop_and_join();
-    }
-
-    /// The shared stop-and-join, so `stop()` and `Drop` cannot diverge.
-    fn stop_and_join(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
-            // A panicked refresher thread has nothing to propagate: the
-            // refresh result is already ignored by design.
-            let _ = thread.join();
+impl NetnsRunner {
+    /// The manifest's [`Privilege`] for a tier that ran on this route.
+    pub fn privilege(&self) -> Privilege {
+        match self {
+            NetnsRunner::Host => Privilege::Userns,
+            NetnsRunner::Container { .. } => Privilege::Container,
         }
     }
 }
 
-impl Drop for SudoRefresher {
-    fn drop(&mut self) {
-        self.stop_and_join();
-    }
-}
-
-/// The dry-run report's planned-tier annotation for netns (zipline#70
-/// Step 5; zipline#92 step 5). A dry run never prompts, so when
-/// `--prompt-for-sudo` was given and sudo is the reason netns would take a
-/// different route, say what the real run would do about the password —
-/// without hiding any *other* missing prerequisite, which the prompt cannot
-/// buy. A `Container` selection is reported as *selected and not implemented
-/// yet*: `would run in docker` is only true after zipline#93, and a dry run
-/// must never overstate (operator amendment). Pure, like the gates, so it
-/// is testable with injected probes.
-pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
-    if !prompt_for_sudo || probes.passwordless_sudo {
-        // The flag changes nothing: report the selection verbatim.
-        return match select_netns_runner(probes) {
-            Ok(NetnsRunner::Host(_)) => "prerequisites present".to_string(),
-            Ok(NetnsRunner::Container { host_reason }) => {
-                format!("would run in docker (host route unavailable: {host_reason})")
-            }
-            Err(reason) => reason,
-        };
-    }
-    // The flag would buy sudo. Select as if it already had, and append what
-    // the real run would do about the password.
-    let primed = Probes {
-        passwordless_sudo: true,
-        linux: probes.linux,
-        valkey_server: probes.valkey_server.clone(),
-        python3: probes.python3,
-        docker: probes.docker,
-        docker_compose: probes.docker_compose,
-        docker_daemon: probes.docker_daemon,
-        sudo_prime: None,
-    };
-    match select_netns_runner(&primed) {
-        Ok(NetnsRunner::Host(_)) => {
-            // The prompt is what decides the route: a successful prime runs
-            // on the host, and a failed one falls to the container when the
-            // daemon answers — the flag stays an explicit host request
-            // (zipline#92; spec-003 §10.2).
-            if probes.docker && probes.docker_daemon {
-                "would prompt for sudo (--prompt-for-sudo); \
-                 on failure would fall back to docker"
-                    .to_string()
-            } else {
-                "would prompt for sudo (--prompt-for-sudo)".to_string()
-            }
+/// The dry-run report's planned-tier annotation for netns (zipline#92
+/// step 5): the selection, stated without overstating — `prerequisites
+/// present` for the host route, `would run in docker` with the host route's
+/// real gap for the fallback, or the no-route reason. Pure, like the gates,
+/// so it is testable with injected probes.
+pub fn netns_dry_run_text(probes: &Probes) -> String {
+    match select_netns_runner(probes) {
+        Ok(NetnsRunner::Host) => "prerequisites present".to_string(),
+        Ok(NetnsRunner::Container { host_reason }) => {
+            format!("would run in docker (host route unavailable: {host_reason})")
         }
-        // Sudo was not the only host gap: even primed, the selection is the
-        // container (or nothing). The prompt cannot change that route, so
-        // the primed selection's text is reported — quoting sudo as missing
-        // here would misstate what the prompt buys (zipline#70 Step 5).
-        Ok(NetnsRunner::Container { host_reason }) => format!(
-            "would prompt for sudo (--prompt-for-sudo); \
-             would run in docker (host route unavailable: {host_reason})"
-        ),
-        Err(reason) => format!("would prompt for sudo (--prompt-for-sudo); {reason}"),
+        Err(reason) => reason,
     }
 }
 
@@ -661,7 +412,7 @@ pub fn netns_dry_run_text(probes: &Probes, prompt_for_sudo: bool) -> String {
 /// run sees the cause without opening the manifest.
 pub fn netns_tier_header(runner: &NetnsRunner) -> String {
     match runner {
-        NetnsRunner::Host(_) => "netns tier:".to_string(),
+        NetnsRunner::Host => "netns tier:".to_string(),
         NetnsRunner::Container { host_reason } => {
             format!("netns tier (docker fallback; host route unavailable: {host_reason}):")
         }
@@ -1048,22 +799,22 @@ pub struct NetnsScript {
 pub struct NetnsPlan {
     /// `<zl-zpr-core worktree>/integration-test`.
     pub dir: PathBuf,
-    /// How many scripts may run at once: 1 on the host route, whose
-    /// scripts share one kernel's fixed netns names; [`NETNS_CONTAINER_JOBS`]
-    /// on the container route, where each script has its own container.
+    /// How many scripts may run at once, on either route: [`NETNS_JOBS`]
+    /// unless `--jobs` overrides it.
     pub jobs: usize,
     pub scripts: Vec<NetnsScript>,
 }
 
-/// Concurrent scripts on the netns container route. Each `make docker-test`
-/// is its own `docker run`, so its network namespaces, `/run/netns`, `/tmp`
-/// and valkey are private and the scripts' fixed netns names and ports
-/// cannot collide; their scratch files go to `mktemp -d` inside the
-/// container, not the bind-mounted workspace.
+/// Concurrent netns scripts, on either route. On the host route each script
+/// re-execs itself under `unshare -nr` and pins anonymous network
+/// namespaces, so its namespaces, links and `pkill`/`pgrep` scope are
+/// private to its own user namespace (zipline#190/#191). On the container
+/// route each `make docker-test` is its own `docker run`, private in the
+/// same way. Either way the scripts cannot collide.
 // The default width. The scripts wait on fixed `sleep`s, so too many at
 // once on a small machine risks timing flakes; `--jobs` overrides it per
 // run where 4 proves wrong for a host (zipline#144).
-pub const NETNS_CONTAINER_JOBS: usize = 4;
+pub const NETNS_JOBS: usize = 4;
 
 /// Builds the netns plan against the `zl-zpr-core` worktree and `dist/`:
 /// the eleven blessed scripts in order, each with the `*_BIN` overrides the
@@ -1086,10 +837,8 @@ pub const NETNS_CONTAINER_JOBS: usize = 4;
 ///   container, and the Makefile's `FORWARD_ENV` would forward an operator's
 ///   exported value.
 ///
-/// `jobs` is the operator's `--jobs` override for the container route's
-/// width (zipline#144); `None` keeps [`NETNS_CONTAINER_JOBS`]. The host
-/// route is always serial regardless — its scripts share one kernel's
-/// fixed netns names, so widening it would trade correctness for speed.
+/// `jobs` is the operator's `--jobs` override for the tier's width on
+/// either route (zipline#144, zipline#192); `None` keeps [`NETNS_JOBS`].
 pub fn netns_plan(
     core_worktree: &Path,
     dist: &Path,
@@ -1186,12 +935,7 @@ pub fn netns_plan(
         } else {
             integration
         },
-        jobs: if container {
-            jobs.map(std::num::NonZeroUsize::get)
-                .unwrap_or(NETNS_CONTAINER_JOBS)
-        } else {
-            1
-        },
+        jobs: jobs.map(std::num::NonZeroUsize::get).unwrap_or(NETNS_JOBS),
         scripts,
     })
 }
@@ -1622,39 +1366,6 @@ mod tests {
         assert!(!selection.contains("netns"));
     }
 
-    /// `--prompt-for-sudo` primes the sudo credential cache only when the
-    /// netns tier — the only sudo consumer — is actually selected. A
-    /// docker-only invocation with the flag must not prompt (and must not
-    /// fail on a redirected stdin), per the PR #15 P2 review finding on
-    /// zipline#70.
-    #[test]
-    fn sudo_priming_is_gated_on_the_netns_tier_being_selected() {
-        // netns selected (alone, in a list, by default, by `all`): prime.
-        for flag in [Some("netns"), Some("unit,netns,docker"), None, Some("all")] {
-            let selection = Selection::parse(flag).unwrap();
-            assert!(
-                should_prime_sudo(true, &selection),
-                "flag {flag:?} selects netns, so the prime must run"
-            );
-        }
-        // netns not selected: the flag must be inert — no prompt.
-        for flag in [
-            Some("docker"),
-            Some("unit,docker"),
-            Some("unit"),
-            Some("none"),
-        ] {
-            let selection = Selection::parse(flag).unwrap();
-            assert!(
-                !should_prime_sudo(true, &selection),
-                "flag {flag:?} does not select netns, so the prime must not run"
-            );
-        }
-        // Without --prompt-for-sudo, never prime, whatever the selection.
-        let selection = Selection::parse(Some("netns")).unwrap();
-        assert!(!should_prime_sudo(false, &selection));
-    }
-
     /// `default` is the spelled-out form of the absent flag.
     #[test]
     fn default_matches_the_absent_flag() {
@@ -1750,13 +1461,12 @@ mod tests {
     fn all_present() -> Probes {
         Probes {
             linux: true,
-            passwordless_sudo: true,
+            unprivileged_userns: true,
             valkey_server: Some(PathBuf::from("/usr/bin/valkey-server")),
             python3: true,
             docker: true,
             docker_compose: true,
             docker_daemon: true,
-            sudo_prime: None,
         }
     }
 
@@ -1793,14 +1503,14 @@ mod tests {
     #[test]
     fn netns_gate_names_each_missing_prerequisite() {
         let mut probes = all_present();
-        probes.passwordless_sudo = false;
+        probes.unprivileged_userns = false;
         probes.valkey_server = None;
         probes.docker_daemon = false;
         let TierGate::Skip(reason) = netns_gate(&probes) else {
-            panic!("netns must skip without sudo");
+            panic!("netns must skip without user namespaces");
         };
         assert!(
-            reason.contains("passwordless sudo (or pass --prompt-for-sudo)"),
+            reason.contains(MISSING_USERNS),
             "the skip reason must make the fix discoverable: {reason}"
         );
         assert!(reason.contains("valkey-server"), "{reason}");
@@ -1819,275 +1529,45 @@ mod tests {
         assert!(reason.to_lowercase().contains("linux"), "{reason}");
     }
 
-    /// The dry-run planned-tier line for netns (zipline#70 Step 5): a dry
-    /// run never prompts, so when `--prompt-for-sudo` was given and sudo
-    /// would prompt, the line says the real run would prompt instead of
-    /// presenting sudo as missing — while any other missing prerequisite is
-    /// still reported, because the prompt only buys sudo. Daemon out in
-    /// every case here: these are the no-fallback scenarios, unchanged from
-    /// zipline#70; the container-selected texts have their own test
-    /// (zipline#92 step 5).
+    /// The dry-run planned-tier line for netns (zipline#92 step 5;
+    /// zipline#93 step 4): the host route reads `prerequisites present`; a
+    /// container selection says what the real run would do — `would run in
+    /// docker` — quoting the host route's real gap, whichever it was; no
+    /// route at all reports the selector's two-route reason.
     #[test]
-    fn netns_dry_run_text_reports_the_prompt_instead_of_missing_sudo() {
-        // Flag given, sudo is the only gap: the real run would prompt.
-        let mut probes = all_present();
-        probes.passwordless_sudo = false;
-        probes.docker_daemon = false;
-        let text = netns_dry_run_text(&probes, true);
-        assert_eq!(text, "would prompt for sudo (--prompt-for-sudo)");
+    fn netns_dry_run_text_reports_the_selection_without_overstating() {
+        assert_eq!(netns_dry_run_text(&all_present()), "prerequisites present");
 
-        // Flag given, sudo AND valkey missing: the prompt is reported and
-        // the remaining gap is not hidden behind it.
-        probes.valkey_server = None;
-        let text = netns_dry_run_text(&probes, true);
-        assert!(
-            text.contains("would prompt for sudo (--prompt-for-sudo)"),
-            "{text}"
-        );
-        assert!(text.contains("valkey-server"), "{text}");
-        assert!(!text.contains("passwordless sudo"), "{text}");
-
-        // No flag: the ordinary skip reason, prompt not mentioned.
-        let mut probes = all_present();
-        probes.passwordless_sudo = false;
-        probes.docker_daemon = false;
-        let text = netns_dry_run_text(&probes, false);
-        assert!(text.contains("passwordless sudo"), "{text}");
-        assert!(!text.contains("would prompt"), "{text}");
-
-        // Flag given but sudo already passwordless: nothing to prompt for.
-        let text = netns_dry_run_text(&all_present(), true);
-        assert_eq!(text, "prerequisites present");
-    }
-
-    /// The dry-run line when the container is selected (zipline#92 step 5;
-    /// zipline#93 step 4): the runner exists now, so the text says what the
-    /// real run would do — `would run in docker` — and its parenthetical
-    /// quotes the host route's real gap, whichever it was.
-    #[test]
-    fn netns_dry_run_text_reports_a_container_selection_without_overstating() {
-        // Sudo is the host gap.
+        // User namespaces are the host gap: the text names the sysctl fix.
         let probes = Probes {
-            passwordless_sudo: false,
+            unprivileged_userns: false,
             ..all_present()
         };
         assert_eq!(
-            netns_dry_run_text(&probes, false),
-            "would run in docker (host route unavailable: missing: \
-             passwordless sudo (or pass --prompt-for-sudo))"
+            netns_dry_run_text(&probes),
+            format!("would run in docker (host route unavailable: missing: {MISSING_USERNS})")
         );
 
-        // valkey is the host gap: the text names it, not a fixed sudo cause.
+        // valkey is the host gap: the text names it, not a fixed cause.
         let probes = Probes {
             valkey_server: None,
             ..all_present()
         };
-        let text = netns_dry_run_text(&probes, false);
         assert_eq!(
-            text,
+            netns_dry_run_text(&probes),
             "would run in docker (host route unavailable: missing: valkey-server)"
         );
-    }
 
-    /// `--prompt-for-sudo` with the container as the fallback (zipline#92
-    /// step 5, as amended): the real run prompts first — the flag is an
-    /// explicit host request — and only a failed prompt falls to docker,
-    /// so the dry-run line says exactly that.
-    #[test]
-    fn netns_dry_run_text_prompt_flag_names_the_docker_fallback() {
+        // No route: the selector's reason verbatim.
         let probes = Probes {
-            passwordless_sudo: false,
+            unprivileged_userns: false,
+            docker_daemon: false,
             ..all_present()
         };
         assert_eq!(
-            netns_dry_run_text(&probes, true),
-            "would prompt for sudo (--prompt-for-sudo); on failure would fall back to docker"
+            netns_dry_run_text(&probes),
+            select_netns_runner(&probes).unwrap_err()
         );
-    }
-
-    // -- the --prompt-for-sudo prime (zipline#70 steps 2-3) ----------------------
-
-    /// A scripted [`SudoRunner`]: probe answers are consumed in order, the
-    /// prime's answer is fixed, and every call is counted so a test can
-    /// assert what was and was not run.
-    struct FakeSudo {
-        probe_answers: std::cell::RefCell<Vec<bool>>,
-        prime_answer: bool,
-        prime_calls: std::cell::Cell<usize>,
-    }
-
-    impl FakeSudo {
-        fn new(probe_answers: &[bool], prime_answer: bool) -> FakeSudo {
-            FakeSudo {
-                probe_answers: std::cell::RefCell::new(probe_answers.to_vec()),
-                prime_answer,
-                prime_calls: std::cell::Cell::new(0),
-            }
-        }
-    }
-
-    impl SudoRunner for FakeSudo {
-        fn probe(&self) -> bool {
-            let mut answers = self.probe_answers.borrow_mut();
-            assert!(!answers.is_empty(), "unexpected extra sudo -n true probe");
-            answers.remove(0)
-        }
-        fn prime(&self) -> bool {
-            self.prime_calls.set(self.prime_calls.get() + 1);
-            self.prime_answer
-        }
-        fn refresh(&self) -> bool {
-            true
-        }
-    }
-
-    /// A host where `sudo -n true` already succeeds skips the prompt
-    /// entirely (approved Q2 on zipline#70): no `sudo -v` is ever run.
-    #[test]
-    fn prime_sudo_skips_the_prompt_when_already_passwordless() {
-        let sudo = FakeSudo::new(&[true], true);
-        let outcome = prime_sudo(&sudo, true);
-        assert!(matches!(outcome, PrimeOutcome::AlreadyPasswordless));
-        assert_eq!(sudo.prime_calls.get(), 0, "no prompt when none is needed");
-    }
-
-    /// Without a terminal on stdin the prime is refused before any prompt:
-    /// `tty_tickets` would key the cache to the wrong (or no) tty, so the
-    /// only honest behaviour is to fail fast, never to hang (issue Step 2).
-    #[test]
-    fn prime_sudo_refuses_without_a_tty_and_never_prompts() {
-        let sudo = FakeSudo::new(&[false], true);
-        let outcome = prime_sudo(&sudo, false);
-        assert!(matches!(outcome, PrimeOutcome::NoTty));
-        assert_eq!(sudo.prime_calls.get(), 0, "a prompt without a tty hangs");
-    }
-
-    /// The happy path: sudo prompts once via `sudo -v`, the re-probe
-    /// confirms the credential cached, and the outcome says so.
-    #[test]
-    fn prime_sudo_primes_and_reprobes() {
-        let sudo = FakeSudo::new(&[false, true], true);
-        let outcome = prime_sudo(&sudo, true);
-        assert!(matches!(outcome, PrimeOutcome::Primed));
-        assert_eq!(sudo.prime_calls.get(), 1);
-    }
-
-    /// A sudoers with `timestamp_timeout=0` caches nothing: `sudo -v`
-    /// succeeds but the re-probe still fails. The outcome names that, so
-    /// the caller can degrade to the existing skip/error path with a note
-    /// instead of dying mid-tier (issue Step 3).
-    #[test]
-    fn prime_sudo_detects_a_disabled_credential_cache() {
-        let sudo = FakeSudo::new(&[false, false], true);
-        let outcome = prime_sudo(&sudo, true);
-        assert!(matches!(outcome, PrimeOutcome::CacheDisabled));
-        assert_eq!(sudo.prime_calls.get(), 1);
-    }
-
-    /// `sudo -v` itself failing (wrong password three times, Ctrl-C) is its
-    /// own outcome — reported as a failed prime, not misdiagnosed as a
-    /// disabled credential cache.
-    #[test]
-    fn prime_sudo_reports_a_failed_prime() {
-        let sudo = FakeSudo::new(&[false], false);
-        let outcome = prime_sudo(&sudo, true);
-        assert!(matches!(outcome, PrimeOutcome::PrimeFailed));
-        assert_eq!(sudo.prime_calls.get(), 1);
-    }
-
-    /// A thread-safe counting [`SudoRunner`] for the refresher tests: the
-    /// scripted `FakeSudo` above is single-threaded by design, and the
-    /// refresher runs on its own thread.
-    #[derive(Default)]
-    struct CountingSudo {
-        refresh_calls: std::sync::atomic::AtomicUsize,
-    }
-
-    impl SudoRunner for CountingSudo {
-        fn probe(&self) -> bool {
-            true
-        }
-        fn prime(&self) -> bool {
-            true
-        }
-        fn refresh(&self) -> bool {
-            self.refresh_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            true
-        }
-    }
-
-    /// The refresher's start/stop bookkeeping (issue Step 4): it refreshes
-    /// on its interval while alive, and `stop` joins the thread so no
-    /// refresh can run afterwards. The interval is injected (zero here) so
-    /// the test never sleeps wall-clock time.
-    #[test]
-    fn sudo_refresher_refreshes_until_stopped() {
-        let sudo = std::sync::Arc::new(CountingSudo::default());
-        let refresher = SudoRefresher::start(sudo.clone(), std::time::Duration::ZERO);
-
-        // Bounded wait for the thread to demonstrably run, without a
-        // wall-clock sleep: yield until at least two refreshes landed.
-        let mut spins = 0u32;
-        while sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst) < 2 {
-            std::thread::yield_now();
-            spins += 1;
-            assert!(spins < 10_000_000, "refresher thread never refreshed");
-        }
-
-        refresher.stop();
-        // stop() joined the thread: the count is now frozen.
-        let frozen = sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst);
-        for _ in 0..100 {
-            std::thread::yield_now();
-        }
-        assert_eq!(
-            sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst),
-            frozen,
-            "a refresh ran after stop() returned"
-        );
-    }
-
-    /// Dropping the refresher stops it too — the RAII path an early `?` in
-    /// the build takes (issue Step 4: stopped even on tier failure).
-    #[test]
-    fn sudo_refresher_stops_on_drop() {
-        let sudo = std::sync::Arc::new(CountingSudo::default());
-        {
-            let _refresher = SudoRefresher::start(sudo.clone(), std::time::Duration::ZERO);
-        }
-        // The guard is gone, so the thread is joined and the count frozen.
-        let frozen = sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst);
-        for _ in 0..100 {
-            std::thread::yield_now();
-        }
-        assert_eq!(
-            sudo.refresh_calls.load(std::sync::atomic::Ordering::SeqCst),
-            frozen,
-            "a refresh ran after the guard was dropped"
-        );
-    }
-
-    /// `sudo -v` succeeded but nothing cached (`timestamp_timeout=0`): the
-    /// netns skip reason carries a note diagnosing it, instead of letting
-    /// the prime silently buy nothing (issue Step 3). No daemon here — with
-    /// one the container absorbs the miss and the note moves into
-    /// `host_reason` (see `selector_retains_the_cache_disabled_note`).
-    #[test]
-    fn netns_gate_notes_a_disabled_credential_cache() {
-        let mut probes = all_present();
-        probes.passwordless_sudo = false;
-        probes.sudo_prime = Some(PrimeOutcome::CacheDisabled);
-        probes.docker_daemon = false;
-        let TierGate::Skip(reason) = netns_gate(&probes) else {
-            panic!("netns must still skip when the prime bought nothing");
-        };
-        assert!(
-            reason
-                .contains("sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)"),
-            "{reason}"
-        );
-        assert!(reason.contains("passwordless sudo"), "{reason}");
     }
 
     /// The docker gate's reason matches the acceptance wording: a missing
@@ -2172,45 +1652,34 @@ mod tests {
     #[test]
     fn selector_picks_the_host_when_both_routes_work() {
         let runner = select_netns_runner(&all_present()).unwrap();
-        assert_eq!(runner, NetnsRunner::Host(SudoProvenance::Nopasswd));
+        assert_eq!(runner, NetnsRunner::Host);
     }
 
-    /// A primed credential is a different provenance than a NOPASSWD host
-    /// (zipline#70) and the selection carries it, so the manifest can never
-    /// conflate the two.
+    /// Unusable user namespaces alone (`unshare -nr` blocked, e.g. by
+    /// Ubuntu 24.04+'s AppArmor default) fall to the container when the
+    /// daemon answers, and `host_reason` is the host route's own
+    /// missing-prerequisite text — naming the sysctl that fixes the host —
+    /// so zipline#93's header and coverage note quote the real cause.
     #[test]
-    fn selector_carries_the_primed_provenance() {
+    fn selector_falls_to_the_container_when_userns_is_blocked() {
         let probes = Probes {
-            sudo_prime: Some(PrimeOutcome::Primed),
-            ..all_present()
-        };
-        let runner = select_netns_runner(&probes).unwrap();
-        assert_eq!(runner, NetnsRunner::Host(SudoProvenance::Primed));
-    }
-
-    /// Missing sudo alone falls to the container when the daemon answers,
-    /// and `host_reason` is the host route's own missing-prerequisite text —
-    /// the same words the skip would have used — so zipline#93's header and
-    /// coverage note can quote the real cause (operator amendment).
-    #[test]
-    fn selector_falls_to_the_container_when_sudo_is_missing() {
-        let probes = Probes {
-            passwordless_sudo: false,
+            unprivileged_userns: false,
             ..all_present()
         };
         let NetnsRunner::Container { host_reason } = select_netns_runner(&probes).unwrap() else {
-            panic!("missing sudo with a reachable daemon must select the container");
+            panic!("blocked userns with a reachable daemon must select the container");
         };
         assert_eq!(
             host_reason,
-            "missing: passwordless sudo (or pass --prompt-for-sudo)"
+            "missing: unprivileged user namespaces (unshare -nr failed; \
+             on Ubuntu 24.04+ set kernel.apparmor_restrict_unprivileged_userns=0)"
         );
     }
 
-    /// The fallback covers any host-route miss, not only sudo: a host with
-    /// sudo but no `valkey-server` also falls to the container, and the
-    /// reason names valkey, not a fixed "no passwordless sudo" (operator
-    /// amendment — a fixed text would record false provenance).
+    /// The fallback covers any host-route miss, not only user namespaces: a
+    /// host with working `unshare -nr` but no `valkey-server` also falls to
+    /// the container, and the reason names valkey, not a fixed cause
+    /// (operator amendment — a fixed text would record false provenance).
     #[test]
     fn selector_falls_to_the_container_when_valkey_is_missing() {
         let probes = Probes {
@@ -2229,15 +1698,17 @@ mod tests {
     #[test]
     fn selector_requires_a_reachable_daemon_not_merely_a_client() {
         let probes = Probes {
-            passwordless_sudo: false,
+            unprivileged_userns: false,
             docker_daemon: false,
             ..all_present()
         };
         let reason = select_netns_runner(&probes).unwrap_err();
         assert_eq!(
             reason,
-            "missing: passwordless sudo (or pass --prompt-for-sudo); \
-             docker fallback unavailable: docker daemon not reachable"
+            format!(
+                "missing: {MISSING_USERNS}; \
+                 docker fallback unavailable: docker daemon not reachable"
+            )
         );
     }
 
@@ -2246,14 +1717,14 @@ mod tests {
     #[test]
     fn selector_names_a_missing_docker_client() {
         let probes = Probes {
-            passwordless_sudo: false,
+            unprivileged_userns: false,
             docker: false,
             docker_compose: false,
             docker_daemon: false,
             ..all_present()
         };
         let reason = select_netns_runner(&probes).unwrap_err();
-        assert!(reason.contains("passwordless sudo"), "{reason}");
+        assert!(reason.contains(MISSING_USERNS), "{reason}");
         assert!(
             reason.contains("docker fallback unavailable: docker not found"),
             "{reason}"
@@ -2272,53 +1743,6 @@ mod tests {
         assert!(reason.to_lowercase().contains("linux"), "{reason}");
     }
 
-    /// A failed prompt (`sudo -v` refused) leaves the host route unusable,
-    /// so the container is selected when available — the flag asked for the
-    /// host, but a fallback beats a dead stop (zipline#92; spec-003 §10.2).
-    #[test]
-    fn selector_falls_to_the_container_after_a_failed_prime() {
-        let probes = Probes {
-            passwordless_sudo: false,
-            sudo_prime: Some(PrimeOutcome::PrimeFailed),
-            ..all_present()
-        };
-        let NetnsRunner::Container { host_reason } = select_netns_runner(&probes).unwrap() else {
-            panic!("a failed prime with a reachable daemon must select the container");
-        };
-        assert!(host_reason.contains("passwordless sudo"), "{host_reason}");
-    }
-
-    /// `timestamp_timeout=0` (the prime bought nothing) keeps its diagnostic
-    /// note in the host reason, both when the container absorbs the miss and
-    /// when nothing can run — the operator typed a password and must see why
-    /// it did not help (zipline#70 Step 3, retained by the amendment).
-    #[test]
-    fn selector_retains_the_cache_disabled_note() {
-        let probes = Probes {
-            passwordless_sudo: false,
-            sudo_prime: Some(PrimeOutcome::CacheDisabled),
-            ..all_present()
-        };
-        let NetnsRunner::Container { host_reason } = select_netns_runner(&probes).unwrap() else {
-            panic!("CacheDisabled with a reachable daemon must select the container");
-        };
-        assert!(
-            host_reason
-                .contains("sudo -v succeeded but credentials did not cache (timestamp_timeout=0?)"),
-            "{host_reason}"
-        );
-
-        let probes = Probes {
-            passwordless_sudo: false,
-            sudo_prime: Some(PrimeOutcome::CacheDisabled),
-            docker_daemon: false,
-            ..all_present()
-        };
-        let reason = select_netns_runner(&probes).unwrap_err();
-        assert!(reason.contains("credentials did not cache"), "{reason}");
-        assert!(reason.contains("docker daemon not reachable"), "{reason}");
-    }
-
     /// Since zipline#93 a `Container` selection runs through the gate: the
     /// docker fallback is implemented, so `netns_gate` maps it to `Run` —
     /// the run-time floor check (`docker_runner_floor`) is the only
@@ -2329,7 +1753,7 @@ mod tests {
     #[test]
     fn netns_gate_runs_a_container_selection() {
         let probes = Probes {
-            passwordless_sudo: false,
+            unprivileged_userns: false,
             ..all_present()
         };
         assert!(matches!(
@@ -2364,10 +1788,7 @@ mod tests {
     /// sees the cause without opening the manifest.
     #[test]
     fn netns_tier_header_names_the_docker_fallback_with_the_host_reason() {
-        assert_eq!(
-            netns_tier_header(&NetnsRunner::Host(SudoProvenance::Nopasswd)),
-            "netns tier:"
-        );
+        assert_eq!(netns_tier_header(&NetnsRunner::Host), "netns tier:");
         assert_eq!(
             netns_tier_header(&NetnsRunner::Container {
                 host_reason: "missing: valkey-server".to_string()
@@ -2443,7 +1864,7 @@ mod tests {
     #[test]
     fn netns_plan_container_route_runs_make_docker_test_per_script() {
         let runner = NetnsRunner::Container {
-            host_reason: "missing: passwordless sudo (or pass --prompt-for-sudo)".to_string(),
+            host_reason: format!("missing: {MISSING_USERNS}"),
         };
         let plan = netns_plan(
             Path::new("/wt/zl-zpr-core"),
@@ -2459,7 +1880,7 @@ mod tests {
         assert_eq!(plan.dir, Path::new("/wt/zl-zpr-core"));
         // Each container is its own network namespace, so scripts run
         // concurrently.
-        assert_eq!(plan.jobs, NETNS_CONTAINER_JOBS);
+        assert_eq!(plan.jobs, NETNS_JOBS);
         for script in &plan.scripts {
             assert_eq!(script.program, "make", "{}", script.script);
             assert_eq!(
@@ -2505,14 +1926,14 @@ mod tests {
         }
     }
 
-    /// `--jobs` overrides the container route's width (zipline#144): a
-    /// non-default value reaches `NetnsPlan.jobs` verbatim, absence keeps
-    /// [`NETNS_CONTAINER_JOBS`], and the host route stays serial regardless
-    /// — its scripts share one kernel's fixed netns names, so a wider host
-    /// tier would be a correctness bug, not a speedup.
+    /// `--jobs` overrides the tier's width on both routes (zipline#144,
+    /// zipline#192): a non-default value reaches `NetnsPlan.jobs` verbatim
+    /// and absence keeps [`NETNS_JOBS`]. The host route is no longer forced
+    /// serial — each script runs in its own private user + network
+    /// namespace, so the scripts cannot collide.
     #[test]
-    fn netns_plan_jobs_override_applies_to_the_container_route_only() {
-        let runner = NetnsRunner::Container {
+    fn netns_plan_jobs_override_applies_to_both_routes() {
+        let container = NetnsRunner::Container {
             host_reason: "missing: valkey-server".to_string(),
         };
         let six = std::num::NonZeroUsize::new(6);
@@ -2528,17 +1949,18 @@ mod tests {
             )
             .expect("a fixture-free plan is clean")
         };
-        assert_eq!(plan(&runner, six).jobs, 6, "--jobs 6 must reach the plan");
-        assert_eq!(
-            plan(&runner, None).jobs,
-            NETNS_CONTAINER_JOBS,
-            "no --jobs keeps the default width"
-        );
-        assert_eq!(
-            plan(&NetnsRunner::Host(SudoProvenance::Nopasswd), six).jobs,
-            1,
-            "the host route ignores --jobs: its scripts share fixed netns names"
-        );
+        for runner in [&container, &NetnsRunner::Host] {
+            assert_eq!(
+                plan(runner, six).jobs,
+                6,
+                "{runner:?}: --jobs 6 must reach the plan"
+            );
+            assert_eq!(
+                plan(runner, None).jobs,
+                NETNS_JOBS,
+                "{runner:?}: no --jobs keeps the default width"
+            );
+        }
     }
 
     /// The host route's plan is unchanged by the runner parameter
@@ -2552,7 +1974,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            &NetnsRunner::Host,
             Path::new("/b"),
             None,
         )
@@ -2617,14 +2039,14 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            &NetnsRunner::Host,
             Path::new("/b"),
             None,
         )
         .expect("a worktree with no integration-test/ plans cleanly");
-        // The host route shares one kernel's fixed netns names (`zpr-node`,
-        // `zpr-vs`, ...), so its scripts must run one at a time.
-        assert_eq!(plan.jobs, 1);
+        // Each script runs in its own private namespaces, so the host route
+        // takes the same default width as the container (zipline#192).
+        assert_eq!(plan.jobs, NETNS_JOBS);
         let names: Vec<&str> = plan.scripts.iter().map(|script| script.script).collect();
         assert_eq!(
             names,
@@ -2680,7 +2102,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            &NetnsRunner::Host,
             Path::new("/b"),
             None,
         )
@@ -2805,7 +2227,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            &NetnsRunner::Host,
             Path::new("/b"),
             None,
         )
@@ -2839,7 +2261,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            &NetnsRunner::Host,
             Path::new("/b"),
             None,
         )
@@ -2954,7 +2376,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             true,
-            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            &NetnsRunner::Host,
             Path::new("/b"),
             None,
         )
@@ -2980,7 +2402,7 @@ mod tests {
             Path::new("/b/dist"),
             Path::new("/usr/bin/valkey-server"),
             false,
-            &NetnsRunner::Host(SudoProvenance::Nopasswd),
+            &NetnsRunner::Host,
             Path::new("/b"),
             None,
         )
