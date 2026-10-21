@@ -140,14 +140,7 @@ enum Command {
         #[arg(long)]
         no_tarball: bool,
 
-        /// Prompt once for the sudo password before the run, so the netns
-        /// tier can run without a NOPASSWD sudoers entry (needs a terminal)
-        #[arg(long)]
-        prompt_for_sudo: bool,
-
-        /// Concurrent scripts on the netns tier's container route (default
-        /// 4); the host route is always serial, its scripts share one
-        /// kernel's fixed netns names
+        /// Concurrent scripts on the netns tier, on either route (default 4)
         #[arg(long, value_name = "N")]
         jobs: Option<std::num::NonZeroUsize>,
 
@@ -169,7 +162,6 @@ enum Command {
                 "gates_only",
                 "allow_pin_drift",
                 "no_tarball",
-                "prompt_for_sudo",
                 "jobs",
                 "note"
             ]
@@ -270,7 +262,6 @@ fn run() -> Result<ExitCode> {
             gates_only,
             allow_pin_drift,
             no_tarball,
-            prompt_for_sudo,
             jobs,
             note,
             clean,
@@ -286,7 +277,6 @@ fn run() -> Result<ExitCode> {
                 gates_only: *gates_only,
                 allow_pin_drift: *allow_pin_drift,
                 no_tarball: *no_tarball,
-                prompt_for_sudo: *prompt_for_sudo,
                 jobs: *jobs,
                 note: note.clone(),
                 clean: *clean,
@@ -326,7 +316,7 @@ mod tests {
     }
 
     /// `build --jobs N` parses to the tier width (zipline#144), is absent by
-    /// default so each route keeps its own default, and rejects `0` at parse
+    /// default so the tier keeps its default width, and rejects `0` at parse
     /// time — a zero-wide tier is a request to run nothing, which `--test
     /// none` already says honestly.
     #[test]
@@ -354,5 +344,13 @@ mod tests {
             Cli::try_parse_from(["zpr-dev", "build", "--clean", "--jobs", "2"]).is_err(),
             "--clean --jobs must conflict"
         );
+    }
+
+    /// `--prompt-for-sudo` is retired (zipline#192): the netns tier runs in
+    /// unprivileged user namespaces and never needs sudo, so the flag is an
+    /// unknown argument rather than a silent no-op.
+    #[test]
+    fn build_rejects_the_retired_prompt_for_sudo_flag() {
+        assert!(Cli::try_parse_from(["zpr-dev", "build", "--prompt-for-sudo"]).is_err());
     }
 }

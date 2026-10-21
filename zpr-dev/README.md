@@ -262,10 +262,7 @@ zpr-dev build --tip --gates-only             # just the gates, read-only, second
 --gates-only        run only the compatibility gates against the live checkouts
 --allow-pin-drift   gate 1 disagreements warn instead of failing
 --no-tarball        skip the dist tarball
---prompt-for-sudo   prompt once for the sudo password before the run, so the
-                    netns tier can run on the host without a NOPASSWD sudoers
-                    entry (needs a terminal; a background sudo -n -v keeps the
-                    credential alive until the tier finishes)
+--jobs <n>          concurrent netns scripts, on either route (default 4)
 --note <text>       append this sentence to the emitted manifest's notes;
                     repeatable, e.g. why a tier was deliberately left out
 --clean             remove the build directory (--build-dir, or the whole
@@ -305,19 +302,16 @@ it. Exit codes follow the usual contract, with `1` covering gate, build, and
 test failures.
 
 The `netns` tier needs Linux, and either its host prerequisites —
-passwordless `sudo` (or `--prompt-for-sudo`), `valkey-server`, `python3` —
-or a reachable Docker daemon. The host route wins whenever it can run;
-otherwise the same scripts run automatically as root inside the privileged
-container of `zl-zpr-core/integration-test/`'s `make docker-test`, and the
-emitted manifest records `sudo: container` plus a coverage note naming the
-real host gap — no flag needed. `--prompt-for-sudo` prompts once at the
-start of the run and keeps the credential alive for its duration; a failed
-prime still falls back to the container when a daemon is reachable.
-`tty_tickets` makes the prompt a workstation-only convenience: it works
-because the netns children inherit our controlling terminal. It is not a
-path to running the netns tier in CI — CI still needs a host with
-passwordless sudo, or a Docker daemon — the container fallback is the CI
-path.
+unprivileged user namespaces (`unshare -nr true` succeeds; on Ubuntu 24.04+
+set `kernel.apparmor_restrict_unprivileged_userns=0` once), `valkey-server`,
+`python3` — or a reachable Docker daemon. It needs no sudo: each script runs
+in its own unprivileged user + network namespace (zipline#189). The host
+route wins whenever it can run; otherwise the same scripts run automatically
+as root inside the privileged container of
+`zl-zpr-core/integration-test/`'s `make docker-test`. The emitted manifest
+records `privilege: userns` or `privilege: container`, the latter with a
+coverage note naming the real host gap — no flag needed. Both routes run
+`--jobs N` scripts at once (default 4).
 
 ---
 

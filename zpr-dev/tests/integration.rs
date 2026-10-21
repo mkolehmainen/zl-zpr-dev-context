@@ -1214,9 +1214,9 @@ fn build_tip_dry_run_resolves_and_creates_nothing() {
     );
 }
 
-/// The netns docker fallback through the binary (fake probes: no sudo, a
-/// reachable docker daemon, valkey and python3 present — see
-/// `run_with_fake_probes`; no real sudo or docker is ever invoked). Since
+/// The netns docker fallback through the binary (fake probes: `unshare -nr`
+/// fails, a reachable docker daemon, valkey and python3 present — see
+/// `run_with_fake_probes`; no real unshare or docker is ever invoked). Since
 /// zipline#93 the container route is implemented, so `--dry-run` under
 /// `--test all` reports `would run in docker`, quoting the host route's
 /// real gap — and the run is a dry run, so nothing is created. The
@@ -1233,7 +1233,8 @@ fn build_dry_run_reports_the_container_route_as_would_run_in_docker() {
     assert!(
         out.contains(
             "would run in docker (host route unavailable: missing: \
-             passwordless sudo (or pass --prompt-for-sudo))"
+             unprivileged user namespaces (unshare -nr failed; \
+             on Ubuntu 24.04+ set kernel.apparmor_restrict_unprivileged_userns=0))"
         ),
         "{out}"
     );

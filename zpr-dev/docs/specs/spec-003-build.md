@@ -43,9 +43,9 @@ together, and landed in stages:
 | B2 | §4 gates | implemented — plus the `Cargo.lock` dual-version scan (zipline#69, §10) |
 | B3 | §5 worktrees, builds, `dist/`, emitted manifest, tarball | implemented |
 | B4 | §6 `unit` tier | implemented |
-| B5 | §6 `netns` and `docker` tiers | implemented — including the netns tier's container fallback (zipline#92/#93) |
+| B5 | §6 `netns` and `docker` tiers | implemented — including the netns tier's container fallback (zipline#92/#93) and its unprivileged user-namespace host route (zipline#192) |
 
-### 1.3 Out of scope (recorded, not scheduled; see §10.3)
+### 1.3 Out of scope (recorded, not scheduled; see §10.4)
 
 No `[patch]` or path override of `zl-zpr-common`; no container build; no CI
 wiring; no `target/` reuse across builds; no signing or publishing; no
@@ -144,7 +144,7 @@ checkout:
 - **No fetch, ever.** Resolution runs against whatever the local checkout
   already has; `zpr-dev` treats a fetch as a mutation (spec-001 §5.1), and
   `--dry-run` must not perform one. A tag pushed but never fetched therefore
-  fails as an unknown ref; an opt-in `--fetch` is recorded in §10.3,
+  fails as an unknown ref; an opt-in `--fetch` is recorded in §10.4,
   not part of this spec.
 - An unknown ref is an error naming **both** the repository and the ref. A
   repository directory that is missing, or is not a Git repository, is an
@@ -192,12 +192,12 @@ resolved:                          # diagnostic; ignored as input
   tests_skipped:                 # every known tier that did not execute, and why
     docker: "not selected (--test unit,netns)"
   notes:                         # the shortcomings, in plain words; read this first
-    - "netns integration tests ran in a privileged Docker container, not on the host (host route unavailable: missing: passwordless sudo (or pass --prompt-for-sudo))"
+    - "netns integration tests ran in a privileged Docker container, not on the host (host route unavailable: missing: unprivileged user namespaces (unshare -nr failed; on Ubuntu 24.04+ set kernel.apparmor_restrict_unprivileged_userns=0))"
     - "docker end-to-end tests did NOT run: not selected (--test unit,netns)"
     - "docker tier run by hand on the operator workstation"   # from --note
   tiers:
     unit:   { status: passed }
-    netns:  { status: passed, sudo: container }  # sudo: nopasswd | primed | container (§6)
+    netns:  { status: passed, privilege: container }  # privilege: userns | container (§6)
 ```
 
 Normative behavior:
@@ -365,7 +365,7 @@ risk. Everything is a release build. The table is in claim order:
 | Tier | What runs | Prerequisites | Default |
 |---|---|---|---|
 | `unit` | `make test` in each built repository, with `make pregen ZPLC=<dist>/zplc` first in `zl-zpr-visaservice` | none beyond the build | run |
-| `netns` | the ten `zl-zpr-core/integration-test/` scripts | Linux, and either (passwordless `sudo` or `--prompt-for-sudo`, `valkey-server`, `python3`) or a reachable Docker daemon | `--test netns` |
+| `netns` | the ten `zl-zpr-core/integration-test/` scripts | Linux, and either (unprivileged user namespaces — `unshare -nr true` succeeds — `valkey-server`, `python3`) or a reachable Docker daemon | `--test netns` |
 | `docker` | `dns-demo` deploy, `test-dns.sh`, `docker compose down -v` | `docker`, `docker compose` | `--test docker` |
 
 - A tier that was asked for and cannot run is an error under `--test all`; a
@@ -382,54 +382,45 @@ risk. Everything is a release build. The table is in claim order:
   `unused_or_outdated/` are invisible, matching the Makefile's own
   `$(wildcard *-test.sh)`.
 - The netns tier selects its route **host → container → skip**
-  (zipline#92/#93). The host route wins whenever its own prerequisites —
-  passwordless `sudo` or a primed credential, `valkey-server`, `python3` —
-  all hold; otherwise, when a Docker daemon is reachable (`docker info`
+  (zipline#92/#93/#192). The host route wins whenever its own prerequisites
+  — unprivileged user namespaces (the probe is `unshare -nr true`; on Ubuntu
+  24.04+ AppArmor blocks them until
+  `kernel.apparmor_restrict_unprivileged_userns=0`), `valkey-server`,
+  `python3` — all hold. The scripts need no sudo: each re-execs itself
+  under `unshare -nr` and runs as that namespace's mapped root
+  (zipline#189). Otherwise, when a Docker daemon is reachable (`docker info`
   succeeds), the same eleven scripts run as root inside the privileged
   container of `zl-zpr-core/integration-test/`'s `make docker-test`, one
-  `make` invocation per script with `WORKSPACE=<build-dir>`, up to four at
-  once (the host route runs them one at a time); when neither
-  route works, the tier skips — or errors when explicitly requested — with
-  a reason naming both routes' gaps. A container run records the tier's
-  provenance as `sudo: container` in the emitted manifest and adds a
-  generated coverage note quoting the host route's real failure — `netns
-  integration tests ran in a privileged Docker container, not on the host
-  (host route unavailable: <reason>)` — so a green manifest never implies
-  the tests ran on the host. The container route requires a `zl-zpr-core`
-  worktree at or after `c163628`, the commit whose
-  `integration-test/Makefile` defines `FORWARD_ENV`; an older worktree
-  refuses the route with a reason naming that floor. No `zl-zpr-core`
-  change was needed (zipline#91 withdrawn).
+  `make` invocation per script with `WORKSPACE=<build-dir>`. Either route
+  runs up to four scripts at once (`--jobs N` overrides the width on both).
+  When neither route works, the tier skips — or errors when explicitly
+  requested — with a reason naming both routes' gaps; a blocked user
+  namespace is reported with the sysctl fix. The emitted manifest records
+  how the tier was privileged: `privilege: userns` on the host,
+  `privilege: container` in the fallback, which also adds a generated
+  coverage note quoting the host route's real failure — `netns integration
+  tests ran in a privileged Docker container, not on the host (host route
+  unavailable: <reason>)` — so a green manifest never implies the tests ran
+  on the host. Each route also has a floor on the `zl-zpr-core` worktree,
+  checked once the worktree exists. The host route requires a worktree at
+  or after `3ad48ed` (zipline#191), whose `integration-test/lib/common_funcs.sh`
+  defines `pkill_own`; an older worktree's scripts still call `sudo` and
+  share fixed namespace names. A host selection on an older worktree falls
+  back to the container when a Docker daemon answered at probe time,
+  quoting the host floor as the host route's failure; otherwise the tier
+  skips or errors with both gaps. The container route requires a worktree
+  at or after `c163628`, the commit whose `integration-test/Makefile`
+  defines `FORWARD_ENV`; an older worktree refuses the route with a reason
+  naming that floor.
 - `a2a-pubkey-test.sh` needs a `ph` built with `enable-security-testing`;
   that binary must never be staged into `dist/`.
 - The `docker` tier always runs `docker compose down -v`, pass or fail.
-- `--prompt-for-sudo` (zipline#70): opt-in. When the netns tier is selected
-  and `sudo -n true` fails, prompt once, up front — `sudo -v` with inherited
-  stdio, immediately after ref resolution and before any compilation — then
-  re-probe `sudo -n true`, so a sudoers with `timestamp_timeout=0` degrades
-  to the ordinary skip/error path with a note instead of dying mid-tier. A
-  background thread runs `sudo -n -v` every 60s from the prime until the
-  netns tier returns, so a run longer than sudo's timestamp timeout does not
-  lose the credential mid-tier. The flag requires a terminal on stdin (exit 1
-  otherwise, never a hang), never prompts under `--dry-run` or `--gates-only`,
-  and never weakens the probe: without it, behaviour is exactly as before.
-  The emitted manifest records the netns tier's sudo provenance as
-  `sudo: nopasswd` or `sudo: primed` — the two are never conflated, and a
-  run through the container fallback is a third provenance,
-  `sudo: container` (see the route-selection bullet above).
-
-  Known ceiling: `tty_tickets` makes this a workstation-only convenience —
-  it works because the netns children inherit our controlling terminal. It
-  is not a path to running the netns tier in CI, and should not be
-  documented as one. CI still needs a host with passwordless sudo, or a
-  Docker daemon — the container fallback is the CI path.
-
 ## 7. CLI surface
 
 ```text
 zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
               [--build-dir <path>] [--keep] [--allow-pin-drift] [--no-tarball]
-              [--prompt-for-sudo] [--note <text>]... [--clean]
+              [--jobs <n>] [--note <text>]... [--clean]
 
 --manifest <path>   build set to build; default: newest file in build-sets/ (§2.2)
 --tip               ignore every ref; use origin/<default_branch> everywhere
@@ -439,7 +430,7 @@ zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
 --keep              keep worktrees after a successful run
 --allow-pin-drift   gate 1 disagreements warn instead of failing
 --no-tarball        skip the dist tarball
---prompt-for-sudo   prompt once for the sudo password before the run (§6)
+--jobs <n>          concurrent netns scripts, on either route (default 4; §6)
 --note <text>       append this sentence to the emitted manifest's notes
                     (§3); repeatable, recorded verbatim after the generated
                     notes (zipline#87)
@@ -449,7 +440,7 @@ zpr-dev build [--manifest <path> | --tip] [--test <list>] [--repo <name>]
 
 `--clean` is a mode, not a modifier: it conflicts with `--manifest`, `--tip`,
 `--test`, `--repo`, `--keep`, `--gates-only`, `--allow-pin-drift`,
-`--no-tarball`, `--prompt-for-sudo` and `--note` (usage error, exit 2). `--build-dir`
+`--no-tarball` and `--note` (usage error, exit 2). `--build-dir`
 stays allowed — it scopes the clean to that directory; without it the whole
 `<workspace>/.zpr-build` tree goes. Cleaning is not per-set: there is no
 manifest resolution and nothing to name a set with. After removing the
@@ -481,7 +472,7 @@ Prints the resolved shas, the planned build order, the planned tier list with
 prerequisite probe results, and the target `dist/` path — and creates
 nothing. No worktree, no directory, no log file, and **no `git fetch`**:
 `zpr-dev`'s existing rule that a fetch is already a mutation applies
-(spec-001 §5.1). Probes that are themselves read-only (`sudo -n true`,
+(spec-001 §5.1). Probes that are themselves read-only (`unshare -nr true`,
 `docker` on `PATH`) may run; anything else is reported as "would probe".
 Final output is a one-screen summary in the existing `zpr-dev` style.
 
@@ -599,10 +590,8 @@ that can move. ([zipline#63](https://github.com/mkolehmainen/zipline/issues/63))
 
 **Automatic fallback, no flag.** Host route runnable → host; otherwise a
 reachable Docker daemon → container; otherwise skip or error as before. The
-fallback covers any host-route miss (sudo, `valkey-server`, `python3`), not
-only sudo. `--prompt-for-sudo` stays an explicit host request: a failed
-prime falls to the container, but no terminal on stdin still exits 1,
-because guessing the container would hide a misused flag.
+fallback covers any host-route miss (user namespaces, `valkey-server`,
+`python3`), not only the privilege one.
 ([zipline#92](https://github.com/mkolehmainen/zipline/issues/92))
 
 **`zpr-dev` drives `zl-zpr-core`'s Makefile; it never owns `docker run`.**
@@ -616,19 +605,18 @@ in `zl-zpr-core` (zipline#91, withdrawn); `:=` is better anyway, since an
 exported `WORKSPACE` in the operator's shell cannot leak into the mount.
 ([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
 
-**Container-route scripts run four at a time; host-route scripts run
-serially.** Every script creates the same fixed netns names (`zpr-node`,
-`zpr-vs`, ...) and ports, so on the host two at once would collide. Each
-`make docker-test` is its own `docker run`, with a private network
-namespace, `/run/netns`, `/tmp` and valkey, and the scripts write their
-scratch files to `mktemp -d` rather than the bind-mounted workspace, so
-container runs are independent. Most of a script's time is spent in fixed
-`sleep`s, so the tier takes roughly as long as its slowest script instead
-of the sum of all of them. Prep builds (a2a's security-testing `ph`) all
-run first, serially, so a cargo build does not compete with running tests.
-The width is a constant (`NETNS_CONTAINER_JOBS`), not a flag: those fixed
-`sleep`s make heavy CPU contention a flake risk, and no host has needed
-another value yet.
+**Container-route scripts run four at a time.** Each `make docker-test` is
+its own `docker run`, with a private network namespace, `/run/netns`,
+`/tmp` and valkey, and the scripts write their scratch files to `mktemp -d`
+rather than the bind-mounted workspace, so container runs are independent.
+Most of a script's time is spent in fixed `sleep`s, so the tier takes
+roughly as long as its slowest script instead of the sum of all of them.
+Prep builds (a2a's security-testing `ph`) all run first, serially, so a
+cargo build does not compete with running tests. Four is a default, not a
+limit: those fixed `sleep`s make heavy CPU contention a flake risk, so
+`--jobs` (zipline#144) changes it per run. The host route was serial here,
+because its scripts shared fixed `/run/netns` names; it is parallel too
+since zipline#192 (§10.3).
 
 **`VALKEY_SERVER_BIN` is removed from the child environment, not merely
 omitted.** The Makefile forwards it into the container, where a host path
@@ -636,18 +624,88 @@ would not exist, and the child inherits the operator's environment; so the
 plan removes it explicitly (`env_remove`).
 ([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
 
-**Provenance is `sudo: container`, and it quotes the real reason.** Keeping
-the `sudo` field name preserves the manifest shape; the coverage note and
-the stdout header carry the host route's actual failure text, because a
-fixed "no passwordless sudo" would record false provenance when the miss
-was `valkey-server`. ([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+**Provenance is `privilege: container`, and it quotes the real reason.**
+The coverage note and the stdout header carry the host route's actual
+failure text, because a fixed "user namespaces blocked" would record false
+provenance when the miss was `valkey-server`. (The field was `sudo:` with
+values `nopasswd | primed | container` until zipline#192 renamed it; build
+sets committed before that still carry the old spelling.) ([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
 
 **A selected-but-unrunnable route is refused at the gate, never at run
 time.** Skipped outcomes do not fail a build, so a run-time skip behind a
 passing gate would let an explicitly requested tier exit 0 without running.
 ([zipline#92](https://github.com/mkolehmainen/zipline/issues/92))
 
-### 10.3 Deferred
+### 10.3 Unprivileged netns tier
+
+Umbrella [zipline#189](https://github.com/mkolehmainen/zipline/issues/189):
+the integration scripts moved off `sudo ip netns` (#190, #191) and this
+tool's gate followed (#192). No master plan was written; the issues carry
+the full text.
+
+**Why `unshare -nr`.** Each script re-execs itself in an unprivileged user +
+network namespace where it is mapped root, so every `ip`/`tc`/`tuntap` call
+works without sudo. Test namespaces are anonymous, each pinned by a `sleep
+infinity` holder and entered with `nsenter`. Four things follow: agents run
+the tier without credentials; a crashed run cannot leak namespaces into
+`/run/netns`, because they die with their holders; namespace names are
+private per run, so host runs go in parallel; and `common_funcs.sh` stays
+close to upstream `main` (`ed071e4`, `bcfe2fa`), which took the same
+approach, so syncs stay cheap.
+([zipline#189](https://github.com/mkolehmainen/zipline/issues/189))
+
+**`ph` runs as the namespace's mapped root, not as the invoking user.**
+Under `unshare -nr` there is no `SUDO_UID`, so ph's control-socket owner
+resolution (`socket_owner.rs`, zipline#39) finds no owner and leaves the
+socket as created, with a startup warning. The scripts pass
+`--control-path` explicitly and `ph-cli -p` runs in the same namespace, so
+that is harmless. The harness unsets `SUDO_*`/`PKEXEC_UID` before
+re-exec: a script started via sudo would otherwise make ph chown the socket
+to a uid unmapped in the namespace, and the bind would fail. Operator
+decision on the umbrella, 2026-10-13.
+([zipline#190](https://github.com/mkolehmainen/zipline/issues/190),
+[zipline#191](https://github.com/mkolehmainen/zipline/issues/191))
+
+**zipline keeps `/24` substrate addressing; upstream uses peer addressing.**
+A `peer` address on a veth is a `/32`, the kernel does not answer ARP for
+it on an ARP-capable device, so neighbour entries stay INCOMPLETE and no
+adapter docks. TUN devices are NOARP, so `tun0` keeps peer addressing. This
+is the one deliberate divergence of `create_network` from `main`.
+([zipline#190](https://github.com/mkolehmainen/zipline/issues/190))
+
+**`pkill`/`pgrep` are scoped to the run's own user namespace.** Concurrent
+runs share the invoking user's real uid and the host PID namespace, and use
+the same relative socket names and patterns, so a bare `pkill -f` or
+`ph_pid_for_socket`'s `pgrep` would hit another run's process.
+`pkill_own`/`pgrep_own` add `--ns $$ --nslist user`.
+([zipline#191](https://github.com/mkolehmainen/zipline/issues/191))
+
+**`remote-node-host-env.sh` stays root-based.** Its namespaces must be
+reachable from a real remote Windows or macOS node, so their veths end in
+the host's network namespace (the container runs `--network host`) and the
+host NATs for them. An unprivileged user namespace has no `CAP_NET_ADMIN`
+over the host's network namespace. It is a manual tool, not part of this
+tier. ([zipline#191](https://github.com/mkolehmainen/zipline/issues/191))
+
+**The host route has a worktree floor, like the container route.** The
+route is chosen from live host probes before any worktree exists, but a
+build set can pin a `zl-zpr-core` from before zipline#191, whose scripts
+still use `sudo` and fixed namespace names; run on the host, now four at
+once, they fail or collide. So once the worktree exists the host route
+requires `pkill_own` in `common_funcs.sh` — added by `3ad48ed`, the same
+commit that converted every script — and an older worktree falls back to
+the container, or skips, exactly as a probe miss would. Found in review of
+zl-zpr-dev-context#65; the default build set at the time pinned such a core.
+([zipline#192](https://github.com/mkolehmainen/zipline/issues/192))
+
+**`--prompt-for-sudo` is retired, and the gate probes `unshare -nr true`.**
+Nothing in the tier uses sudo any more, so the prompt, the credential
+refresher and the `nopasswd`/`primed` provenances (zipline#70) had nothing
+left to serve; the flag is now a usage error. A blocked probe still falls
+back to the container, and the skip reason names the AppArmor sysctl.
+([zipline#192](https://github.com/mkolehmainen/zipline/issues/192))
+
+### 10.4 Deferred
 
 Recorded, not scheduled; none has an open issue.
 
@@ -661,8 +719,8 @@ Recorded, not scheduled; none has an open issue.
   container route. Workaround: `make docker-image BASE_IMAGE=ubuntu:<host
   release>` in `zl-zpr-core/integration-test/` before the build. No
   `BASE_IMAGE` knob in `zpr-dev` until someone hits it.
-- **`--netns-runner host|docker|auto`**, to force the container on a
-  sudo-capable host.
+- **`--netns-runner host|docker|auto`**, to force the container on a host
+  whose user namespaces work.
 - **Shared per-repository `CARGO_TARGET_DIR`**, the first thing to try if the
   roughly fifteen-minute cold build becomes the bottleneck.
 - **Narrowing `--privileged`** to a capability set — belongs to
