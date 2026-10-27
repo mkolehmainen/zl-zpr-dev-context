@@ -6,7 +6,9 @@ shape and the board-status map are supplied as fixtures.
 Run: python3 test_next_issue.py
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -515,20 +517,9 @@ def test_iteration_has_ended_boundaries():
 def test_main_reports_expired_iteration_in_json_and_text():
     """End to end through main(): --json carries an `expired_iteration` key and
     the text report a reschedule section; neither offers the item as NEXT."""
-    import contextlib
-    import io
     long_ago = {"startDate": "2020-01-06", "duration": 14, "title": "Iteration 0"}
-    saved = (next_issue.all_issues, next_issue.board_statuses,
-             next_issue.org_items, list(sys.argv))
-    next_issue.all_issues = lambda: []
-    next_issue.board_statuses = lambda: {}
-    next_issue.org_items = lambda: [org_item(29, iteration=long_ago)]
-    try:
-        buf = io.StringIO()
-        sys.argv[:] = ["next-issue.py", "--json"]
-        with contextlib.redirect_stdout(buf):
-            next_issue.main()
-        report = json.loads(buf.getvalue())
+    with main_fixture([org_item(29, iteration=long_ago)], "ZprBot1"):
+        report = run_main_json()
         assert report["next"] is None, report
         assert numbers(report["expired_iteration"]) == [29], report
         assert numbers(report["pre_authorized"]) == [], report
@@ -541,10 +532,108 @@ def test_main_reports_expired_iteration_in_json_and_text():
         assert "iteration ended" in text and "reschedule" in text, text
         assert "org-zpr/zipline#29" in text, text
         assert "Iteration 0" in text, text
+
+
+@contextlib.contextmanager
+def main_fixture(org, gh_user, env_login=None):
+    """Run main() against fixtures: no network, a stubbed gh login, and a
+    controlled ZPR_BOT_LOGIN (the caller's own environment must not leak in)."""
+    saved = (next_issue.all_issues, next_issue.board_statuses,
+             next_issue.org_items, next_issue.gh_login, list(sys.argv),
+             os.environ.get("ZPR_BOT_LOGIN"))
+    next_issue.all_issues = lambda: []
+    next_issue.board_statuses = lambda: {}
+    next_issue.org_items = lambda: org
+    next_issue.gh_login = lambda: gh_user
+    os.environ.pop("ZPR_BOT_LOGIN", None)
+    if env_login is not None:
+        os.environ["ZPR_BOT_LOGIN"] = env_login
+    try:
+        yield
     finally:
-        (next_issue.all_issues, next_issue.board_statuses,
-         next_issue.org_items, argv) = saved
+        (next_issue.all_issues, next_issue.board_statuses, next_issue.org_items,
+         next_issue.gh_login, argv, env) = saved
         sys.argv[:] = argv
+        os.environ.pop("ZPR_BOT_LOGIN", None)
+        if env is not None:
+            os.environ["ZPR_BOT_LOGIN"] = env
+
+
+def run_main_json():
+    buf = io.StringIO()
+    sys.argv[:] = ["next-issue.py", "--json"]
+    with contextlib.redirect_stdout(buf):
+        next_issue.main()
+    return json.loads(buf.getvalue())
+
+
+def test_bot_login_defaults_to_zprbot1():
+    """Unset or blank ZPR_BOT_LOGIN keeps the original pinned login, so the
+    existing ZprBot1 agent needs no configuration."""
+    assert next_issue.bot_login({}) == "ZprBot1"
+    assert next_issue.bot_login({"ZPR_BOT_LOGIN": "  "}) == "ZprBot1"
+
+
+def test_bot_login_env_override():
+    assert next_issue.bot_login({"ZPR_BOT_LOGIN": "ZprBot2"}) == "ZprBot2"
+    assert next_issue.bot_login({"ZPR_BOT_LOGIN": " ZprBot2\n"}) == "ZprBot2"
+
+
+def test_check_identity_matches_case_insensitively():
+    """GitHub logins are case-insensitive; the canonical (gh) spelling is
+    returned because assignee logins come back canonical too."""
+    assert next_issue.check_identity("zprbot2", "ZprBot2") == "ZprBot2"
+
+
+def test_check_identity_mismatch_exits_naming_both_logins():
+    """A mis-authed gh must stop the run, never widen 'assigned to the bot'."""
+    try:
+        next_issue.check_identity("ZprBot2", "ZprBot1")
+    except SystemExit as e:
+        msg = str(e)
+        assert "ZprBot2" in msg and "ZprBot1" in msg, msg
+        assert e.code != 0
+    else:
+        raise AssertionError("mismatch did not exit")
+
+
+def test_org_opt_in_follows_the_configured_bot():
+    """Assigned to ZprBot2 is ZprBot2's opt-in and ZprBot1's 'someone else'."""
+    item = org_item(29, assignees=["ZprBot2"])
+    ready, _, _, _, _ = next_issue.select_org([item], TODAY, bot="ZprBot2")
+    assert numbers(ready) == [29], ready
+    for rows in next_issue.select_org([item], TODAY, bot="ZprBot1"):
+        assert numbers(rows) == [], rows
+
+
+def iteration_now():
+    """An iteration containing the real today: main() reads the wall clock,
+    so the fixed TODAY/CURRENT fixtures are not current there."""
+    start = datetime.date.today() - datetime.timedelta(days=1)
+    return {"startDate": start.isoformat(), "duration": 14, "title": "Iteration now"}
+
+
+def test_main_uses_zpr_bot_login():
+    item = org_item(29, assignees=["ZprBot2"], iteration=iteration_now())
+    with main_fixture([item], "ZprBot2", "ZprBot2"):
+        assert run_main_json()["next"]["number"] == 29
+
+
+def test_main_default_login_is_unchanged_for_zprbot1():
+    item = org_item(29, assignees=["ZprBot1"], iteration=iteration_now())
+    with main_fixture([item], "ZprBot1"):
+        assert run_main_json()["next"]["number"] == 29
+
+
+def test_main_exits_when_gh_is_not_the_bot():
+    with main_fixture([org_item(29, assignees=["ZprBot1"])], "ZprBot1", "ZprBot2"):
+        try:
+            run_main_json()
+        except SystemExit as e:
+            assert e.code != 0
+        else:
+            raise AssertionError("identity mismatch did not exit")
+
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
