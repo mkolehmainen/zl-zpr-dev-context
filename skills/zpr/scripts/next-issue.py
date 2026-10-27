@@ -78,7 +78,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghretry import run_gh  # noqa: E402
+from ghretry import gh_login, run_gh  # noqa: E402
 
 OWNER = "mkolehmainen"
 REPO = "zipline"
@@ -88,10 +88,32 @@ PROJECT_NUMBER = 1
 # by the org-owned project #5 "zipline". The bot login is pinned rather than
 # read from `gh api user` so a fixture-driven test needs no network and a
 # mis-authed gh cannot silently widen "assigned to the bot" to someone else.
+# Two agents run this flow (ZprBot1, ZprBot2 -- zipline#206), so the pin is
+# configurable via ZPR_BOT_LOGIN, and main() refuses to run when gh is
+# authenticated as anyone but the configured bot.
 ORG_OWNER = "org-zpr"
 ORG_REPO = "zipline"
 ORG_PROJECT_NUMBER = 5
-BOT_LOGIN = "ZprBot1"
+DEFAULT_BOT_LOGIN = "ZprBot1"
+BOT_LOGIN = DEFAULT_BOT_LOGIN
+
+
+def bot_login(env=None):
+    """The bot login this agent picks org issues for: ZPR_BOT_LOGIN, or the
+    original pinned default when unset or blank."""
+    env = os.environ if env is None else env
+    return (env.get("ZPR_BOT_LOGIN") or "").strip() or DEFAULT_BOT_LOGIN
+
+
+def check_identity(bot, authed):
+    """Return the canonical login if gh is authenticated as `bot`
+    (case-insensitive, as GitHub logins are); otherwise exit non-zero."""
+    if authed.strip().casefold() != bot.casefold():
+        raise SystemExit(
+            f"next-issue: gh is authenticated as {authed.strip() or '<nobody>'!r}, "
+            f"but the bot login is {bot!r} (ZPR_BOT_LOGIN, default "
+            f"{DEFAULT_BOT_LOGIN}). Refusing to select issues for the wrong identity.")
+    return authed.strip()
 
 # Every issue in every state, because a *closed* umbrella can still have open
 # children -- so the sub-issue order has to be read from closed issues too.
@@ -474,6 +496,7 @@ def ref(row):
 
 def main():
     as_json = "--json" in sys.argv
+    bot = check_identity(bot_login(), gh_login())
     issues = all_issues()
     order = execution_order(issues)
     statuses = board_statuses()
@@ -484,7 +507,7 @@ def main():
     # every org row -- mkolehmainen/zipline takes precedence (operator
     # decision 2026-10-07).
     o_ready, o_pre, o_awaiting, o_underway, expired_iteration = select_org(
-        org_items(), datetime.date.today())
+        org_items(), datetime.date.today(), bot=bot)
     ready += o_ready
     pre_authorized += o_pre
     awaiting_ready += o_awaiting

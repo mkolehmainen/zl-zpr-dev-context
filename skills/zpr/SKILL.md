@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.7.1
+version: 2.8.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -131,7 +131,7 @@ gated by the **org-owned project #5 "zipline"** under `org-zpr`
 
 ```
 pickable(org) = open ∧ all blockers closed ∧ Status == Ready
-                ∧ Iteration == current ∧ (unassigned ∨ assigned solely to ZprBot1)
+                ∧ Iteration == current ∧ (unassigned ∨ assigned solely to <bot>)
 ```
 
 Rules, all operator decisions (2026-10-07):
@@ -151,7 +151,12 @@ Rules, all operator decisions (2026-10-07):
   has already **ended** can never auto-start: it is reported under
   `expired_iteration` ("Ready, but its iteration ended — reschedule") and a driver's
   tick report must carry it to the operator, same duty as `awaiting-ready`.
-- **Assignment semantics differ from the tracker.** Assigning ZprBot1 is the
+- **`<bot>` is this agent's own login.** Two agents run this flow: ZprBot1 and
+  ZprBot2 (zipline#206). `next-issue.py` reads it from `ZPR_BOT_LOGIN` (default
+  `ZprBot1`) and exits non-zero unless `gh` is authenticated as that same login, so
+  an agent set up with the wrong identity stops instead of picking for someone else.
+  An issue assigned to the *other* bot is "assigned to anyone else" below.
+- **Assignment semantics differ from the tracker.** Assigning `<bot>` is the
   operator's opt-in and does NOT mark underway; the underway marker is board
   Status `In progress` / `In review`, which pickup sets at claim time (so claim =
   assign yourself **and** set Status `In progress`, and verify both). An issue
@@ -160,8 +165,8 @@ Rules, all operator decisions (2026-10-07):
   `org-zpr/core-devs` member** (verify with
   `gh api orgs/org-zpr/teams/core-devs/memberships/<login> -q .state` == `active`).
   Tracker issues remain operator-only.
-- Access granted for this: ZprBot1 holds Triage on `org-zpr/zipline` (assign,
-  comment) and Write on org project #5 (Status updates). If a Status write or
+- Access granted for this: ZprBot1 and ZprBot2 each hold at least Triage on
+  `org-zpr/zipline` (assign, comment) and Write on org project #5 (Status updates). If a Status write or
   self-assign fails with a permissions error, report it — the grant regressed.
 
 `next-issue.py` implements both sources and merges the reporting sections; org rows
@@ -365,7 +370,7 @@ read the issue's comments first:
    they do not know which one is next. Assignment is what marks the issue underway:
    `next-issue.py` reports an assigned issue under `underway` rather than `ready`, so
    the claim is also what stops a second agent — or a second session of you — picking
-   the same issue. (Org issues: assignment to ZprBot1 is the operator's opt-in, not
+   the same issue. (Org issues: assignment to `<bot>` is the operator's opt-in, not
    the marker — the claim there is self-assign **plus** Status `In progress` on org
    project #5, both read back; see "Second source".)
 
@@ -577,8 +582,8 @@ What that does and does not mean for assignment:
   Org project #5 (`org-zpr/zipline` issues) is org-owned, so its queries use the
   `organization(login:"org-zpr")` root field instead. It has the same five Status
   values and the same 14-day, Monday-start `Iteration N` field; there, unlike #1,
-  the Iteration value is a pickup gate (see "Second source"). ZprBot1 holds Write on
-  it for Status updates.
+  the Iteration value is a pickup gate (see "Second source"). ZprBot1 and ZprBot2 hold
+  Write on it for Status updates.
 - Status values on this board are **`Backlog` / `Ready` / `In progress` /
   `In review` / `Done`** — exact spelling, note the lowercase second word. There is
   no `Todo`. `Backlog` means not cleared to start; `Ready` is the **operator's
