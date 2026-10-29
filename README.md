@@ -47,7 +47,6 @@ command):
 |---|---|
 | Protect `main` against direct pushes: `gh api -X PUT repos/org-zpr/zl-zpr-<n>/branches/main/protection ...` | `main` is only a mirror by convention right now; nothing enforces it. Protecting it makes the convention real, but it is a policy call about your own workflow. |
 | Widen the CI `push` branch filters to include `zipline` | The workflows use `push: branches: ["main"]`. `pull_request` has no branch filter, so **the PR gate already works on zipline PRs** — only post-merge push builds are silent. Widening it means a commit in each of the ten forks. |
-| Repoint the `Cargo.toml` Git dependencies from `mkolehmainen` to `org-zpr` | They resolve today through GitHub's transfer redirect. Tagged releases embed the old URL, so the move has to go bottom-up through new tags (`zl-zpr-utils`, then `zl-zpr-common`, then consumers) or Cargo sees two sources for one crate. See [`docs/BUILD.md`](docs/BUILD.md). |
 | Confirm the `zipline` board can hold fork issues | Project 5 lives in `org-zpr` while the repositories are personal forks. It currently tracks an *upstream* issue. Adding an issue from a fork has not been tested — try it once before relying on it. |
 
 **Routine, whenever you want upstream changes:**

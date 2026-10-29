@@ -45,9 +45,9 @@ not a fork, so no upstream mirror exists — its working and default branch is
 
 The forks and the tracker were created under the personal `mkolehmainen`
 account and transferred to `org-zpr` on 2026-10-29 (`org-zpr/zl-zipline#207`;
-the tracker was renamed `zipline` → `zl-zipline`). Old URLs redirect. The
-`Cargo.toml` Git dependencies still spell `github.com/mkolehmainen/zl-zpr-*`
-until they are re-tagged bottom-up; `docs/BUILD.md` has the reasoning. Because
+the tracker was renamed `zipline` → `zl-zipline`). Old URLs redirect, but every
+reference in the code, including the Cargo Git dependencies (`#209`), now names
+`org-zpr`. Because
 forks and upstream now share an organization, write access no longer keeps you
 out of `org-zpr/zpr-*`; only the rule below and upstream's branch protection do.
 

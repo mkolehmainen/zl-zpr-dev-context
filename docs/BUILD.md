@@ -111,11 +111,14 @@ CI builds every Rust repository through the shared reusable workflows in
 `zl-zpr-dev-tools/.github/workflows/` (`rust-build-test.yml`, `rust-test.yml`), so
 a green local `make test && make check` is a good predictor of a green CI run.
 
-**On the forks there is no CI at all: Actions is disabled on all ten, by
-decision.** So that prediction is moot — the local gate is not a predictor of a
-remote one, it *is* the gate. A PR reporting no checks is the intended state.
+**Actions is enabled on the forks again since the move to `org-zpr`
+(2026-10-29), but CI is not yet a gate.** Until it has been seen green there,
+the local gate stays the gate and CI's result is quoted beside it (see
+`skills/zpr/SKILL.md`, "Definition of done"). The `zl-zpr-core` integration
+jobs still fail for want of a visa service release (`org-zpr/zl-zipline#208`).
 
-None of that CI could run. `pr-notify.yml` needs `SLACK_ALERT_WEBHOOK_URL`, and
+From 2026-09 until the transfer, Actions was switched off, because none of that
+CI could run. `pr-notify.yml` needs `SLACK_ALERT_WEBHOOK_URL`, and
 every caller of the shared `rust-build-test.yml` / `rust-test.yml` /
 `go-build-test.yml` reusable workflows needs `ZPR_CICD_RO_TOKEN`, which the
 reusable workflow declares **required** — and a fork inherits no secrets, so
@@ -124,8 +127,8 @@ a reason no PR could fix.
 
 The switch is repository-level, so the workflow files are untouched and nothing
 in `.github/` diverges from upstream. `skills/zpr/scripts/fork-ci.sh` reports the
-state and reverses it (`--enable`); re-enabling means also supplying the two
-secrets, or the same failures return.
+state and reverses it (`--enable`). Inside the organization both secrets reach
+the forks, so re-enabling no longer needs them supplied by hand.
 
 ### Compiler caching with sccache (optional, per-host)
 
@@ -383,17 +386,18 @@ cd zpr-dev && cargo build && cargo test
 Shared Rust crates are consumed **from Git by tag**, not by local path:
 
 ```toml
-zpr       = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.30.0", ... }
-zpr-ext   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "zpr-ext-v0.5.3" }
-cbpf-rs   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "cbpf-rs-v0.2.0" }
+zpr       = { git = "https://github.com/org-zpr/zl-zpr-common.git", tag = "v0.30.0", ... }
+zpr-ext   = { git = "https://github.com/org-zpr/zl-zpr-utils.git",  tag = "zpr-ext-v0.5.3" }
+cbpf-rs   = { git = "https://github.com/org-zpr/zl-zpr-utils.git",  tag = "cbpf-rs-v0.2.0" }
 ```
 
-> **Every ZPR-family URL points at the forks.** The forks moved from
-> `mkolehmainen` to `org-zpr` on 2026-10-29 (`org-zpr/zl-zipline#207`); Cargo
-> URLs still spell `github.com/mkolehmainen/zl-zpr-*` and resolve through
-> GitHub's redirect until they are re-tagged bottom-up (`zl-zpr-utils`, then
-> `zl-zpr-common`, then consumers), because changing a consumer's URL alone
-> gives Cargo two sources for a crate a tagged dependency also pulls in.
+> **Every ZPR-family URL points at the forks in `org-zpr`.** The forks moved
+> from `mkolehmainen` to `org-zpr` on 2026-10-29 (`org-zpr/zl-zipline#207`), and
+> the Cargo URLs followed bottom-up (`org-zpr/zl-zipline#209`): `rcu-v0.1.3`,
+> then `zl-zpr-common` `v0.30.2`, then the consumers. The order was forced
+> because a released tag embeds its dependencies' URLs, and changing a
+> consumer's URL alone gives Cargo two sources for a crate that a tagged
+> dependency also pulls in. Any future owner or URL move has to go the same way.
 > `zipline#17` repointed
 > the `zpr` crate and `zl-zpr-common`'s submodules; `zipline#18` finished the
 > job for everything sourced from `zpr-utils` — `cbpf-rs`, `zpr-ext`,

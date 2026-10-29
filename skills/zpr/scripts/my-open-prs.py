@@ -28,9 +28,10 @@ retried instead of silently dropped.
 never on reviewer-side state:
   - an unresolved review thread whose LAST comment is not by the bot
   - mergeStateStatus BEHIND or DIRTY
-CI rollup is NOT among them: Actions is disabled on the forks, so a FAILURE can
-only come from runs recorded before that switch, which nothing the bot does will
-clear.
+CI rollup is NOT among them: CI is not yet a gate (see "Definition of done" in
+../SKILL.md), and the known reds -- runs recorded while Actions was off, and the
+zl-zpr-core integration jobs that need a visa service release (zl-zipline#208)
+-- are ones nothing the bot pushes will clear.
 reviewDecision=CHANGES_REQUESTED alone is deliberately EXCLUDED: it persists
 until a human re-reviews, so keying on it would re-wake the automation every
 tick for days while merely awaiting re-review. A bare changes-requested review
@@ -270,12 +271,13 @@ def needs_work(item: dict, user: str) -> bool:
         return False
     if any(t["author"] != user for t in item.get("unresolvedThreads") or []):
         return True
-    # CI rollup is deliberately NOT a trigger: Actions is disabled on every fork,
-    # so a rollup can only be FAILURE from check runs recorded before the switch
-    # (zl-zpr-core#1 carries eight). Those never clear -- no push the bot makes
-    # can re-run a workflow that cannot run -- so keying on them would re-wake
-    # the automation every tick forever. Restore this if the forks get CI again;
-    # see "Definition of done" in ../SKILL.md.
+    # CI rollup is deliberately NOT a trigger while CI is not a gate. The known
+    # FAILURE sources -- check runs recorded while Actions was off (zl-zpr-core#1
+    # carries eight) and zl-zpr-core's integration jobs, which need a visa
+    # service release that does not exist yet (zl-zipline#208) -- never clear
+    # from a bot push, so keying on them would re-wake the automation every tick
+    # forever. Restore this once CI is green and becomes a gate; see "Definition
+    # of done" in ../SKILL.md.
     if item.get("mergeStateStatus") in ("BEHIND", "DIRTY"):
         return True
     return False
