@@ -539,15 +539,17 @@ What that does and does not mean for assignment:
   `gh` subcommands target the fork too. If you ever *do* want to send something
   upstream, branch off `main` and say so explicitly — never by accident.
 - **Actions is enabled on every fork since the move to `org-zpr` (2026-10-29),
-  but CI is not yet a gate.** From 2026-09 until the transfer it was switched off,
+  but CI is a gate only in `zl-zpr-core`.** From 2026-09 until the transfer it was switched off,
   because none of it could run: `pr-notify.yml` needs `SLACK_ALERT_WEBHOOK_URL`, and
   every caller of the shared `rust-build-test.yml` / `rust-test.yml` /
   `go-build-test.yml` reusable workflows needs `ZPR_CICD_RO_TOKEN`, and a
   personal-account fork inherits no secrets. Inside the organization both secrets
-  are available (`org-zpr/zl-zipline#207`), so the checks now run. Until they have
-  been seen green on these repositories, **the local build gate is still the gate**
-  (see "Definition of done"): quote what CI reported beside it, and never present
-  either as the other. `scripts/fork-ci.sh` still reports and flips the switch.
+  are available (`org-zpr/zl-zipline#207`), so the checks now run. They have been
+  seen fully green on `zl-zpr-core` (`zl-zpr-core#88`, `zipline#208`), so there
+  **CI is the gate**, together with the local netns tier until CI runs all of it
+  (`zipline#210`). In every other fork **the local build gate is still the gate**
+  until its CI has been seen green (see "Definition of done"): quote what CI
+  reported beside it, and never present either as the other. `scripts/fork-ci.sh` still reports and flips the switch.
 
   Leftovers to recognize rather than fix: `zl-zpr-core#1` carries eight red check
   runs recorded before the switch-off, which will not clear until that branch moves.
@@ -708,12 +710,18 @@ as underway.
 A task is done only when ALL of these hold for the PR:
 
 1. Every review thread is resolved (no unresolved `reviewThreads`).
-2. **The full local build gate passes** — build, `cargo fmt --check`, test,
-   `-D warnings` — with its output quoted in the PR description. CI runs again since
-   the move to `org-zpr` but is not yet a gate (see "Git / PR conventions"), so this
-   is still the condition; quote what `gh pr checks` reported beside it. Run the gate from the repository's `Makefile`, except
-   in `zl-zpr-core`, which has no root `make check` (use the CI-equivalent commands in
-   `docs/BUILD.md`).
+2. **The build gate passes.** Which gate depends on the repository (see "Git / PR
+   conventions"):
+   - **`zl-zpr-core`: all CI checks pass, and the local netns tier passes.**
+     `gh pr checks` reports every check as `pass`, with none pending. CI runs only
+     five of the netns tier's scripts, so also run the full tier
+     (`zpr-dev build --test netns`, as in "Gate escalation" below) on every PR,
+     whatever it touches. Quote both results in the PR description. When CI runs
+     the whole tier (`zipline#210`), drop the local tier from this condition.
+   - **Every other fork: the full local build gate passes** — build,
+     `cargo fmt --check`, test, `-D warnings` — with its output quoted in the PR
+     description. CI runs there but is not yet a gate, so quote what `gh pr checks`
+     reported beside it. Run the gate from the repository's `Makefile`.
    **Gate escalation:** if the change touches connection authorization or addressing
    semantics — `libeval`'s `approve_connection`, `vs`'s `authorize_connection` /
    `connection_control`, or the adapter's dock/address paths — the unit gate is NOT
@@ -748,17 +756,16 @@ A task is done only when ALL of these hold for the PR:
 3. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
    `DIRTY`, or `BLOCKED`). `UNSTABLE` is acceptable **only** when it traces to check
    runs recorded before Actions was switched off, as on `zl-zpr-core#1`, or to a
-   CI failure the PR description names and explains as not caused by the PR (while
-   CI is not yet a gate). Confirm which before accepting it.
+   CI failure the PR description names and explains as not caused by the PR (only in
+   a fork where CI is not yet a gate; never in `zl-zpr-core`). Confirm which before accepting it.
 4. The board Status is `In review`, every PR for the issue is named in a comment
    on it, and every PR carries its assignee (the merger — see "Git / PR
    conventions"). "Linked" means exactly that comment — see "Git / PR conventions" for why a
    real closing link cannot exist across repositories.
 
 **Never report a check as passing when it did not run**, and never present the local
-gate as CI. Quote what you actually ran. Once CI has been seen green on these
-repositories, restore "all CI checks pass" as condition 2 rather than leaving this
-in place.
+gate as CI. Quote what you actually ran. Once CI has been seen green on another
+fork, move that fork into the "all CI checks pass" branch of condition 2.
 
 **`reviewDecision` is not on that list.** With no reviewer it stays empty forever, so
 requiring `APPROVED` would make every task permanently unfinishable. Hand the PR to
