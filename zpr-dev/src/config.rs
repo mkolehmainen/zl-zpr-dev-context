@@ -192,7 +192,7 @@ mod tests {
 version: 1
 repositories:
   - name: zl-zpr-core
-    url: git@github.com:mkolehmainen/zl-zpr-core.git
+    url: git@github.com:org-zpr/zl-zpr-core.git
 ";
 
     #[test]

@@ -2,7 +2,10 @@
 #
 # Turn GitHub Actions off (or back on) for every fork in the workspace.
 #
-# Why this exists: none of the CI in the `mkolehmainen/zl-zpr-*` forks can run.
+# Why this exists: while the forks lived under the personal `mkolehmainen`
+# account, none of their CI could run. Since the transfer to `org-zpr`
+# (2026-10-29, org-zpr/zl-zipline#207) the organization's secrets reach them
+# and Actions is enabled again; the original reasoning follows.
 # `pr-notify.yml` needs `SLACK_ALERT_WEBHOOK_URL` and every caller of the shared
 # `rust-build-test.yml` / `rust-test.yml` / `go-build-test.yml` reusable workflows
 # needs `ZPR_CICD_RO_TOKEN`, which the reusable workflow declares *required* --
@@ -32,7 +35,7 @@
 
 set -euo pipefail
 
-OWNER="mkolehmainen"
+OWNER="org-zpr"
 # The workspace definition is the source of truth for the repository set, so a
 # repository added there is picked up here without editing this script.
 WORKSPACE_YAML="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/workspace.yaml"

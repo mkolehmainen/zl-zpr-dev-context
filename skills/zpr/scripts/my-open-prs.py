@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report review state of every open PR authored by a user in the zl-zpr forks (mkolehmainen).
+"""Report review state of every open PR authored by a user in the zl-zpr forks (org-zpr/zl-zpr-*).
 
 Designed as an output-hash *monitor* script: output must be STABLE (sorted, no
 timestamps, no clock values) so hash-based change detection only fires when
@@ -60,7 +60,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghretry import gh_login, run_gh  # noqa: E402
 
-DEFAULT_ORG = "mkolehmainen"
+DEFAULT_ORG = "org-zpr"
 BODY_CLIP = 160
 
 PR_QUERY = """

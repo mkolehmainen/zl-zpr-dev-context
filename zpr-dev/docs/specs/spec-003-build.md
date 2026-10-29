@@ -1,6 +1,6 @@
 # SPEC-003: `zpr-dev build` — compatible build sets
 
-Status: implemented (B1–B6, umbrella `mkolehmainen/zipline#57`, complete
+Status: implemented (B1–B6, umbrella `org-zpr/zl-zipline#57`, complete
 2026-09-21); the netns container fallback followed (`zipline#90`)
 Date: 2026-09-17
 Parent spec: `spec-001-zpr-dev.md`
@@ -180,7 +180,7 @@ resolved:                          # diagnostic; ignored as input
   built_from: { manifest: build-sets/2026-09-17.yaml, context: 8bfd061, tip: false }
   host: { os: linux, arch: x86_64, rustc: 1.9x.y, cargo: 1.9x.y, go: 1.2x.y, capnp: 1.0.2 }
   pins:                            # what cargo actually compiled against
-    - { crate: zpr, url: "https://github.com/mkolehmainen/zl-zpr-common.git", tag: v0.26.0,
+    - { crate: zpr, url: "https://github.com/org-zpr/zl-zpr-common.git", tag: v0.26.0,
         pinned_by: [zl-zpr-core, zl-zpr-core/adapter/ph, zl-zpr-visaservice, zl-zpr-compiler],
         newest_available: v0.27.0 }
   versions:
@@ -258,7 +258,7 @@ and require a single `tag` (or `rev`) across the whole set. Report every
 disagreement as:
 
 ```text
-ERROR pin disagreement: crate `zpr` (https://github.com/mkolehmainen/zl-zpr-common.git)
+ERROR pin disagreement: crate `zpr` (https://github.com/org-zpr/zl-zpr-common.git)
   v0.26.0  zl-zpr-core/Cargo.toml:29 (+ adapter/ph, inherited)
   v0.27.0  zl-zpr-visaservice/Cargo.toml:29
   => cut one tag and bump every consumer, or record it in allow_pin_drift
@@ -519,9 +519,9 @@ Rationale carried over from the completed master plans, which were retired
 once shipped. Full plan text is in git history:
 
 - `git show a35b224:docs/plans/2026-09-17-build-sets.md` — umbrella
-  [zipline#57](https://github.com/mkolehmainen/zipline/issues/57)
+  [zipline#57](https://github.com/org-zpr/zl-zipline/issues/57)
 - `git show a35b224:docs/plans/2026-09-23-netns-docker-fallback.md` —
-  umbrella [zipline#90](https://github.com/mkolehmainen/zipline/issues/90)
+  umbrella [zipline#90](https://github.com/org-zpr/zl-zipline/issues/90)
 
 ### 10.1 Build sets
 
@@ -530,38 +530,38 @@ thing that makes a set compatible was invisible at build time: cargo pins
 (not checkouts) decide what compiles, the visa service hardcodes a
 near-exact compiler version, and the tests that would catch a bad set needed
 foreign binaries staged by hand.
-([zipline#57](https://github.com/mkolehmainen/zipline/issues/57))
+([zipline#57](https://github.com/org-zpr/zl-zipline/issues/57))
 
 **A build set does not pin `zl-zpr-common`.** The first draft pinned it and
 compared that ref to the consumers' tags — backwards, since nothing in the
 set compiles the checkout. The meaningful invariant is that the consumers
 *agree*, at whatever tag; generalizing that to every shared git dependency
 (the `zpr-utils` crates, the Cap'n Proto fork) came free.
-([zipline#57](https://github.com/mkolehmainen/zipline/issues/57))
+([zipline#57](https://github.com/org-zpr/zl-zipline/issues/57))
 
 **Gate 3 is static *and* dynamic.** Parsing `POLICY_MIN_COMPILER_*` gives a
 readable message before anything compiles; `pregen` with the set's own
 `zplc` proves it for real and cannot be fooled by a parser bug. An
 unparseable value is an error, because silently skipping the one check
 nothing else performs would be worse than failing.
-([zipline#59](https://github.com/mkolehmainen/zipline/issues/59))
+([zipline#59](https://github.com/org-zpr/zl-zipline/issues/59))
 
 **No separate `vs-int` tier.** The visa service's `make test` already runs
 its integration tests; a separate tier would reimplement that sequencing and
-drift from it. ([zipline#61](https://github.com/mkolehmainen/zipline/issues/61))
+drift from it. ([zipline#61](https://github.com/org-zpr/zl-zipline/issues/61))
 
 **Release for `dist/`, debug for `make test`, compiled twice.** Rather than
 force one profile, `dist/` is release (what demos and tarballs use) and the
 netns scripts are pointed at it via `PH_BIN`/`VS_BIN`; the double compile is
 the price of not reimplementing `make release`.
-([zipline#60](https://github.com/mkolehmainen/zipline/issues/60))
+([zipline#60](https://github.com/org-zpr/zl-zipline/issues/60))
 
 **Reproducible inputs, not reproducible binaries.** The emitted manifest
 guarantees the same sources and pins; `sha256` per binary is for comparison
 only, since cargo output varies with toolchain and path. The manifest is
 emitted whenever the gates pass, even on a later failure, because the most
 interesting set to reproduce is the one that broke.
-([zipline#60](https://github.com/mkolehmainen/zipline/issues/60))
+([zipline#60](https://github.com/org-zpr/zl-zipline/issues/60))
 
 **Transitive pins are checked in `Cargo.lock`, not the manifests.** Gate 1
 reads manifests only, so a pin made inside a tagged git dependency
@@ -571,20 +571,20 @@ ZPR-family crate at two versions (`gates::gate_lock_dual_versions`); a
 finding names the lock, not the `Cargo.toml` line, because that file lives
 inside a tagged artifact the workspace does not check out. An unreadable
 lock is an error, not a skip.
-([zipline#69](https://github.com/mkolehmainen/zipline/issues/69))
+([zipline#69](https://github.com/org-zpr/zl-zipline/issues/69))
 
 **A known drift is fixed, not suppressed.** The first run's `rcu`
 disagreement was a stale repo-wide tag in `zl-zpr-common` (same source,
 identical `rcu/src/`); it was re-pinned in `zl-zpr-common` `v0.28.0` rather
 than recorded in `allow_pin_drift`, whose reason would have cited a closed
 issue and left an exception no reader could justify.
-([zipline#18](https://github.com/mkolehmainen/zipline/issues/18),
-[zipline#63](https://github.com/mkolehmainen/zipline/issues/63))
+([zipline#18](https://github.com/org-zpr/zl-zipline/issues/18),
+[zipline#63](https://github.com/org-zpr/zl-zipline/issues/63))
 
 **The committed manifest is a set's identifier.** Sets live in
 `zl-zpr-dev-context/build-sets/`, beside `workspace.yaml`; no per-repository
 git tag is cut for a set, because a sha is a stronger reference than a tag
-that can move. ([zipline#63](https://github.com/mkolehmainen/zipline/issues/63))
+that can move. ([zipline#63](https://github.com/org-zpr/zl-zipline/issues/63))
 
 ### 10.2 netns container fallback
 
@@ -592,7 +592,7 @@ that can move. ([zipline#63](https://github.com/mkolehmainen/zipline/issues/63))
 reachable Docker daemon → container; otherwise skip or error as before. The
 fallback covers any host-route miss (user namespaces, `valkey-server`,
 `python3`), not only the privilege one.
-([zipline#92](https://github.com/mkolehmainen/zipline/issues/92))
+([zipline#92](https://github.com/org-zpr/zl-zipline/issues/92))
 
 **`zpr-dev` drives `zl-zpr-core`'s Makefile; it never owns `docker run`.**
 One `make docker-test TEST=<script> WORKSPACE=<build-dir>` per script keeps
@@ -603,7 +603,7 @@ its own glob. `WORKSPACE` is overridden from the `make` command line, which
 beats the Makefile's `:=` — the first draft wrongly scheduled a `?=` change
 in `zl-zpr-core` (zipline#91, withdrawn); `:=` is better anyway, since an
 exported `WORKSPACE` in the operator's shell cannot leak into the mount.
-([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+([zipline#93](https://github.com/org-zpr/zl-zipline/issues/93))
 
 **Container-route scripts run four at a time.** Each `make docker-test` is
 its own `docker run`, with a private network namespace, `/run/netns`,
@@ -622,23 +622,23 @@ since zipline#192 (§10.3).
 omitted.** The Makefile forwards it into the container, where a host path
 would not exist, and the child inherits the operator's environment; so the
 plan removes it explicitly (`env_remove`).
-([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+([zipline#93](https://github.com/org-zpr/zl-zipline/issues/93))
 
 **Provenance is `privilege: container`, and it quotes the real reason.**
 The coverage note and the stdout header carry the host route's actual
 failure text, because a fixed "user namespaces blocked" would record false
 provenance when the miss was `valkey-server`. (The field was `sudo:` with
 values `nopasswd | primed | container` until zipline#192 renamed it; build
-sets committed before that still carry the old spelling.) ([zipline#93](https://github.com/mkolehmainen/zipline/issues/93))
+sets committed before that still carry the old spelling.) ([zipline#93](https://github.com/org-zpr/zl-zipline/issues/93))
 
 **A selected-but-unrunnable route is refused at the gate, never at run
 time.** Skipped outcomes do not fail a build, so a run-time skip behind a
 passing gate would let an explicitly requested tier exit 0 without running.
-([zipline#92](https://github.com/mkolehmainen/zipline/issues/92))
+([zipline#92](https://github.com/org-zpr/zl-zipline/issues/92))
 
 ### 10.3 Unprivileged netns tier
 
-Umbrella [zipline#189](https://github.com/mkolehmainen/zipline/issues/189):
+Umbrella [zipline#189](https://github.com/org-zpr/zl-zipline/issues/189):
 the integration scripts moved off `sudo ip netns` (#190, #191) and this
 tool's gate followed (#192). No master plan was written; the issues carry
 the full text.
@@ -652,7 +652,7 @@ the tier without credentials; a crashed run cannot leak namespaces into
 private per run, so host runs go in parallel; and `common_funcs.sh` stays
 close to upstream `main` (`ed071e4`, `bcfe2fa`), which took the same
 approach, so syncs stay cheap.
-([zipline#189](https://github.com/mkolehmainen/zipline/issues/189))
+([zipline#189](https://github.com/org-zpr/zl-zipline/issues/189))
 
 **`ph` runs as the namespace's mapped root, not as the invoking user.**
 Under `unshare -nr` there is no `SUDO_UID`, so ph's control-socket owner
@@ -663,29 +663,29 @@ that is harmless. The harness unsets `SUDO_*`/`PKEXEC_UID` before
 re-exec: a script started via sudo would otherwise make ph chown the socket
 to a uid unmapped in the namespace, and the bind would fail. Operator
 decision on the umbrella, 2026-10-13.
-([zipline#190](https://github.com/mkolehmainen/zipline/issues/190),
-[zipline#191](https://github.com/mkolehmainen/zipline/issues/191))
+([zipline#190](https://github.com/org-zpr/zl-zipline/issues/190),
+[zipline#191](https://github.com/org-zpr/zl-zipline/issues/191))
 
 **zipline keeps `/24` substrate addressing; upstream uses peer addressing.**
 A `peer` address on a veth is a `/32`, the kernel does not answer ARP for
 it on an ARP-capable device, so neighbour entries stay INCOMPLETE and no
 adapter docks. TUN devices are NOARP, so `tun0` keeps peer addressing. This
 is the one deliberate divergence of `create_network` from `main`.
-([zipline#190](https://github.com/mkolehmainen/zipline/issues/190))
+([zipline#190](https://github.com/org-zpr/zl-zipline/issues/190))
 
 **`pkill`/`pgrep` are scoped to the run's own user namespace.** Concurrent
 runs share the invoking user's real uid and the host PID namespace, and use
 the same relative socket names and patterns, so a bare `pkill -f` or
 `ph_pid_for_socket`'s `pgrep` would hit another run's process.
 `pkill_own`/`pgrep_own` add `--ns $$ --nslist user`.
-([zipline#191](https://github.com/mkolehmainen/zipline/issues/191))
+([zipline#191](https://github.com/org-zpr/zl-zipline/issues/191))
 
 **`remote-node-host-env.sh` stays root-based.** Its namespaces must be
 reachable from a real remote Windows or macOS node, so their veths end in
 the host's network namespace (the container runs `--network host`) and the
 host NATs for them. An unprivileged user namespace has no `CAP_NET_ADMIN`
 over the host's network namespace. It is a manual tool, not part of this
-tier. ([zipline#191](https://github.com/mkolehmainen/zipline/issues/191))
+tier. ([zipline#191](https://github.com/org-zpr/zl-zipline/issues/191))
 
 **The host route has a worktree floor, like the container route.** The
 route is chosen from live host probes before any worktree exists, but a
@@ -696,14 +696,14 @@ requires `pkill_own` in `common_funcs.sh` — added by `3ad48ed`, the same
 commit that converted every script — and an older worktree falls back to
 the container, or skips, exactly as a probe miss would. Found in review of
 zl-zpr-dev-context#65; the default build set at the time pinned such a core.
-([zipline#192](https://github.com/mkolehmainen/zipline/issues/192))
+([zipline#192](https://github.com/org-zpr/zl-zipline/issues/192))
 
 **`--prompt-for-sudo` is retired, and the gate probes `unshare -nr true`.**
 Nothing in the tier uses sudo any more, so the prompt, the credential
 refresher and the `nopasswd`/`primed` provenances (zipline#70) had nothing
 left to serve; the flag is now a usage error. A blocked probe still falls
 back to the container, and the skip reason names the AppArmor sysctl.
-([zipline#192](https://github.com/mkolehmainen/zipline/issues/192))
+([zipline#192](https://github.com/org-zpr/zl-zipline/issues/192))
 
 ### 10.4 Deferred
 

@@ -17,50 +17,50 @@ workspace:
 repositories:
   # Core ZPR components
   - name: zl-zpr-core
-    url: git@github.com:mkolehmainen/zl-zpr-core.git
+    url: git@github.com:org-zpr/zl-zpr-core.git
     default_branch: zipline
 
   # Shared zpr crate
   - name: zl-zpr-common
-    url: git@github.com:mkolehmainen/zl-zpr-common.git
+    url: git@github.com:org-zpr/zl-zpr-common.git
     default_branch: zipline
 
   # ZPR Visa Service component
   - name: zl-zpr-visaservice
-    url: git@github.com:mkolehmainen/zl-zpr-visaservice.git
+    url: git@github.com:org-zpr/zl-zpr-visaservice.git
     default_branch: zipline
 
   # Visa Service API
   - name: zl-zpr-vsapi
-    url: git@github.com:mkolehmainen/zl-zpr-vsapi.git
+    url: git@github.com:org-zpr/zl-zpr-vsapi.git
     default_branch: zipline
 
   # The ZPL Compiler
   - name: zl-zpr-compiler
-    url: git@github.com:mkolehmainen/zl-zpr-compiler.git
+    url: git@github.com:org-zpr/zl-zpr-compiler.git
     default_branch: zipline
 
   # ZPR Policy descriptor source
   - name: zl-zpr-policy
-    url: git@github.com:mkolehmainen/zl-zpr-policy.git
+    url: git@github.com:org-zpr/zl-zpr-policy.git
     default_branch: zipline
 
   # CoreDNS with the ZPR resolver plugin.
   #
   # Not a fork of anything upstream, so there is no read-only `main` mirror to
-  # keep pristine and work happens on `main` (mkolehmainen/zipline#37).
+  # keep pristine and work happens on `main` (org-zpr/zl-zipline#37).
   - name: zl-zpr-coredns
-    url: git@github.com:mkolehmainen/zl-zpr-coredns.git
+    url: git@github.com:org-zpr/zl-zpr-coredns.git
     default_branch: main
 
   # Zero-Trust Packet Routing RFCs
   - name: zl-zpr-rfcs
-    url: git@github.com:mkolehmainen/zl-zpr-rfcs.git
+    url: git@github.com:org-zpr/zl-zpr-rfcs.git
     default_branch: zipline
 
   # Resources to run ZPRnet demos
   - name: zl-zpr-demo
-    url: git@github.com:mkolehmainen/zl-zpr-demo.git
+    url: git@github.com:org-zpr/zl-zpr-demo.git
     default_branch: zipline
 
   # Non-ZPR-specific utilities used by ZPR.
@@ -70,12 +70,12 @@ repositories:
   # URL and repointing one side breaks `zl-zpr-core` (zipline#17, #18). The fork
   # is kept here because it is the only pushable copy, so #18 gets done in it.
   - name: zl-zpr-utils
-    url: git@github.com:mkolehmainen/zl-zpr-utils.git
+    url: git@github.com:org-zpr/zl-zpr-utils.git
     default_branch: zipline
 
   # Development tools for the ZPR project
   - name: zl-zpr-dev-tools
-    url: git@github.com:mkolehmainen/zl-zpr-dev-tools.git
+    url: git@github.com:org-zpr/zl-zpr-dev-tools.git
     default_branch: zipline
 
 documentation:

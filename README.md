@@ -6,12 +6,10 @@ repository should see.
 
 This is the **zipline** fork of the ZPR workspace. Every repository it names —
 with one exception — is
-a fork under [`mkolehmainen`](https://github.com/mkolehmainen) of the
-corresponding upstream repository in the
-[`org-zpr`](https://github.com/org-zpr) organization: `zl-zpr-core` forks
-`org-zpr/zpr-core`, and so on. Only the names and clone URLs changed — nothing
-*inside* the forks has been repointed, so their Cargo Git dependencies,
-submodule URLs, and CI workflow references still resolve to `org-zpr`. See
+a fork, living in the [`org-zpr`](https://github.com/org-zpr) organization
+beside its upstream: `zl-zpr-core` forks `org-zpr/zpr-core`, and so on. The
+forks were created under the personal `mkolehmainen` account and transferred to
+`org-zpr` on 2026-10-29 (`org-zpr/zl-zipline#207`); old URLs redirect. See
 [`docs/REPOSITORIES.md`](docs/REPOSITORIES.md).
 
 Each fork has two long-lived branches: **`zipline`** is the working branch and
@@ -19,7 +17,7 @@ the repository default, and **`main`** is a read-only mirror of upstream `main`.
 Feature branches start from `zipline` and pull requests target it. See
 [`docs/REPOSITORIES.md`](docs/REPOSITORIES.md) ("Branch model") for how to sync
 and merge without breaking that. The exception is
-[`zl-zpr-coredns`](https://github.com/mkolehmainen/zl-zpr-coredns) (Go): it is
+[`zl-zpr-coredns`](https://github.com/org-zpr/zl-zpr-coredns) (Go): it is
 **not a fork**, so it has no upstream mirror to keep pristine — its working and
 default branch is **`main`**, and PRs there target `main`.
 
@@ -30,7 +28,7 @@ default branch is **`main`**, and PRs there target `main`.
 ## For humans: what still needs doing by hand
 
 The fork rename and the branch model are done. All eleven repositories exist as
-`mkolehmainen/zl-zpr-*`; every fork has a `zipline` branch created from `main`
+`org-zpr/zl-zpr-*`; every fork has a `zipline` branch created from `main`
 and `zipline` as its default branch (`zl-zpr-coredns` is not a fork and works
 on `main`). The list below is what tooling
 could not or should not do on its own.
@@ -39,7 +37,7 @@ could not or should not do on its own.
 without this a `gh pr create` offers to open your PR against `org-zpr`:
 
 ```bash
-gh repo set-default mkolehmainen/zl-zpr-<name>
+gh repo set-default org-zpr/zl-zpr-<name>
 ```
 
 **Once per repository, if you want them** (each needs a decision, not just a
@@ -47,10 +45,9 @@ command):
 
 | Action | Why it is not automated |
 |---|---|
-| Protect `main` against direct pushes: `gh api -X PUT repos/mkolehmainen/zl-zpr-<n>/branches/main/protection ...` | `main` is only a mirror by convention right now; nothing enforces it. Protecting it makes the convention real, but it is a policy call about your own workflow. |
-| Add the `SLACK_ALERT_WEBHOOK_URL` secret, or delete `pr-notify.yml` | Forks inherit no secrets, so `pr-notify.yml` fails on every PR. Fixing it needs the webhook value, which only you have. Judge builds on the `rust-build-test` checks meanwhile. |
+| Protect `main` against direct pushes: `gh api -X PUT repos/org-zpr/zl-zpr-<n>/branches/main/protection ...` | `main` is only a mirror by convention right now; nothing enforces it. Protecting it makes the convention real, but it is a policy call about your own workflow. |
 | Widen the CI `push` branch filters to include `zipline` | The workflows use `push: branches: ["main"]`. `pull_request` has no branch filter, so **the PR gate already works on zipline PRs** — only post-merge push builds are silent. Widening it means a commit in each of the ten forks. |
-| Repoint cross-repository references to the forks | The `Cargo.toml` Git dependencies, `zl-zpr-common`'s `.gitmodules`, and the reusable workflow refs all still resolve to `org-zpr`. Until they are changed, a tag you push to `zl-zpr-common` reaches no consumer. See [`docs/BUILD.md`](docs/BUILD.md). |
+| Repoint the `Cargo.toml` Git dependencies from `mkolehmainen` to `org-zpr` | They resolve today through GitHub's transfer redirect. Tagged releases embed the old URL, so the move has to go bottom-up through new tags (`zl-zpr-utils`, then `zl-zpr-common`, then consumers) or Cargo sees two sources for one crate. See [`docs/BUILD.md`](docs/BUILD.md). |
 | Confirm the `zipline` board can hold fork issues | Project 5 lives in `org-zpr` while the repositories are personal forks. It currently tracks an *upstream* issue. Adding an issue from a fork has not been tested — try it once before relying on it. |
 
 **Routine, whenever you want upstream changes:**
@@ -58,7 +55,7 @@ command):
 ```bash
 # 1. fast-forward the fork's main from upstream (--branch main is required:
 #    the repository default is now zipline)
-gh repo sync mkolehmainen/zl-zpr-<name> --source org-zpr/zpr-<name> --branch main
+gh repo sync org-zpr/zl-zpr-<name> --source org-zpr/zpr-<name> --branch main
 
 # 2. merge it into zipline and push
 git fetch origin && git checkout zipline && git merge origin/main
@@ -108,7 +105,7 @@ into the workspace from the start instead:
 
 ```bash
 mkdir -p ~/src/zl_zpr
-git clone git@github.com:mkolehmainen/zl-zpr-dev-context.git ~/src/zl_zpr/zl-zpr-dev-context
+git clone git@github.com:org-zpr/zl-zpr-dev-context.git ~/src/zl_zpr/zl-zpr-dev-context
 cargo install --path ~/src/zl_zpr/zl-zpr-dev-context/zpr-dev
 zpr-dev setup
 ```

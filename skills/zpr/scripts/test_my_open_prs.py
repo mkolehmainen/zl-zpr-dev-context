@@ -71,11 +71,11 @@ workspace:
 repositories:
   # Core ZPR components
   - name: zl-zpr-core
-    url: git@github.com:mkolehmainen/zl-zpr-core.git
+    url: git@github.com:org-zpr/zl-zpr-core.git
     default_branch: zipline
 
   - name: zl-zpr-common
-    url: git@github.com:mkolehmainen/zl-zpr-common.git
+    url: git@github.com:org-zpr/zl-zpr-common.git
     default_branch: zipline
 
 documentation:

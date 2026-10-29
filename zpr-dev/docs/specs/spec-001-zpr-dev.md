@@ -144,7 +144,7 @@ workspace:
 
 repositories:                   # required, non-empty
   - name: zl-zpr-core              # required, unique, non-empty
-    url: git@github.com:mkolehmainen/zl-zpr-core.git   # required
+    url: git@github.com:org-zpr/zl-zpr-core.git   # required
     default_branch: main        # optional, default "main"
     context:                    # optional block
       local: AGENTS.repo.md     # optional, default "AGENTS.repo.md"
@@ -168,7 +168,7 @@ grow ahead of the tool.
 
 ### 3.2 Initial repository set
 
-Public `mkolehmainen` repositories with the `zl-zpr-` prefix — the zipline forks
+Public `org-zpr` repositories with the `zl-zpr-` prefix (created under `mkolehmainen`, transferred 2026-10-29) — the zipline forks
 of the upstream `org-zpr/zpr-*` set — excluding `zpr-bas` (deprecated, not
 forked) and `zl-zpr-dev-context` (it is the context repository and is cloned
 separately):
@@ -405,7 +405,7 @@ remains renaming that file to `AGENTS.repo.md`.
 ### 5.2 `setup`
 
 ```text
---context-url <git-url>   Default git@github.com:mkolehmainen/zl-zpr-dev-context.git
+--context-url <git-url>   Default git@github.com:org-zpr/zl-zpr-dev-context.git
 --branch <branch>         Branch to clone for the context repository
 --no-clone                Do not clone missing source repositories
 ```
@@ -815,7 +815,7 @@ start:
 
 ```bash
 mkdir -p ~/src/zl_zpr
-git clone git@github.com:mkolehmainen/zl-zpr-dev-context.git ~/src/zl_zpr/zl-zpr-dev-context
+git clone git@github.com:org-zpr/zl-zpr-dev-context.git ~/src/zl_zpr/zl-zpr-dev-context
 cargo install --path ~/src/zl_zpr/zl-zpr-dev-context/zpr-dev
 zpr-dev setup
 ```

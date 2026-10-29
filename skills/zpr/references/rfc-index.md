@@ -5,9 +5,9 @@ Two sources:
 1. **Full set (internal)**: distributed to team members as `ZPR_RFC-<n>[.<rev>].pdf`
    and `.docx` files. The highest `<rev>` for a given `<n>` is current
    (`ZPR_RFC-8.5.pdf` supersedes `ZPR_RFC-8.pdf`). Only a subset is public.
-2. **Public subset**: https://github.com/mkolehmainen/zl-zpr-rfcs — sources in
+2. **Public subset**: https://github.com/org-zpr/zl-zpr-rfcs — sources in
    `src/`, built PDFs in `pdf/`
-   (https://github.com/mkolehmainen/zl-zpr-rfcs/tree/main/pdf). This is the
+   (https://github.com/org-zpr/zl-zpr-rfcs/tree/main/pdf). This is the
    zipline fork; the upstream original is https://github.com/org-zpr/zpr-rfcs,
    which is where newly published RFCs land first.
 

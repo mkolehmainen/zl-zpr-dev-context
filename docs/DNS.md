@@ -138,7 +138,7 @@ only the `hostnames` one.
 Note on pruning: the compiler drops a trusted service that no ZPL rule
 references — but `device.hostname` is visa-service-interpreted, so a store
 vending it is retained anyway
-([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)): the
+([zipline#105](https://github.com/org-zpr/zl-zipline/issues/105)): the
 weaver keeps any service whose `returns_attributes` maps to `device.hostname`
 or `device.zpr_addr`, emitting an `info` diagnostic. No ZPL reference is
 needed to keep the hosts index filling.
@@ -224,31 +224,31 @@ recycled across reconnects.
 Rationale carried over from the completed master plans, which were retired
 once shipped. Full plan text is in git history:
 `git show a35b224:docs/plans/2026-09-15-dns-integration.md` (service names,
-umbrella [zipline#34](https://github.com/mkolehmainen/zipline/issues/34)) and
+umbrella [zipline#34](https://github.com/org-zpr/zl-zipline/issues/34)) and
 `git show a35b224:docs/plans/2026-09-17-machine-hostname-dns.md` (machine
-names, umbrella [zipline#49](https://github.com/mkolehmainen/zipline/issues/49)).
+names, umbrella [zipline#49](https://github.com/org-zpr/zl-zipline/issues/49)).
 
 **No new admin surface for services, no schema change.** The existing
 `GET /admin/services{,/name}` already carried everything a resolver needs, so
 service names shipped as one new API-key permission (`resolve`) plus a Go
 plugin; machine names added only `GET /admin/hosts/{name}` under that same
 permission. Neither touched `policy.capnp`, the compiler or `zpr-common`.
-[zipline#36](https://github.com/mkolehmainen/zipline/issues/36),
-[#54](https://github.com/mkolehmainen/zipline/issues/54)
+[zipline#36](https://github.com/org-zpr/zl-zipline/issues/36),
+[#54](https://github.com/org-zpr/zl-zipline/issues/54)
 
 **The resolver is an ordinary policy subject, and the VS an ordinary
 provider.** `Allow zpr-dns to access vs-admin` (a service as the subject)
 and `vs-admin` provided by the VS's own adapter were the design's one real
 unknown; both compile and load, so no device-class stand-in for the resolver
-was needed. [zipline#35](https://github.com/mkolehmainen/zipline/issues/35)
+was needed. [zipline#35](https://github.com/org-zpr/zl-zipline/issues/35)
 
 **The answer is the provider's `zpr_addr`, never `dock_zpr_addr`.** The
 latter is the node the provider docks to, not the provider.
-[zipline#37](https://github.com/mkolehmainen/zipline/issues/37)
+[zipline#37](https://github.com/org-zpr/zl-zipline/issues/37)
 
 **Infrastructure failure is SERVFAIL, never NXDOMAIN.** A client must not
 cache "does not exist" because the resolver lost its visa or the VS
-restarted. [zipline#37](https://github.com/mkolehmainen/zipline/issues/37)
+restarted. [zipline#37](https://github.com/org-zpr/zl-zipline/issues/37)
 
 **Hostnames come from a trusted service, not from policy.** Having the
 evaluator grant a hostname the way it grants `zpr.services` would be
@@ -256,19 +256,19 @@ authenticated by construction, but it is a three-repository change and makes
 every machine addition a policy recompile — wrong for a network where
 machines come and go. The `host:<NAME>` index is source-agnostic, so policy
 could become a second source later without touching the plugin or the API.
-[zipline#49](https://github.com/mkolehmainen/zipline/issues/49)
+[zipline#49](https://github.com/org-zpr/zl-zipline/issues/49)
 
 **The attribute is `device.hostname`, not `device.zpr.*`.** ZPR owns the
 `zpr.` sub-namespace in every class domain and the compiler rejects a
 declared trusted service returning one, since it could forge an identity key
 or authority marker. A reserved spelling could only be filled from policy.
-[zipline#50](https://github.com/mkolehmainen/zipline/issues/50)
+[zipline#50](https://github.com/org-zpr/zl-zipline/issues/50)
 
 **Not the X.509 CN.** CNs are neither unique nor indexed by design — two
 connected actors may share one — and are unconstrained strings that need not
 be valid DNS labels. A purpose-built, validated attribute keeps cryptographic
 identity and network naming separate.
-[zipline#49](https://github.com/mkolehmainen/zipline/issues/49)
+[zipline#49](https://github.com/org-zpr/zl-zipline/issues/49)
 
 **First claim wins; never mangle.** Renaming a duplicate `somename` to
 `somename-1` was rejected: nobody learns the mangled name, which machine
@@ -279,28 +279,28 @@ about to claim. Instead `device.hostname` is multi-valued and claimed per
 value, so a naming authority can return a friendly alias plus a value unique
 by construction; a collision costs only the alias. A released name is not
 handed to the loser — it re-claims on its next attribute refresh.
-[zipline#53](https://github.com/mkolehmainen/zipline/issues/53)
+[zipline#53](https://github.com/org-zpr/zl-zipline/issues/53)
 
 **One naming authority per ZPRnet** (operator decision, 2026-09-17).
 Collisions are therefore races or control-plane bugs, not a steady state,
 which is why loud first-claim-wins is enough and name scoping is not needed.
-[zipline#49](https://github.com/mkolehmainen/zipline/issues/49)
+[zipline#49](https://github.com/org-zpr/zl-zipline/issues/49)
 
 **One flat namespace, checked at claim time.** A `somename.host.<zone>`
 subzone would be unambiguous by construction but makes the common case
 uglier to defend against a collision one naming authority can simply avoid.
 Ambiguity is rejected where names are assigned, and the plugin's
 service-first order keeps the resolver correct even if that check is
-bypassed. [zipline#52](https://github.com/mkolehmainen/zipline/issues/52),
-[#53](https://github.com/mkolehmainen/zipline/issues/53)
+bypassed. [zipline#52](https://github.com/org-zpr/zl-zipline/issues/52),
+[#53](https://github.com/org-zpr/zl-zipline/issues/53)
 
 **Claims are atomic via `hset_nx` returning whether it set.** That removes
 the read-then-write race a hand-rolled claim would have. Releases go through
 owner-checked helpers shared by service and host entries, because an
 unchecked delete in `try_update_actor` had let one provider's refresh erase
 another provider's live `service:<name>` entry.
-[zipline#51](https://github.com/mkolehmainen/zipline/issues/51),
-[#53](https://github.com/mkolehmainen/zipline/issues/53)
+[zipline#51](https://github.com/org-zpr/zl-zipline/issues/51),
+[#53](https://github.com/org-zpr/zl-zipline/issues/53)
 
 ---
 

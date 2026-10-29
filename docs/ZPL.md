@@ -329,7 +329,7 @@ visa-service-interpreted attribute** — `device.zpr_addr` (the static-address
 grant) or `device.hostname` (the DNS hosts index), listed in
 `zpl::KATTR_VS_INTERPRETED` — because the visa service reads those attributes
 itself, so a ZPL reference says nothing about whether the store is needed
-([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)). Every
+([zipline#105](https://github.com/org-zpr/zl-zipline/issues/105)). Every
 other trusted service is retained by reference,
 with one transitive exception: the weaver marks a service used when policy
 names one of its attributes, then `resolve_trusted_service_providers` widens

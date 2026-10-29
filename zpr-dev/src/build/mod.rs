@@ -3346,7 +3346,7 @@ allow_pin_drift:
         let utils_pin = |tag: &str| {
             format!(
                 "[package]\nname = \"zpr\"\nversion = \"0.26.0\"\n\n[dependencies]\n\
-                 zpr-utils = {{ git = \"https://github.com/mkolehmainen/zl-zpr-utils.git\", tag = \"{tag}\" }}\n"
+                 zpr-utils = {{ git = \"https://github.com/org-zpr/zl-zpr-utils.git\", tag = \"{tag}\" }}\n"
             )
         };
         std::fs::write(common.join("Cargo.toml"), utils_pin("zpr-utils-v0.2.2")).unwrap();
@@ -3359,8 +3359,8 @@ allow_pin_drift:
         std::fs::write(
             core.join("Cargo.toml"),
             "[package]\nname = \"core-fixture\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
-             zpr = { git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"v0.26.0\" }\n\
-             zpr-utils = { git = \"https://github.com/mkolehmainen/zl-zpr-utils.git\", tag = \"zpr-utils-v0.2.2\" }\n",
+             zpr = { git = \"https://github.com/org-zpr/zl-zpr-common.git\", tag = \"v0.26.0\" }\n\
+             zpr-utils = { git = \"https://github.com/org-zpr/zl-zpr-utils.git\", tag = \"zpr-utils-v0.2.2\" }\n",
         )
         .unwrap();
         std::fs::write(core.join("README.md"), "fixture\n").unwrap();
@@ -4119,7 +4119,7 @@ allow_pin_drift:
             dir.join("Cargo.toml"),
             format!(
                 "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
-                 zpr = {{ git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
+                 zpr = {{ git = \"https://github.com/org-zpr/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
             ),
         )
         .unwrap();

@@ -1,8 +1,8 @@
 # feature: OIDC
 
-- Context: Part of the ZPR project. Umbrella issues: mkolehmainen/zipline/issues/1 (OIDC), mkolehmainen/zipline/issues/40 (silent re-authentication). Their master plans are retired; see *Design decisions*.
+- Context: Part of the ZPR project. Umbrella issues: org-zpr/zl-zipline/issues/1 (OIDC), org-zpr/zl-zipline/issues/40 (silent re-authentication). Their master plans are retired; see *Design decisions*.
 - Note that this started life in the org-zpr/zpr-dev-context repository
-  and has been moved into mkolehmainen/zl-zpr-dev-context fork. So some
+  and has been moved into org-zpr/zl-zpr-dev-context fork. So some
   references may still be pointing into the old repo.
 
 
@@ -948,9 +948,9 @@ likely to model wrongly.
 Rationale carried over from the completed master plans, which were retired once
 shipped. Full plan text is in git history:
 `git show a35b224:docs/plans/2026-09-02-oidc-implementation-plan.md` (umbrella
-[zipline#1](https://github.com/mkolehmainen/zipline/issues/1)) and
+[zipline#1](https://github.com/org-zpr/zl-zipline/issues/1)) and
 `git show a35b224:docs/plans/2026-09-16-silent-oidc-reauth.md` (umbrella
-[zipline#40](https://github.com/mkolehmainen/zipline/issues/40)). Decisions
+[zipline#40](https://github.com/org-zpr/zl-zipline/issues/40)). Decisions
 already argued in the sections above are not repeated here.
 
 **The OIDC nonce is bound to the node's link challenge, not to a visa-service
@@ -963,14 +963,14 @@ node verifies the challenge's HMAC and age exactly as for a self-signed blob and
 recomputes the hash into `OidcBlob.nonce`, and the visa service requires the
 token's `nonce` to equal it. The token is bound to this link's attempt,
 freshness is enforced by the one party that can check it, and the visa service
-needs no new state. ([zipline#12](https://github.com/mkolehmainen/zipline/issues/12),
-[zipline#13](https://github.com/mkolehmainen/zipline/issues/13))
+needs no new state. ([zipline#12](https://github.com/org-zpr/zl-zipline/issues/12),
+[zipline#13](https://github.com/org-zpr/zl-zipline/issues/13))
 
 **The nonce expectation is an enum, not a "skip" flag.** The reauth path needs
 no nonce check (see *Credential lifetimes*), but connect and reauth share one
 validator. It takes `NonceExpectation::{Required, SessionBound}` rather than a
 boolean so the connect arm cannot be built with checking off by accident.
-([zipline#43](https://github.com/mkolehmainen/zipline/issues/43))
+([zipline#43](https://github.com/org-zpr/zl-zipline/issues/43))
 
 **Validation failures map to distinct wire error codes.** A token failing any
 cryptographic or claim check (signature, `iss`, `aud`, `exp`, `nonce`, `kid`,
@@ -978,26 +978,26 @@ algorithm) is `invalidSignature`; an out-of-scope `hd` or too-old `auth_time`
 is `authError`; an `issuer` with no declared trusted service is `paramError`;
 no key set at all is `temporarilyUnavailable`. The split is what lets the CLI
 tell "misconfiguration" from "wrong account" from "try again".
-([zipline#11](https://github.com/mkolehmainen/zipline/issues/11))
+([zipline#11](https://github.com/org-zpr/zl-zipline/issues/11))
 
 **`client_secret` is optional and carried end to end as public data.** Google's
 native-app guidance marks it optional for Desktop clients but does not exempt
 them, so rather than guess, policy may carry one (`""` = none) through
 `OidcConfig` → `OidcClientConfig` → the adapter. Per RFC 8252 §8.5 it is not a
-secret for a public client. ([zipline#2](https://github.com/mkolehmainen/zipline/issues/2),
-[zipline#16](https://github.com/mkolehmainen/zipline/issues/16))
+secret for a public client. ([zipline#2](https://github.com/org-zpr/zl-zipline/issues/2),
+[zipline#16](https://github.com/org-zpr/zl-zipline/issues/16))
 
 **The node's authentication timeout sits above the human's.** The node arms
 one timer for the whole out-of-band authentication, originally 120 s — sized
 for machines, and shorter than a person at a consent screen. It is raised to
 330 s so the adapter's 300 s `OIDC_USER_INTERACTION_TIMEOUT` expires first and
-reports *why*. ([zipline#12](https://github.com/mkolehmainen/zipline/issues/12))
+reports *why*. ([zipline#12](https://github.com/org-zpr/zl-zipline/issues/12))
 
 **The fake IdP serves real TLS rather than the compiler growing an escape
 hatch.** The integration test needed a local issuer, which is not `https`.
 Rather than a test-only `--allow-insecure-issuer` flag, the fake IdP serves TLS
 from a test CA supplied through `SSL_CERT_FILE`, so the compiler's `https` rule
-stays absolute. ([zipline#16](https://github.com/mkolehmainen/zipline/issues/16))
+stays absolute. ([zipline#16](https://github.com/org-zpr/zl-zipline/issues/16))
 
 **The session ceiling reuses `max_auth_age_seconds`.** It already meant "how
 old may the human's login be" and was already enforced at validation, so
@@ -1005,8 +1005,8 @@ silent renewal needed no new `policy.capnp` field and no schema bump anywhere;
 `reauthorize`, `ReauthRequest.blobs` and `Connection.authExpires` already
 existed on the wire. (The node→adapter hop did not, and needed the
 `RenewAuthenticationRequest`/`Response` ZDP pair — the one place "no schema
-change" turned out wrong.) ([zipline#40](https://github.com/mkolehmainen/zipline/issues/40),
-[zipline#66](https://github.com/mkolehmainen/zipline/issues/66))
+change" turned out wrong.) ([zipline#40](https://github.com/org-zpr/zl-zipline/issues/40),
+[zipline#66](https://github.com/org-zpr/zl-zipline/issues/66))
 
 **`ph-cli auth-agent` is how a human logs in; `connect` is the scripted form.**
 Renewal happens only while an `AuthAgent` is registered and its process alive.
@@ -1015,13 +1015,13 @@ resident to renew; `connect` returns once the link is up and exists for CI and
 scripts, where its exit codes (2 declined, 3 timeout, 4 IdP unreachable, 5 VS
 rejected token, 6 policy denied, 7 device blob rejected) are the point. Running
 `connect` after `auth-agent` on the same link replaces the live registration
-with one about to exit. ([zipline#40](https://github.com/mkolehmainen/zipline/issues/40),
-[zipline#46](https://github.com/mkolehmainen/zipline/issues/46))
+with one about to exit. ([zipline#40](https://github.com/org-zpr/zl-zipline/issues/40),
+[zipline#46](https://github.com/org-zpr/zl-zipline/issues/46))
 
 **The legacy `ac @1` blob arm stays in `vs.capnp`.** The `OAuthRsa`
 client that produced it is deleted, but removing a union arm is a schema break,
 so it waits for a coordinated bump (see *Deferred*).
-([zipline#15](https://github.com/mkolehmainen/zipline/issues/15))
+([zipline#15](https://github.com/org-zpr/zl-zipline/issues/15))
 
 **A dock-link reconnect re-prompts the user; the token is not reused (wontfix).**
 Every connect is bound to the node's fresh link challenge (the visa service
@@ -1035,8 +1035,8 @@ zipline#157, a fatal local activation failure hard-stops rather than
 reconnect-looping, so a re-prompt costs one login per genuine link flap.
 `test_reconnect_within_token_lifetime_rerequests_interaction` in
 `adapter/ph/src/link_state.rs` locks this behavior in.
-([zipline#157](https://github.com/mkolehmainen/zipline/issues/157),
-[zipline#166](https://github.com/mkolehmainen/zipline/issues/166))
+([zipline#157](https://github.com/org-zpr/zl-zipline/issues/157),
+[zipline#166](https://github.com/org-zpr/zl-zipline/issues/166))
 
 
 ## Implementation status
@@ -1045,15 +1045,15 @@ Re-checked against the forks' `zipline` branches on 2026-09-17 (`zl-zpr-compiler
 0.18.0, `zl-zpr-visaservice` 0.19.0 with `POLICY_MIN_COMPILER_MINOR = 18`,
 `zl-zpr-common` 0.27.0, `zl-zpr-core` 0.7.0).
 **The OIDC design in this document is implemented**: the umbrella epic
-[zipline#1](https://github.com/mkolehmainen/zipline/issues/1) is closed, and the
+[zipline#1](https://github.com/org-zpr/zl-zipline/issues/1) is closed, and the
 oidc + file interplay epic
-[zipline#22](https://github.com/mkolehmainen/zipline/issues/22) has merged its
+[zipline#22](https://github.com/org-zpr/zl-zipline/issues/22) has merged its
 code half, including the end-to-end fixture. Where the design sections above
 and the code disagree, the code wins; the decisions that changed the design
 during the build are under *Design decisions*.
 
 **Silent re-authentication** was built separately, umbrella
-[zipline#40](https://github.com/mkolehmainen/zipline/issues/40) (closed), and is
+[zipline#40](https://github.com/org-zpr/zl-zipline/issues/40) (closed), and is
 what the *Credential lifetimes and re-authentication* section above describes.
 
 **Implemented (the prerequisites):**
