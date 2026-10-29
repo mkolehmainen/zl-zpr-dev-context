@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the next issue to work on in mkolehmainen/zipline, and the rest of the ready set.
+"""Print the next issue to work on in org-zpr/zl-zipline, and the rest of the ready set.
 
 An issue is PICKABLE when all four hold (zipline#155):
 
@@ -40,7 +40,7 @@ SECOND SOURCE: org-zpr/zipline, gated by org project #5 "zipline" (operator
 decision, 2026-10-07). Only issues from the org-zpr/zipline repository are
 candidates -- the org project also carries legacy org-zpr/zpr-* issues, which
 are never candidates and whose repositories must never be touched;
-implementation always lands in the mkolehmainen/zl-* forks. The predicate
+implementation always lands in the org-zpr/zl-* forks. The predicate
 differs from the tracker's in two ways:
 
     pickable(org) = open AND all blockers closed AND Status == Ready
@@ -57,7 +57,7 @@ differs from the tracker's in two ways:
   as the tracker flow). An issue assigned to anyone else is theirs: never
   picked, never reported as ours.
 
-mkolehmainen/zipline issues take precedence: every tracker-ready issue sorts
+org-zpr/zl-zipline issues take precedence: every tracker-ready issue sorts
 before every org-ready one. Among org candidates the tiebreak is lowest issue
 number (the org project has no ordering field).
 
@@ -80,8 +80,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghretry import gh_login, run_gh  # noqa: E402
 
-OWNER = "mkolehmainen"
-REPO = "zipline"
+# The tracker repository and the board that gates it have different owners:
+# the tracker moved to org-zpr on 2026-10-29 (renamed zipline -> zl-zipline,
+# org-zpr/zl-zipline#207), while project #1 is still owned by the personal
+# account. Board items report the tracker's current name, so matching them
+# against the old owner silently drops every tracker item.
+TRACKER_OWNER = "org-zpr"
+REPO = "zl-zipline"
+BOARD_OWNER = "mkolehmainen"
 PROJECT_NUMBER = 1
 
 # Second source (operator decision 2026-10-07): org-zpr/zipline issues, gated
@@ -139,7 +145,7 @@ query($owner:String!, $repo:String!, $cursor:String) {
 # `user(login:)` -- `organization(login:)` returns null for it. The content's
 # repository is fetched because the board also carries legacy issues from
 # `org-zpr/zpr-*` repositories: an item is only this tracker's if it lives in
-# OWNER/REPO, and keying by bare number would let a same-numbered foreign item
+# TRACKER_OWNER/REPO, and keying by bare number would let a same-numbered foreign item
 # overwrite a tracker issue's Status (PR #47 review).
 BOARD_QUERY = """
 query($owner:String!, $number:Int!, $cursor:String) {
@@ -176,7 +182,7 @@ def all_issues():
     """Every issue in the tracker, with its blocked-by and sub-issue lists."""
     cursor, out = None, []
     while True:
-        page = gh_graphql(QUERY, owner=OWNER, repo=REPO, cursor=cursor)
+        page = gh_graphql(QUERY, owner=TRACKER_OWNER, repo=REPO, cursor=cursor)
         page = page["data"]["repository"]["issues"]
         out.extend(page["nodes"])
         if not page["pageInfo"]["hasNextPage"]:
@@ -187,7 +193,7 @@ def all_issues():
 def board_statuses():
     """Map issue number -> board Status name, from user-owned project #1.
 
-    Only `OWNER/REPO` (tracker) items are mapped: the board also carries
+    Only `TRACKER_OWNER/REPO` (tracker) items are mapped: the board also carries
     legacy `org-zpr/zpr-*` issues, and a foreign item sharing a number with a
     tracker issue must not overwrite its Status -- an unrelated Ready item
     would bypass the operator gate, an unrelated Backlog item would suppress
@@ -198,10 +204,10 @@ def board_statuses():
     zipline#155. Field values live on the board item, not the issue, so this is
     re-read every run rather than cached.
     """
-    tracker = f"{OWNER}/{REPO}"
+    tracker = f"{TRACKER_OWNER}/{REPO}"
     cursor, statuses = None, {}
     while True:
-        page = gh_graphql(BOARD_QUERY, owner=OWNER, number=PROJECT_NUMBER, cursor=cursor)
+        page = gh_graphql(BOARD_QUERY, owner=BOARD_OWNER, number=PROJECT_NUMBER, cursor=cursor)
         items = page["data"]["user"]["projectV2"]["items"]
         for node in items["nodes"]:
             content = node.get("content") or {}
@@ -343,7 +349,7 @@ def select_org(items, today, bot=BOT_LOGIN):
     Only org-zpr/zipline issues are candidates: the project also carries
     legacy org-zpr/zpr-* issues, which are never work for this agent (their
     repositories are never touched; implementation lands in the
-    mkolehmainen/zl-* forks).
+    org-zpr/zl-* forks).
     """
     wanted = f"{ORG_OWNER}/{ORG_REPO}"
     ready, pre_authorized, awaiting_ready, underway = [], [], [], []
@@ -504,7 +510,7 @@ def main():
 
     # Second source: org-zpr/zipline via org project #5. Org rows carry
     # position >= 100_000, so after the merged sort every tracker row precedes
-    # every org row -- mkolehmainen/zipline takes precedence (operator
+    # every org row -- org-zpr/zl-zipline takes precedence (operator
     # decision 2026-10-07).
     o_ready, o_pre, o_awaiting, o_underway, expired_iteration = select_org(
         org_items(), datetime.date.today(), bot=bot)

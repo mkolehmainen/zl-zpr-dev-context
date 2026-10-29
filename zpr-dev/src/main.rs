@@ -16,7 +16,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// Default context repository, cloned by `setup` when absent (spec §5.2).
-const DEFAULT_CONTEXT_URL: &str = "git@github.com:mkolehmainen/zl-zpr-dev-context.git";
+const DEFAULT_CONTEXT_URL: &str = "git@github.com:org-zpr/zl-zpr-dev-context.git";
 
 #[derive(Parser, Debug)]
 #[command(

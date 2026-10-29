@@ -726,7 +726,7 @@ aws-lc-rs = "1.17"
 capnp = { version = "0.25.0", features = ["sync_reader"] }
 capnp-futures = "0.25"
 capnp-rpc = "0.25.0"
-cbpf-rs = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git", tag = "cbpf-rs-v0.2.0" }
+cbpf-rs = { git = "https://github.com/org-zpr/zl-zpr-utils.git", tag = "cbpf-rs-v0.2.0" }
 clap = { version = "4.5.23", features = ["derive"] }
 clap_complete = "4.5.57"
 internet-checksum = "0.2.1"
@@ -739,9 +739,9 @@ tokio-util = { version = "0.7.17", features = ["rt", "compat"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
 x509-cert = "0.3.0"
-zpr = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.27.0", features = ["vsapi", "policy"] }
-zpr-ext = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git", tag = "zpr-ext-v0.5.3" }
-zpr-utils = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git", tag = "zpr-utils-v0.2.2" }
+zpr = { git = "https://github.com/org-zpr/zl-zpr-common.git", tag = "v0.27.0", features = ["vsapi", "policy"] }
+zpr-ext = { git = "https://github.com/org-zpr/zl-zpr-utils.git", tag = "zpr-ext-v0.5.3" }
+zpr-utils = { git = "https://github.com/org-zpr/zl-zpr-utils.git", tag = "zpr-utils-v0.2.2" }
 
 [profile.release]
 panic = "abort"
@@ -776,7 +776,7 @@ cbpf-rs = { workspace = true }
 chrono = "0.4.39"
 clap = { workspace = true, features = ["env"] }
 clap_complete = { workspace = true, optional = true }
-cslab = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git", tag = "cslab-v0.1.2" }
+cslab = { git = "https://github.com/org-zpr/zl-zpr-utils.git", tag = "cslab-v0.1.2" }
 curve25519-dalek = "4.1.3"
 dashmap = { version = "6.0.1" }
 ed25519-dalek = { version = "3.0.0", features = ["pkcs8", "alloc"] }
@@ -791,7 +791,7 @@ libnode = { package = "libnode2", path = "../../libnode2" }
 nix = { version = "0.29.0", features = ["fs", "ioctl", "net", "poll", "uio", "user"] }
 open-enum = { version = "0.5.1" }
 pkcs8 = "0.11"
-rcu = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git", tag = "rcu-v0.1.2", default-features = false }
+rcu = { git = "https://github.com/org-zpr/zl-zpr-utils.git", tag = "rcu-v0.1.2", default-features = false }
 replace_with = "0.1.8"
 reqwest = { version = "0.13.1", features = ["json", "query"] }
 serde = { version = "1.0.214", features = ["derive"] }
@@ -875,7 +875,7 @@ serde_with = { version = "3.18.0", default-features = false, features = ["std", 
 thiserror = "2.0.18"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
-zpr = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.27.0", features = ["vsapi", "policy"]}
+zpr = { git = "https://github.com/org-zpr/zl-zpr-common.git", tag = "v0.27.0", features = ["vsapi", "policy"]}
 "#;
 
     /// `zl-zpr-compiler/Cargo.toml`: a plain package pinning `zpr` — at
@@ -901,7 +901,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.8"
 toml = "0.9.7"
-zpr = { git = "https://github.com/mkolehmainen/zl-zpr-common.git", tag = "v0.26.0", features = ["policy"] }
+zpr = { git = "https://github.com/org-zpr/zl-zpr-common.git", tag = "v0.26.0", features = ["policy"] }
 "#;
 
     /// `zl-zpr-common/Cargo.toml`: pins `rcu` at tag `zpr-utils-v0.1.0` while
@@ -927,7 +927,7 @@ thiserror = "1.0.65"
 url = "2.5.4"
 range-set-blaze = { version = "0.5.0" }
 ip_network_table-deps-treebitmap = { version = "0.5.0" }
-rcu = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git", tag = "zpr-utils-v0.1.0", default-features = false, optional = true }
+rcu = { git = "https://github.com/org-zpr/zl-zpr-utils.git", tag = "zpr-utils-v0.1.0", default-features = false, optional = true }
 rand = "0.10.1"
 x25519-dalek = { version = "3.0.0", optional = true }
 
@@ -979,7 +979,7 @@ harness = false
     fn extracts_git_tag_pin_with_file_and_line() {
         let pins = core_pins();
         let zpr = find(&pins, "zpr", "zl-zpr-core/Cargo.toml");
-        assert_eq!(zpr.url, "https://github.com/mkolehmainen/zl-zpr-common.git");
+        assert_eq!(zpr.url, "https://github.com/org-zpr/zl-zpr-common.git");
         assert_eq!(zpr.reference, "v0.27.0");
         assert_eq!(zpr.kind, RefKind::Tag);
         assert_eq!(zpr.line, 29);
@@ -1009,7 +1009,7 @@ harness = false
 
     #[test]
     fn extracts_branch_pin() {
-        let text = "[dependencies]\nfoo = { git = \"https://github.com/mkolehmainen/zl-zpr-x.git\", branch = \"zipline\" }\n";
+        let text = "[dependencies]\nfoo = { git = \"https://github.com/org-zpr/zl-zpr-x.git\", branch = \"zipline\" }\n";
         let pins = extract_pins(&source("x/Cargo.toml", text), &[]).unwrap();
         assert_eq!(pins.len(), 1);
         assert_eq!(pins[0].kind, RefKind::Branch);
@@ -1025,7 +1025,7 @@ harness = false
         let zpr = find(&pins, "zpr", "zl-zpr-core/adapter/ph/Cargo.toml");
         assert!(zpr.inherited);
         assert_eq!(zpr.reference, "v0.27.0");
-        assert_eq!(zpr.url, "https://github.com/mkolehmainen/zl-zpr-common.git");
+        assert_eq!(zpr.url, "https://github.com/org-zpr/zl-zpr-common.git");
         assert_eq!(zpr.line, 55);
         // The member's own literal pins are captured too.
         let rcu = find(&pins, "rcu", "zl-zpr-core/adapter/ph/Cargo.toml");
@@ -1120,8 +1120,8 @@ harness = false
         }
     }
 
-    const COMMON_URL: &str = "https://github.com/mkolehmainen/zl-zpr-common.git";
-    const UTILS_URL: &str = "https://github.com/mkolehmainen/zl-zpr-utils.git";
+    const COMMON_URL: &str = "https://github.com/org-zpr/zl-zpr-common.git";
+    const UTILS_URL: &str = "https://github.com/org-zpr/zl-zpr-utils.git";
 
     /// Every finding at or above `severity`.
     fn at_least(findings: &[Finding], severity: Severity) -> Vec<&Finding> {
@@ -1751,12 +1751,12 @@ version = 4
 [[package]]
 name = "zpr"
 version = "0.8.1"
-source = "git+https://github.com/mkolehmainen/zl-zpr-common.git?tag=v0.8.1#71ead993"
+source = "git+https://github.com/org-zpr/zl-zpr-common.git?tag=v0.8.1#71ead993"
 
 [[package]]
 name = "zpr"
 version = "0.28.0"
-source = "git+https://github.com/mkolehmainen/zl-zpr-common.git?tag=v0.28.0#3abdacfe"
+source = "git+https://github.com/org-zpr/zl-zpr-common.git?tag=v0.28.0#3abdacfe"
 
 [[package]]
 name = "serde"
@@ -1790,7 +1790,7 @@ version = 4
 [[package]]
 name = "zpr"
 version = "0.28.0"
-source = "git+https://github.com/mkolehmainen/zl-zpr-common.git?tag=v0.28.0#3abdacfe"
+source = "git+https://github.com/org-zpr/zl-zpr-common.git?tag=v0.28.0#3abdacfe"
 
 [[package]]
 name = "syn"

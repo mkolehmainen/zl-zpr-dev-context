@@ -31,8 +31,10 @@ each into a directory matching its repository name:
 └── zl-zpr-dev-tools/
 ```
 
-All are public repositories under the [`mkolehmainen`](https://github.com/mkolehmainen)
-GitHub account at `git@github.com:mkolehmainen/<name>.git`.
+All are public repositories in the [`org-zpr`](https://github.com/org-zpr)
+organization at `git@github.com:org-zpr/<name>.git`. They were created under the
+personal `mkolehmainen` account and transferred on 2026-10-29
+(`org-zpr/zl-zipline#207`); every old `mkolehmainen/...` URL redirects.
 
 All but one are forks of the corresponding upstream repository in the
 [`org-zpr`](https://github.com/org-zpr) organization — `zl-zpr-core` forks
@@ -41,15 +43,13 @@ all of those check out `zipline` (see "Branch model" below). The exception is
 `zl-zpr-coredns`, which has no upstream: it is a new repository and its working
 branch is `main`.
 
-> **The forks are partly rewired** by `mkolehmainen/zipline#17`, whose four PRs
-> are open and unmerged at the time of writing. The `zpr` crate dependency and
-> `zl-zpr-common`'s submodules now resolve to `mkolehmainen`
-> (`mkolehmainen/zipline#17`). Two classes of reference still point at
-> `org-zpr`, both deliberately: everything sourced from **`zpr-utils`**, because
-> its crates cross-pin each other by URL and moving one side breaks the build
-> (`mkolehmainen/zipline#18`), and the **reusable CI workflow** in every
-> `.github/workflows/`, which resolves fine from a public fork. See
-> "Cross-repository dependencies" in `BUILD.md` for the detail.
+> **Cross-repository references point at the forks** (`org-zpr/zl-zipline#17`,
+> `#18`), with one transitional exception: the `Cargo.toml` Git dependencies
+> still spell the pre-transfer owner, `github.com/mkolehmainen/zl-zpr-*`, and
+> resolve through GitHub's redirect. Released tags embed those URLs, so they move
+> bottom-up through new tags. Most CI workflows deliberately call the upstream
+> reusable workflows in `org-zpr/zpr-dev-tools`. See "Cross-repository
+> dependencies" in `BUILD.md` for the detail.
 
 Use `zpr-dev status` to see the state of every checkout at once.
 
@@ -78,7 +78,7 @@ Two steps. A checkout made by `zpr-dev` has only one remote — `origin`, the fo
 **1. Fast-forward the fork's `main` from upstream.** No local checkout needed:
 
 ```bash
-gh repo sync mkolehmainen/zl-zpr-<name> --source org-zpr/zpr-<name> --branch main
+gh repo sync org-zpr/zl-zpr-<name> --source org-zpr/zpr-<name> --branch main
 ```
 
 Pass `--branch main` explicitly. `gh repo sync` defaults to a default branch,
@@ -105,7 +105,10 @@ expected and fine.
 
 Do **not** point `main` at the upstream remote with
 `git branch main --set-upstream-to=upstream/main` — a later `git push` on `main`
-would then try to write to `org-zpr`, which will fail confusingly.
+would then try to write to upstream `org-zpr/zpr-<name>`. Since the transfer the
+forks and upstream share an organization, so an org member's push there is no
+longer refused for lack of access; only upstream's branch protection stops it.
+**Never push to an `org-zpr/zpr-*` repository.**
 
 Note that `zpr-dev update` is *not* part of this. It fetches and fast-forwards
 the current branch from `origin` only, so it picks up `zipline` commits already
@@ -203,7 +206,7 @@ here rather than being duplicated.
 - Feature-gated wrappers over the policy and VSAPI types.
 - IDL sources for the ZPR sub-protocols, included as **Git submodules** — the
   directories are still named `zpr-policy/` and `zpr-vsapi/`, but `.gitmodules`
-  now points at `mkolehmainen/zl-zpr-policy` and `mkolehmainen/zl-zpr-vsapi`.
+  now points at `org-zpr/zl-zpr-policy` and `org-zpr/zl-zpr-vsapi`.
   Clone recursively, or run `git submodule update --init`, or the build will not
   find the schemas. An existing checkout needs `git submodule sync --recursive`
   to pick up the new URLs; the pinned commits did not move.

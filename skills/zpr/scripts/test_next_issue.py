@@ -30,7 +30,7 @@ def issue(number, blockers=(), assignees=(), label="core", state="OPEN", subs=()
     return {
         "number": number,
         "title": f"issue {number}",
-        "url": f"https://github.com/mkolehmainen/zipline/issues/{number}",
+        "url": f"https://github.com/org-zpr/zl-zipline/issues/{number}",
         "state": state,
         "labels": {"nodes": [{"name": label}]},
         "assignees": {"nodes": [{"login": a} for a in assignees]},
@@ -228,7 +228,7 @@ def test_assigned_is_underway_regardless_of_board_status():
 #
 # The board carries legacy `org-zpr/zpr-*` issues alongside the tracker's. The
 # Status map is keyed by issue number, so a foreign item sharing a number with
-# a `mkolehmainen/zipline` issue must be ignored -- otherwise an unrelated
+# a `org-zpr/zl-zipline` issue must be ignored -- otherwise an unrelated
 # Ready item makes a Backlog tracker issue pickable (bypassing the operator
 # gate), and an unrelated Backlog item suppresses an authorized one.
 
@@ -241,7 +241,7 @@ def board_page(*nodes, has_next=False, cursor=None):
     }}}}}
 
 
-def board_item(number, status, repo="mkolehmainen/zipline"):
+def board_item(number, status, repo="org-zpr/zl-zipline"):
     """One board item node: an issue with a repository and a Status value."""
     return {
         "content": {"number": number, "repository": {"nameWithOwner": repo}},

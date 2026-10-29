@@ -55,7 +55,7 @@ def test_before_and_after_all_iterations_is_none():
 
 
 def item(number, status=None, iteration=None, state="OPEN",
-         repo="mkolehmainen/zipline"):
+         repo="org-zpr/zl-zipline"):
     values = []
     if status:
         values.append({"name": status, "field": {"name": "Status"}})
@@ -167,7 +167,7 @@ def test_foreign_item_does_not_shadow_the_tracker_item():
         item(2, status="Backlog", repo="org-zpr/zpr-core"),
         item(2, status="Backlog"),
     ]), {2}, set())
-    assert [e["item_id"] for e in plan] == ["item-mkolehmainen/zipline-2"], plan
+    assert [e["item_id"] for e in plan] == ["item-org-zpr/zl-zipline-2"], plan
     assert [s["number"] for s in suggestions] == [2], suggestions
 
 

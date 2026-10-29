@@ -315,9 +315,9 @@ Rationale carried over from completed master plans, retired once shipped. Full
 plan text is in git history:
 
 - `git show 44e37d0:docs/plans/2026-09-28-windows.md` — umbrella
-  [zipline#126](https://github.com/mkolehmainen/zipline/issues/126)
+  [zipline#126](https://github.com/org-zpr/zl-zipline/issues/126)
 - `git show cc02abd:docs/plans/2026-10-01-win-node.md` — umbrella
-  [zipline#149](https://github.com/mkolehmainen/zipline/issues/149)
+  [zipline#149](https://github.com/org-zpr/zl-zipline/issues/149)
 
 ### Windows support for `ph adapter`
 
@@ -329,13 +329,13 @@ user-facing walkthrough is `zl-zpr-core/docs/SETUP.md` "Windows".
 `ph adapter` on an end-user PC run from an Administrator console; the node
 role followed under its own umbrella (next subsection). Service wrapper,
 installer and Event Log are deferred.
-([zipline#126](https://github.com/mkolehmainen/zipline/issues/126))
+([zipline#126](https://github.com/org-zpr/zl-zipline/issues/126))
 
 **Windows is a third arm of `sys/`, plus one new abstraction.** No unix
 behaviour changes. The one abstraction is the wait set (next entry); everything
 else is `sys/windows/` or a `#[cfg(windows)]` block next to the existing macOS
 ones — the same pattern the macOS port established.
-([zipline#126](https://github.com/mkolehmainen/zipline/issues/126))
+([zipline#126](https://github.com/org-zpr/zl-zipline/issues/126))
 
 **The fastpath waits on a `WaitSet` of `Waitable`s, not on fds.** Unix: a
 `Waitable` is a `BorrowedFd` and `WaitSet::wait` is `poll(2)`, byte-identical
@@ -346,7 +346,7 @@ unix-only refactor with the netns tier green, so the Windows arm plugged into
 a proven seam. Rejected: per-source reader threads plus channels (extra copy
 and hop per packet, second datapath shape); a tokio async datapath on Windows
 only (forks the datapath, loses `batch_io`).
-([zipline#128](https://github.com/mkolehmainen/zipline/issues/128))
+([zipline#128](https://github.com/org-zpr/zl-zipline/issues/128))
 
 **Wintun via the `wintun` crate; addresses and routes via `netsh`.** The
 signed `wintun.dll` ships next to `ph.exe` and is loaded at runtime;
@@ -355,20 +355,20 @@ signed `wintun.dll` ships next to `ph.exe` and is loaded at runtime;
 `route_owner_conflict` parses `netsh` output in a `Platform::Windows` arm of
 the portable route parser so its tests run on Linux. The known risk is
 localized `netsh` output (fixtures are English); the named upgrade path is the
-IP Helper API ([zipline#153](https://github.com/mkolehmainen/zipline/issues/153)).
+IP Helper API ([zipline#153](https://github.com/org-zpr/zl-zipline/issues/153)).
 Adapter lifecycle: create fresh, delete on graceful exit, and reap any stale
 adapter with our name at startup.
-([zipline#130](https://github.com/mkolehmainen/zipline/issues/130))
+([zipline#130](https://github.com/org-zpr/zl-zipline/issues/130))
 
 **Windows batch_io is a `windows_unbatched` engine with no pktinfo.**
 Non-blocking `recv_from`/`send_to` on the socket side, Wintun ring
 send/receive on the TUN side. No `WSARecvMsg`/`IP_PKTINFO`: an end-user
 adapter is single-homed for our purposes and `self_addr` is configured or
 discovered once at start — the ceiling is stated in code, and multi-homing is
-deferred ([zipline#150](https://github.com/mkolehmainen/zipline/issues/150)).
+deferred ([zipline#150](https://github.com/org-zpr/zl-zipline/issues/150)).
 `BorrowedFd` in the `BatchIoImpl` trait became the `Waitable` handle type,
 and raw `libc::c_int` send flags a `SendFlags` newtype.
-([zipline#131](https://github.com/mkolehmainen/zipline/issues/131))
+([zipline#131](https://github.com/org-zpr/zl-zipline/issues/131))
 
 **Control RPC over a tokio named pipe with an explicit DACL.**
 `\\.\pipe\zpr-control-<sid>` (or the shared `\\.\pipe\zpr-control`),
@@ -379,8 +379,8 @@ acceptable for a control channel. Cap'n Proto RPC runs over any
 `AsyncRead + AsyncWrite`, so only how the stream is obtained changed. The
 owner is the process token's user SID. Paths use `%ProgramData%\zpr`
 instead of `/var/run/zpr`.
-([zipline#129](https://github.com/mkolehmainen/zipline/issues/129),
-[zipline#130](https://github.com/mkolehmainen/zipline/issues/130))
+([zipline#129](https://github.com/org-zpr/zl-zipline/issues/129),
+[zipline#130](https://github.com/org-zpr/zl-zipline/issues/130))
 
 **Non-elevated `ph-cli` through a configured local group.** The owner-SID
 ACE alone serves only a `ph` and `ph-cli` run by the same user; it rules
@@ -421,27 +421,27 @@ session-0 service); a `--control-owner` flag (the group covers it); opening
 the pipe to `Authenticated Users` or `INTERACTIVE` (hands adapter control to
 every local user); per-command client identity via impersonation (add it
 only if `ph` ever needs to know which member sent a command).
-([zipline#154](https://github.com/mkolehmainen/zipline/issues/154))
+([zipline#154](https://github.com/org-zpr/zl-zipline/issues/154))
 
 **Capture is Unsupported on Windows.** The capture pipe is not created;
 `set-capture-file` returns `Unsupported`. The unix fd-passing design exists to
 keep `ph` from writing to user-chosen paths as root, and Windows has no cheap
 equivalent — passing a path was rejected as a security regression. The
 recommended follow-up is `DuplicateHandle`
-([zipline#148](https://github.com/mkolehmainen/zipline/issues/148)). The
+([zipline#148](https://github.com/org-zpr/zl-zipline/issues/148)). The
 internal capture queue also stopped being an AF_UNIX socketpair on every OS —
 a pure simplification that removed the last `UnixDatagram` from the datapath.
-([zipline#129](https://github.com/mkolehmainen/zipline/issues/129))
+([zipline#129](https://github.com/org-zpr/zl-zipline/issues/129))
 
 **Signals map onto the Windows console events.** `ctrl_c` and `ctrl_close` →
 graceful shutdown (second Ctrl-C hard-exits, as SIGINT does), `ctrl_break` →
 print counters (the SIGUSR1 role), `ctrl_shutdown` → graceful.
-([zipline#129](https://github.com/mkolehmainen/zipline/issues/129))
+([zipline#129](https://github.com/org-zpr/zl-zipline/issues/129))
 
 **`zpr-ext` was fixed at the source, not worked around.** Its unix-only
 modules (`std::os::fd`, `tokio::net`, `new_unspec`) are gated `cfg(unix)` and
 `mtu` gained a Windows arm, tagged `zpr-ext-v0.6.0` with no API change on
-unix. ([zipline#127](https://github.com/mkolehmainen/zipline/issues/127))
+unix. ([zipline#127](https://github.com/org-zpr/zl-zipline/issues/127))
 
 **Verification is a Windows CI job plus a hand-run smoke test.**
 `windows-latest` builds `ph`/`ph-cli` and runs unit tests (inert while Actions
@@ -452,13 +452,13 @@ compiles no test code, so the Windows *tests* had never been built until the
 CI work ran them — four test-only fixes resulted. An unsigned `ph.exe` runs
 from an elevated console without a SmartScreen block (`wintun.dll` is signed
 by WireGuard LLC).
-([zipline#132](https://github.com/mkolehmainen/zipline/issues/132),
-[zipline#133](https://github.com/mkolehmainen/zipline/issues/133))
+([zipline#132](https://github.com/org-zpr/zl-zipline/issues/132),
+[zipline#133](https://github.com/org-zpr/zl-zipline/issues/133))
 
 ### `ph node` on Windows
 
 Decisions carried over from the Windows node plan (umbrella
-[zipline#149](https://github.com/mkolehmainen/zipline/issues/149); full text
+[zipline#149](https://github.com/org-zpr/zl-zipline/issues/149); full text
 `git show cc02abd:docs/plans/2026-10-01-win-node.md`). The user-facing
 walkthrough is `zl-zpr-core/docs/SETUP.md` "Windows".
 
@@ -466,12 +466,12 @@ walkthrough is `zl-zpr-core/docs/SETUP.md` "Windows".
 single worker.** Adapters and the visa service stay on Linux. A Windows node
 must be given a concrete `self_addr` (or `advertised_substrate_addr`); the
 wildcard-bind rejection stands by design and
-[zipline#150](https://github.com/mkolehmainen/zipline/issues/150) keeps
+[zipline#150](https://github.com/org-zpr/zl-zipline/issues/150) keeps
 multi-homing. No service wrapper
-([zipline#147](https://github.com/mkolehmainen/zipline/issues/147)).
+([zipline#147](https://github.com/org-zpr/zl-zipline/issues/147)).
 Functional parity with Linux is the bar; throughput through one unbatched
 socket was measured and recorded, not fixed (findings below).
-([zipline#149](https://github.com/mkolehmainen/zipline/issues/149))
+([zipline#149](https://github.com/org-zpr/zl-zipline/issues/149))
 
 **Nothing may assume `ph` is the only instance on the host.** A later phase
 runs a node and an adapter on one Windows machine (peer-to-peer), so the dock
@@ -480,8 +480,8 @@ change may add a host-wide singleton. The one known pre-existing collision —
 the control path is derived from the owner uid alone (`config.rs:356`,
 `admin_api::control_socket_path`), so a node and an adapter for one user
 collide on every platform unless `--control-path` is given — is deferred as
-[zipline#169](https://github.com/mkolehmainen/zipline/issues/169).
-([zipline#149](https://github.com/mkolehmainen/zipline/issues/149))
+[zipline#169](https://github.com/org-zpr/zl-zipline/issues/169).
+([zipline#149](https://github.com/org-zpr/zl-zipline/issues/149))
 
 **The node applies its own ZPR address through `TunCtl`, on every platform.**
 Before the `local_zpr_addrs_missing_from_tun` check, the node adds each
@@ -490,7 +490,7 @@ through the TUN (on Windows an explicit /128 route, since `netsh add address`
 ignores the prefix). Idempotent, so hand-configured setups and the
 integration scripts' out-of-band `ip addr add` are untouched; a Windows-only
 arm was rejected to keep macOS from redoing it.
-([zipline#159](https://github.com/mkolehmainen/zipline/issues/159))
+([zipline#159](https://github.com/org-zpr/zl-zipline/issues/159))
 
 **The Windows substrate socket tolerates connection reset.** At bind,
 `SIO_UDP_CONNRESET` is disabled via `WSAIoctl`; belt and braces,
@@ -499,15 +499,15 @@ datagram". A node talks to many adapters, any of which can exit, so the
 `WSAECONNRESET` after an ICMP port unreachable would otherwise panic the
 fastpath routinely. A wildcard bind now fails as a logged startup error
 naming the fix instead of a panic.
-([zipline#160](https://github.com/mkolehmainen/zipline/issues/160))
+([zipline#160](https://github.com/org-zpr/zl-zipline/issues/160))
 
 **Verification is a hand-run test document plus unit tests; no new CI tier.**
 `zl-zpr-core/integration-test/windows-node-test.md` mirrors
 `windows-adapter-test.md` with the roles inverted: the Windows VM is the
 node; the Linux host runs valkey, the visa service and its adapter, and two
 client adapters in netns. Automation remains
-[zipline#152](https://github.com/mkolehmainen/zipline/issues/152).
-([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+[zipline#152](https://github.com/org-zpr/zl-zipline/issues/152).
+([zipline#162](https://github.com/org-zpr/zl-zipline/issues/162))
 
 Lasting findings from the first end-to-end run (2026-10-01, the test
 document's "Findings" has the full table):
@@ -518,25 +518,25 @@ Duplicate-address detection made the VSS listener bind fail with 10049
 bounded at 5 s, for the address to leave the tentative state, reading DAD
 state via IP Helper `GetUnicastIpAddressEntry` — not `netsh`, whose text
 output is localized; the wait loop is `sys/dad.rs`, unit-tested on Linux.
-([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+([zipline#162](https://github.com/org-zpr/zl-zipline/issues/162))
 
 **Two inbound firewall rules.** UDP 5000 (dock listener, LAN interface) is
 required — without it every dock hits a handshake timeout. TCP 8183 (VSS
 listener) is scoped to the Wintun interface, which Windows places on the
 Public profile where unsolicited inbound is dropped; the rule cannot be
 added before the node has created the adapter, and persists once created.
-([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+([zipline#162](https://github.com/org-zpr/zl-zipline/issues/162))
 
 **Measured single-worker throughput.** Through one unbatched substrate
 socket with two client adapters docked: flood-ping loss 0 % (500 packets,
 `-i 0.02`), HTTP download 6,751,114 bytes/s (64 MiB in 9.94 s). Recorded,
 not tuned.
-([zipline#162](https://github.com/mkolehmainen/zipline/issues/162))
+([zipline#162](https://github.com/org-zpr/zl-zipline/issues/162))
 
 ### `ph node` on macOS
 
 Decisions carried over from the macOS node plan (umbrella
-[zipline#158](https://github.com/mkolehmainen/zipline/issues/158); full text
+[zipline#158](https://github.com/org-zpr/zl-zipline/issues/158); full text
 `git show 7323267:docs/plans/2026-10-01-mac-node.md`). The user-facing
 walkthrough is `zl-zpr-core/docs/SETUP.md` "macOS".
 
@@ -547,23 +547,23 @@ are allowed — the unix `posix_unbatched` engine has pktinfo — so the Linux
 integration topology applies unchanged. Functional parity is the bar;
 single-worker throughput was measured and recorded, not fixed (findings
 below). No launchd service.
-([zipline#158](https://github.com/mkolehmainen/zipline/issues/158))
+([zipline#158](https://github.com/org-zpr/zl-zipline/issues/158))
 
 **Nothing may assume `ph` is the only instance on the host.** Same
 constraint as the Windows node: loopback dock listen must work, `tun_if`
 stays per-instance, no new host-wide singleton. The uid-derived control-path
 collision is the same pre-existing cross-platform issue, deferred as
-[zipline#169](https://github.com/mkolehmainen/zipline/issues/169); the macOS
+[zipline#169](https://github.com/org-zpr/zl-zipline/issues/169); the macOS
 plan only inherited the constraint.
-([zipline#158](https://github.com/mkolehmainen/zipline/issues/158))
+([zipline#158](https://github.com/org-zpr/zl-zipline/issues/158))
 
 **The node's self-address comes from the portable `TunCtl` work (the
 Windows plan's C1, merged as
-[zl-zpr-core#61](https://github.com/mkolehmainen/zl-zpr-core/pull/61)); the
+[zl-zpr-core#61](https://github.com/org-zpr/zl-zpr-core/pull/61)); the
 macOS plan did not duplicate it.** The first end-to-end run confirmed the
 helper needs no macOS-specific tweak: `ifconfig <utun> inet6 <addr>/32
 alias` suffices on its own (see the route-shape finding below).
-([zipline#159](https://github.com/mkolehmainen/zipline/issues/159))
+([zipline#159](https://github.com/org-zpr/zl-zipline/issues/159))
 
 **macOS `new_mq` no longer requires an address; the address picks nothing
 but the family.** The "address is required on macos" check and its `TODO:
@@ -577,16 +577,16 @@ add` / `ifconfig … inet6 … alias` / `netsh interface ipv6 add address`).
 Rejected: applying the address inside `new_mq` via the dead builder path —
 two ways to address a TUN, and the startup-check path would differ from
 Linux and Windows.
-([zipline#161](https://github.com/mkolehmainen/zipline/issues/161))
+([zipline#161](https://github.com/org-zpr/zl-zipline/issues/161))
 
 **Verification is a hand-run test document plus unit tests; no new CI
 tier.** `zl-zpr-core/integration-test/macos-node-test.md` mirrors
 `windows-node-test.md` with the Mac as the node: the Linux host runs valkey,
 the visa service and its adapter, and client adapters in netns. An automated
 macOS tier would need a macOS runner with root and a routable host — same
-shape as [zipline#152](https://github.com/mkolehmainen/zipline/issues/152),
+shape as [zipline#152](https://github.com/org-zpr/zl-zipline/issues/152),
 no issue filed.
-([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+([zipline#164](https://github.com/org-zpr/zl-zipline/issues/164))
 
 Lasting findings from the first end-to-end run (2026-10-02, macOS 26.5.2 /
 Apple M2; the test document's "Findings" has the full table):
@@ -597,15 +597,15 @@ on-link (plus the self-address `UHL` via `lo0`) — no explicit `add_route` is
 needed to reach the visa service, and the /32 is harmless for a node since
 everything else is forwarded by the node itself. No change to the
 zipline#159 helper.
-([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+([zipline#164](https://github.com/org-zpr/zl-zipline/issues/164))
 
 **Wildcard `self_addr` with pktinfo was verified through a single Mac
 address only.** All docks complete and stay up with `--self-addr
 0.0.0.0:5000`, but the remote-node test environment points every adapter at
 one `NODE_LAN_IP` and advertises a single substrate address, so the
 two-interface case is unverified; test-env multi-address support is
-[zipline#172](https://github.com/mkolehmainen/zipline/issues/172).
-([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+[zipline#172](https://github.com/org-zpr/zl-zipline/issues/172).
+([zipline#164](https://github.com/org-zpr/zl-zipline/issues/164))
 
 **The macOS application firewall was not exercised: it was disabled on the
 test Mac.** `socketfilterfw --getglobalstate` reported `State = 0` (left off
@@ -617,14 +617,14 @@ executable's path — allow the copy the node actually runs, not the
 build-tree binary; the add-nothing-first procedure and expected command set
 are in `zl-zpr-core/integration-test/macos-node-test.md` ("Prerequisites,
 Mac"), unvalidated until someone runs it with the firewall on.
-([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+([zipline#164](https://github.com/org-zpr/zl-zipline/issues/164))
 
 **Links that never complete the noise handshake stay in `Keying`
 indefinitely.** Mis-NATed docks from before the NAT rules were up kept
 re-timing-out the handshake for the whole run and were removed only at
 shutdown. Not macOS-specific — filed as
-[zipline#173](https://github.com/mkolehmainen/zipline/issues/173).
-([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+[zipline#173](https://github.com/org-zpr/zl-zipline/issues/173).
+([zipline#164](https://github.com/org-zpr/zl-zipline/issues/164))
 
 **Graceful shutdown is clean.** Ctrl-C revokes visas, resets links, exits on
 its own, and the utun — being process-scoped — takes its address and route
@@ -632,7 +632,7 @@ with it; a second start with the same command line comes up without a stale
 route or interface. Measured single-worker numbers: flood-ping loss 0 %
 (500 packets, `-i 0.02`), HTTP download 8,432,600 bytes/s (64 MiB), over
 Wi-Fi.
-([zipline#164](https://github.com/mkolehmainen/zipline/issues/164))
+([zipline#164](https://github.com/org-zpr/zl-zipline/issues/164))
 
 ### Deferred
 
@@ -640,29 +640,29 @@ Out-of-scope items from the Windows and macOS adapter and node plans, each
 with an open issue unless noted:
 
 - Windows service and installer —
-  [zipline#147](https://github.com/mkolehmainen/zipline/issues/147)
+  [zipline#147](https://github.com/org-zpr/zl-zipline/issues/147)
 - Packet capture to a file via `DuplicateHandle` —
-  [zipline#148](https://github.com/mkolehmainen/zipline/issues/148)
+  [zipline#148](https://github.com/org-zpr/zl-zipline/issues/148)
 - pktinfo / multi-homed hosts and address change while running —
-  [zipline#150](https://github.com/mkolehmainen/zipline/issues/150)
+  [zipline#150](https://github.com/org-zpr/zl-zipline/issues/150)
 - Npcap SDK for `ph-cli` filter compilation —
-  [zipline#151](https://github.com/mkolehmainen/zipline/issues/151)
+  [zipline#151](https://github.com/org-zpr/zl-zipline/issues/151)
 - A Windows integration test tier —
-  [zipline#152](https://github.com/mkolehmainen/zipline/issues/152)
+  [zipline#152](https://github.com/org-zpr/zl-zipline/issues/152)
 - IP Helper API instead of `netsh` —
-  [zipline#153](https://github.com/mkolehmainen/zipline/issues/153)
+  [zipline#153](https://github.com/org-zpr/zl-zipline/issues/153)
 - Per-instance control path (node and adapter for one user on one host) —
-  [zipline#169](https://github.com/mkolehmainen/zipline/issues/169)
+  [zipline#169](https://github.com/org-zpr/zl-zipline/issues/169)
 - Second node substrate address in the remote-node test env (two-interface
   pktinfo verification) —
-  [zipline#172](https://github.com/mkolehmainen/zipline/issues/172)
+  [zipline#172](https://github.com/org-zpr/zl-zipline/issues/172)
 - Never-completing links stuck in `Keying` —
-  [zipline#173](https://github.com/mkolehmainen/zipline/issues/173)
+  [zipline#173](https://github.com/org-zpr/zl-zipline/issues/173)
 - Documenting and hand-testing the macOS adapter role —
-  [zipline#174](https://github.com/mkolehmainen/zipline/issues/174)
+  [zipline#174](https://github.com/org-zpr/zl-zipline/issues/174)
 - launchd service / installer for macOS — no issue filed; file if asked
 - An automated macOS integration test tier — no issue filed; same shape as
-  [zipline#152](https://github.com/mkolehmainen/zipline/issues/152)
+  [zipline#152](https://github.com/org-zpr/zl-zipline/issues/152)
 
 ---
 

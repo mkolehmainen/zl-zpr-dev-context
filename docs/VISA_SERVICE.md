@@ -455,13 +455,13 @@ Rationale carried over from the completed master plans, which were retired once
 shipped. Full plan text is in git history:
 
 - `git show a35b224:docs/plans/2026-09-14-trusted-service-interplay.md` —
-  umbrella [zipline#22](https://github.com/mkolehmainen/zipline/issues/22)
+  umbrella [zipline#22](https://github.com/org-zpr/zl-zipline/issues/22)
 - `git show a35b224:docs/plans/2026-09-24-static-address-grants.md` — umbrella
-  [zipline#95](https://github.com/mkolehmainen/zipline/issues/95)
+  [zipline#95](https://github.com/org-zpr/zl-zipline/issues/95)
 - `git show b817c70:docs/plans/2026-09-25-retire-authored-address-pins.md` —
-  umbrella [zipline#106](https://github.com/mkolehmainen/zipline/issues/106)
+  umbrella [zipline#106](https://github.com/org-zpr/zl-zipline/issues/106)
 - `git show 43d56bd:docs/plans/2026-09-28-reauth-on-policy-install-plan.md` —
-  umbrella [zipline#118](https://github.com/mkolehmainen/zipline/issues/118)
+  umbrella [zipline#118](https://github.com/org-zpr/zl-zipline/issues/118)
 
 ### Trusted-service interplay (an `oidc` authenticator plus a `file` overlay)
 
@@ -476,8 +476,8 @@ retained this way. Attribute overlays (`file`) are still pruned when
 unreferenced — unless they vend a visa-service-interpreted attribute
 (`device.zpr_addr`, `device.hostname`); see the retention rule under
 *Static addresses are granted, never asserted* below
-([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)).
-([zipline#23](https://github.com/mkolehmainen/zipline/issues/23))
+([zipline#105](https://github.com/org-zpr/zl-zipline/issues/105)).
+([zipline#23](https://github.com/org-zpr/zl-zipline/issues/23))
 
 **Attribute chaining runs on identity attributes, and needed no change.** An
 OIDC arm stamps `user.sub`, `sub` is a declared identity attribute, and a `file`
@@ -485,7 +485,7 @@ store keyed on `user.sub` answers on both the connect and refresh paths. Keying
 on a non-identity attribute such as `user.email` is rejected on the merits
 (mutable, reusable addresses would transfer a departed user's access) and is
 impossible anyway, because the lookup set is fixed before any store is queried.
-([zipline#22](https://github.com/mkolehmainen/zipline/issues/22))
+([zipline#22](https://github.com/org-zpr/zl-zipline/issues/22))
 
 **The authenticating service keeps `user.zpr.authority`.** A decorating store
 vending any `user.*` attribute used to derive a competing authority, and the
@@ -499,7 +499,7 @@ authority and yields `None` if it names a *different* source. The `!=` is
 load-bearing: the authority's own source must still re-stamp its expiry on each
 refresh. Side effect: two `file` stores with no IdP present now resolve
 first-wins instead of last-wins, which is still arbitrary.
-([zipline#24](https://github.com/mkolehmainen/zipline/issues/24)–[#26](https://github.com/mkolehmainen/zipline/issues/26))
+([zipline#24](https://github.com/org-zpr/zl-zipline/issues/24)–[#26](https://github.com/org-zpr/zl-zipline/issues/26))
 
 ### Static addresses are granted, never asserted
 
@@ -515,7 +515,7 @@ That reuses the existing no-match path, and both peers already refuse a
 substituted address with a clear message (the adapter's
 `GrantedAddressMismatch`). A deny would look like a policy denial, which is the
 worse diagnostic for what is usually a misconfiguration.
-([zipline#97](https://github.com/mkolehmainen/zipline/issues/97))
+([zipline#97](https://github.com/org-zpr/zl-zipline/issues/97))
 
 **Static addresses live outside the pools rather than being reserved in them.**
 Reserving in-pool needs a take, an undo path and a release path that tells
@@ -523,7 +523,7 @@ reserved from allocated, and the adapter path had none of these. A separate
 address space needs a single rejection and no bookkeeping, and nothing in the
 tree pinned an in-pool address. Pool ranges stay defined only in the visa
 service, so an in-pool pin is a join-time error rather than a compile-time one.
-([zipline#98](https://github.com/mkolehmainen/zipline/issues/98))
+([zipline#98](https://github.com/org-zpr/zl-zipline/issues/98))
 
 **The grant is `device.zpr_addr`: a device attribute, from any declared trusted
 service.** It is a `device` attribute because nodes and headless servers have
@@ -537,7 +537,7 @@ because the mapping is declared in the signed `.zplc`, and attributes already
 decide access with dock-side enforcement (zipline#83) pinning an actor to its
 granted address. Choosing an address is therefore no new power; the static-range
 checks apply to every source alike.
-([zipline#99](https://github.com/mkolehmainen/zipline/issues/99))
+([zipline#99](https://github.com/org-zpr/zl-zipline/issues/99))
 
 **A store vending a visa-service-interpreted attribute is retained by the
 compiler.** A `file` store that vends only `device.zpr_addr` vends no identity
@@ -552,19 +552,19 @@ qualifies, because any declared service may grant. The accepted cost is that an
 unused networked store vending one of these attributes is woven — the same
 trade-off as identity vendors. No ZPL reference is needed to keep such a store
 woven.
-([zipline#105](https://github.com/mkolehmainen/zipline/issues/105))
+([zipline#105](https://github.com/org-zpr/zl-zipline/issues/105))
 
 **The visa service's own address was missed by the plan.** Nothing could supply
 `fd5a:5052::1`, and the non-evicting actor add refused the adapter's re-add over
 the startup record, which broke every netns test. The fix is the `vs.zpr`
 exception described under "Authenticating actors".
-([zipline#102](https://github.com/mkolehmainen/zipline/issues/102))
+([zipline#102](https://github.com/org-zpr/zl-zipline/issues/102))
 
 ### Authored `zpr.addr` pins retired: adapter static addresses come only from grants
 
 Carried over from the retired plan
 (`git show b817c70:docs/plans/2026-09-25-retire-authored-address-pins.md`),
-umbrella [zipline#106](https://github.com/mkolehmainen/zipline/issues/106).
+umbrella [zipline#106](https://github.com/org-zpr/zl-zipline/issues/106).
 An adapter's static ZPR address has exactly one authored source: a trusted
 service vending `device.zpr_addr`. The `[["zpr.addr", ...]]` provider entry in
 a `.zplc` is a compile error.
@@ -572,46 +572,46 @@ a `.zplc` is a compile error.
 **Hard compile error, not a deprecation warning.** Early-release code with no
 compatibility burden, and a warning trips `--Werror` anyway. The error names
 `device.zpr_addr` and the `file`-store shape, so the fix is in the message.
-([zipline#109](https://github.com/mkolehmainen/zipline/issues/109))
+([zipline#109](https://github.com/org-zpr/zl-zipline/issues/109))
 
 **Nodes keep `zpr_address`, and the visa service keeps `fd5a:5052::1`.** Both
 are fixed by the network's own configuration, not granted to an endpoint. Node
 addresses feed the compiler's topology planning; the visa service address is a
 compile-time constant on both sides ("Constants that must stay in sync").
 Neither goes through `vec_to_attributes`, so the compile error does not reach
-them. ([zipline#106](https://github.com/mkolehmainen/zipline/issues/106))
+them. ([zipline#106](https://github.com/org-zpr/zl-zipline/issues/106))
 
 **No visa-service change and no `POLICY_MIN_COMPILER_MINOR` bump.** An old
 policy carrying an authored pin is still a signed policy granting an address,
 so honouring it is not a hole; bumping the floor to refuse it would buy
 nothing. The pin-versus-grant precedence and conflict checks in
 `authorize_connection` stay, because the node path still produces pins.
-([zipline#109](https://github.com/mkolehmainen/zipline/issues/109))
+([zipline#109](https://github.com/org-zpr/zl-zipline/issues/109))
 
 **Adapters that bring up a static TUN keep `zpr_addr` in their config.** The
 request is scrubbed (no pin matches), the grant supplies the same address, and
 the adapter's `GrantedAddressMismatch` check passes. Request and grant must
 agree; that is the operator's contract, and the adapter already reports a
 mismatch loudly.
-([zipline#107](https://github.com/mkolehmainen/zipline/issues/107))
+([zipline#107](https://github.com/org-zpr/zl-zipline/issues/107))
 
 **One store per deployment, keyed on the adapter CN.** `device.zpr.adapter.cn`
 is authenticated for every bootstrap adapter. Where a deployment already has a
 device-keyed `file` store, extend it rather than adding a second — dns-demo's
 `machines` store is the naming *and* addressing authority.
-([zipline#108](https://github.com/mkolehmainen/zipline/issues/108))
+([zipline#108](https://github.com/org-zpr/zl-zipline/issues/108))
 
 **Depends on zipline#105 and does not work around its absence.** Without the
 retention rule an address-only store is pruned unless a ZPL statement
 references it, and every fixture would need a throwaway reference — the trap
 this work was meant to end.
-([zipline#105](https://github.com/mkolehmainen/zipline/issues/105))
+([zipline#105](https://github.com/org-zpr/zl-zipline/issues/105))
 
 ### Policy-install re-authentication; bootstrap authentication does not expire
 
 Carried over from the retired plan
 (`git show 43d56bd:docs/plans/2026-09-28-reauth-on-policy-install-plan.md`),
-umbrella [zipline#118](https://github.com/mkolehmainen/zipline/issues/118).
+umbrella [zipline#118](https://github.com/org-zpr/zl-zipline/issues/118).
 
 **Bootstrap authentication does not expire; the policy install is the clock.**
 Re-proving possession of a static key on a timer demonstrates nothing new, so
@@ -621,12 +621,12 @@ gating on its own (fixing the latent pin where an RSA+OIDC actor was swept at
 connect + 4 h however often OIDC renewed). An earlier draft renewed RSA on a
 timer with a policy lifetime knob; it was dropped because timer renewal of a
 static key adds nothing, while install-driven re-auth enforces what actually
-changes. ([zipline#119](https://github.com/mkolehmainen/zipline/issues/119))
+changes. ([zipline#119](https://github.com/org-zpr/zl-zipline/issues/119))
 
 **Every install asks every connected actor to re-authenticate — no diffing.**
 Diffing policy to re-auth only affected actors was rejected: one uniform rule
 is easy to audit; revisit only if install-time load matters.
-([zipline#123](https://github.com/mkolehmainen/zipline/issues/123))
+([zipline#123](https://github.com/org-zpr/zl-zipline/issues/123))
 
 **Enforcement is by deadline, not by reply.** The install records `(V = new
 policy generation, T = now + reauth_deadline)`; once `now > T`, any actor
@@ -638,7 +638,7 @@ newest generation satisfies all older ones, so a stream of installs cannot
 postpone enforcement. `zpr.vinst` — stamped by `approve_connection`, which
 only connect and reauthorize run — is the whole tracking state; no new
 per-actor bookkeeping exists.
-([zipline#123](https://github.com/mkolehmainen/zipline/issues/123))
+([zipline#123](https://github.com/org-zpr/zl-zipline/issues/123))
 
 **Every authority is re-proved, and the set must match exactly.**
 `reauthorize` takes one blob per namespace, and the namespace set must equal
@@ -648,31 +648,31 @@ arm's freshness comes from the node-minted, HMAC'd challenge (at most 120 s
 old) plus the VS skew check; a monotonic-timestamp rule was rejected because
 only the docking node could replay, and a compromised docking node is already
 SECURITY_MODEL Case 2.
-([zipline#120](https://github.com/mkolehmainen/zipline/issues/120))
+([zipline#120](https://github.com/org-zpr/zl-zipline/issues/120))
 
 **A node re-authenticates in place.** It re-runs
 `connect(Reconnect)`/`challenge`/`authenticate` on its existing `vs_service`
 capability and swaps the handle only on success — no TCP restart, and visas,
 docked adapters and router links are undisturbed.
-([zipline#121](https://github.com/mkolehmainen/zipline/issues/121))
+([zipline#121](https://github.com/org-zpr/zl-zipline/issues/121))
 
 **Node culling at visa-service startup is by last-seen age.** `refresh_state`
 culled nodes by authentication expiry, which with non-expiring bootstrap auth
 would keep dead nodes forever; it now culls nodes not seen for the 4-hour
 default lifetime, preserving the old behavior.
-([zipline#119](https://github.com/mkolehmainen/zipline/issues/119))
+([zipline#119](https://github.com/org-zpr/zl-zipline/issues/119))
 
 **No compatibility shims.** An old node answers `requestAuthentication` with
 capnp "unimplemented" and an old adapter answers the renewal request without
 SS; both are revoked at the deadline and reconnect fresh — acceptable under
 the early-release rule, and the dependency-graph ordering kept the tree from
 ever doing it to itself.
-([zipline#118](https://github.com/mkolehmainen/zipline/issues/118))
+([zipline#118](https://github.com/org-zpr/zl-zipline/issues/118))
 
 **Findings worth keeping.** `libeval`'s `NEVER_EXPIRES` carries an extra `60`
 factor (~6000 years); harmless. `default`'s `cert_path` is written to policy
 but never read by the visa service.
-([zipline#118](https://github.com/mkolehmainen/zipline/issues/118))
+([zipline#118](https://github.com/org-zpr/zl-zipline/issues/118))
 
 ### Deferred
 
@@ -686,15 +686,15 @@ No tracker issues are filed for these unless linked.
 - **Bootstrap key revocation independent of a policy install.** Policy-install
   re-authentication covers removal from policy; a dedicated administrative
   revocation of an authentication root is future work.
-  [zipline#136](https://github.com/mkolehmainen/zipline/issues/136)
+  [zipline#136](https://github.com/org-zpr/zl-zipline/issues/136)
 - **VS-side clock-skew check on `ssb.timestamp` on the adapter connect path.**
   Signed but unchecked there; the reauthorize SS arm and node authentication
   both check it. Independent hardening.
-  [zipline#137](https://github.com/mkolehmainen/zipline/issues/137)
+  [zipline#137](https://github.com/org-zpr/zl-zipline/issues/137)
 - **`ctype=Reset` orphans adapter actor records.** `actor_mgr` removes the
   node record directly instead of tearing down its docked adapters like a
   disconnect. Pre-existing bug found while planning zipline#118.
-  [zipline#138](https://github.com/mkolehmainen/zipline/issues/138)
+  [zipline#138](https://github.com/org-zpr/zl-zipline/issues/138)
 
 ---
 

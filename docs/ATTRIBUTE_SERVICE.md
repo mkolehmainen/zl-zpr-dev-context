@@ -15,7 +15,7 @@ attributes are refreshed and when a visa is denied) and
 [SECURITY_MODEL.md](SECURITY_MODEL.md) (what an attribute's provenance means).
 
 **Status.** Implemented as of 2026-09-22, by zipline issues #74–#81 under
-umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72).
+umbrella [zipline#72](https://github.com/org-zpr/zl-zipline/issues/72).
 This document and the code are current; the rationale behind the design is
 under *Design decisions*. The wire protocol is also rendered as
 `docs/zpr-attr-v1.openapi.yaml`. The `## Implementation status` section at the
@@ -88,7 +88,7 @@ VISA_SERVICE.md, *Authenticating actors*, for the rules. A store vending only
 `device.zpr_addr` needs no ZPL reference to stay woven: like `device.hostname`,
 it is a visa-service-interpreted attribute, and the compiler retains any
 trusted service vending one
-([zipline#105](https://github.com/mkolehmainen/zipline/issues/105)), emitting
+([zipline#105](https://github.com/org-zpr/zl-zipline/issues/105)), emitting
 an `info` diagnostic per retention.
 
 ### The four operations
@@ -145,7 +145,7 @@ The weaver treats an attribute service exactly like a `file` store: retained
 when a policy statement references one of its attributes, or when it vends a
 visa-service-interpreted attribute (`device.zpr_addr`, `device.hostname` — see
 the well-known attributes discussion in *The model* above and
-[zipline#105](https://github.com/mkolehmainen/zipline/issues/105)); pruned
+[zipline#105](https://github.com/org-zpr/zl-zipline/issues/105)); pruned
 otherwise. It declares no identity attributes, so the identity-vendor
 retention rule (ZPL.md) never applies.
 
@@ -541,7 +541,7 @@ the RFC's HMAC.
 ## Design decisions
 
 Rationale carried over from the completed master plan, which was retired once
-shipped (umbrella [zipline#72](https://github.com/mkolehmainen/zipline/issues/72)).
+shipped (umbrella [zipline#72](https://github.com/org-zpr/zl-zipline/issues/72)).
 Full plan text is in git history:
 `git show a35b224:docs/plans/2026-09-22-attr-query.md`. Decisions already
 argued in the body above — the bearer token over the RFC-13.1 HMAC, SCIM for
@@ -551,59 +551,59 @@ declaration, the inverted STREAM — are not repeated here.
 **HTTPS + JSON, not Cap'n Proto RPC or gRPC.** Anyone can implement it, and
 the visa service already speaks HTTPS/JSON on its admin API. Cap'n Proto RPC
 and gRPC were rejected as hostile to third-party implementers.
-([#72](https://github.com/mkolehmainen/zipline/issues/72))
+([#72](https://github.com/org-zpr/zl-zipline/issues/72))
 
 **A new `api` value instead of the RFC's network trusted-service API.** That
 API (`provider` tuples, fabric names, `cert_path`, HMAC-signed calls to a
 ZPR-internal service) is the wrong shape for a hosted database, was never
 implemented, and the compiler no longer accepts it. `zpr-attr/1` names the contract and its
 version, leaving room for `zpr-attr/2`.
-([#72](https://github.com/mkolehmainen/zipline/issues/72))
+([#72](https://github.com/org-zpr/zl-zipline/issues/72))
 
 **ZPR key names on the wire.** `identities` uses `user.sub`,
 `device.zpr.adapter.cn`, `user.zpr.authority` as-is: it mirrors the `file`
 store's JSON, needs no reverse mapping, and the authority marker has no
 service-side name to map to.
-([#72](https://github.com/mkolehmainen/zipline/issues/72))
+([#72](https://github.com/org-zpr/zl-zipline/issues/72))
 
 **No new store abstraction.** `TrustedServiceInterface` and
 `TrustedServicesMgr` already fit a networked source, so the store is one
 module plus one factory arm; refactoring bootstrap or the OIDC store onto
 something else was out of scope.
-([#78](https://github.com/mkolehmainen/zipline/issues/78))
+([#78](https://github.com/org-zpr/zl-zipline/issues/78))
 
 **A reference server before the first real implementer.** zipline had no code
 when the protocol was fixed, so the API is the contract zipline builds to, not
 a fit to its database. `zpr-attr-server` exists as a second implementation to
 keep the spec honest; this document stays normative over it and over the
-OpenAPI rendering. ([#80](https://github.com/mkolehmainen/zipline/issues/80))
+OpenAPI rendering. ([#80](https://github.com/org-zpr/zl-zipline/issues/80))
 
 ---
 
 ## Implementation status
 
 **Implemented** as of 2026-09-22, by zipline issues
-[#74](https://github.com/mkolehmainen/zipline/issues/74)–[#81](https://github.com/mkolehmainen/zipline/issues/81)
-under umbrella [#72](https://github.com/mkolehmainen/zipline/issues/72), with
+[#74](https://github.com/org-zpr/zl-zipline/issues/74)–[#81](https://github.com/org-zpr/zl-zipline/issues/81)
+under umbrella [#72](https://github.com/org-zpr/zl-zipline/issues/72), with
 these version floors:
 
 - Policy schema: `AttrQueryConfig` in `zl-zpr-policy/policy.capnp`
-  ([#74](https://github.com/mkolehmainen/zipline/issues/74)).
+  ([#74](https://github.com/org-zpr/zl-zipline/issues/74)).
 - `zpr` crate (`zl-zpr-common`) **v0.29.0**: Rust mirror types and the
   submodule pointer bump
-  ([#75](https://github.com/mkolehmainen/zipline/issues/75)).
+  ([#75](https://github.com/org-zpr/zl-zipline/issues/75)).
 - Compiler (`zl-zpr-compiler`) **0.19.0**: `api = "zpr-attr/1"` accepted and
-  woven ([#76](https://github.com/mkolehmainen/zipline/issues/76)).
+  woven ([#76](https://github.com/org-zpr/zl-zipline/issues/76)).
 - `zl-zpr-core` pinned to `zpr` **v0.29.0**
-  ([#77](https://github.com/mkolehmainen/zipline/issues/77)).
+  ([#77](https://github.com/org-zpr/zl-zipline/issues/77)).
 - Visa service: `AttrQueryStore` behind the factory plus the `ts_secrets_dir`
-  configuration key ([#78](https://github.com/mkolehmainen/zipline/issues/78)),
+  configuration key ([#78](https://github.com/org-zpr/zl-zipline/issues/78)),
   and `POST /admin/services/{id}/changed` with `Permission::Notify`
-  ([#79](https://github.com/mkolehmainen/zipline/issues/79)).
+  ([#79](https://github.com/org-zpr/zl-zipline/issues/79)).
 - Reference server `zpr-attr-server`, staged by `make release`
-  ([#80](https://github.com/mkolehmainen/zipline/issues/80)).
+  ([#80](https://github.com/org-zpr/zl-zipline/issues/80)).
 - Netns end-to-end test `zl-zpr-core/integration-test/attr-query-test.sh`
-  ([#81](https://github.com/mkolehmainen/zipline/issues/81)).
+  ([#81](https://github.com/org-zpr/zl-zipline/issues/81)).
 
 Why it was built this way is under *Design decisions*; this document and the
 code are current.

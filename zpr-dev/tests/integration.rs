@@ -1315,7 +1315,7 @@ fn build_dry_run_picks_newest_build_set_and_resolves_it() {
 fn core_manifest(tag: &str) -> String {
     format!(
         "[package]\nname = \"core-fixture\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
-         zpr = {{ git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
+         zpr = {{ git = \"https://github.com/org-zpr/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
     )
 }
 
@@ -1323,7 +1323,7 @@ fn core_manifest(tag: &str) -> String {
 fn common_manifest(tag: &str) -> String {
     format!(
         "[package]\nname = \"common-fixture\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
-         zpr = {{ git = \"https://github.com/mkolehmainen/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
+         zpr = {{ git = \"https://github.com/org-zpr/zl-zpr-common.git\", tag = \"{tag}\" }}\n"
     )
 }
 

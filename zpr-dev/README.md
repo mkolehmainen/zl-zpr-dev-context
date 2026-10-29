@@ -96,11 +96,11 @@ Create or repair the workspace. Safe to re-run.
 
 ```bash
 zpr-dev setup
-zpr-dev setup --workspace ~/work/zl_zpr --context-url git@github.com:mkolehmainen/zl-zpr-dev-context.git
+zpr-dev setup --workspace ~/work/zl_zpr --context-url git@github.com:org-zpr/zl-zpr-dev-context.git
 ```
 
 ```text
---context-url <git-url>   Default git@github.com:mkolehmainen/zl-zpr-dev-context.git
+--context-url <git-url>   Default git@github.com:org-zpr/zl-zpr-dev-context.git
 --branch <branch>         Branch to clone for the context repository
 --no-clone                Do not clone missing source repositories
 ```
@@ -408,7 +408,7 @@ blocked by a design decision; each can be added without restructuring.
 | `.gitignore` / `.git/info/exclude` management | **Decided against**, not merely deferred. Generated files stay visible as untracked entries. |
 
 Separately, before tagging v0.1, three checks need a real workspace of the ten
-`mkolehmainen/zl-zpr-*` repositories over SSH — their fixture equivalents pass, but the real
+`org-zpr/zl-zpr-*` repositories over SSH — their fixture equivalents pass, but the real
 thing has not been run:
 
 - `git status` in each source repository shows only the two untracked

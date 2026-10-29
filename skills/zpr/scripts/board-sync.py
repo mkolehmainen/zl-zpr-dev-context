@@ -54,13 +54,13 @@ _spec = importlib.util.spec_from_file_location("next_issue", os.path.join(HERE, 
 next_issue = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(next_issue)
 
-OWNER = "mkolehmainen"
-PROJECT_NUMBER = 1
+BOARD_OWNER = next_issue.BOARD_OWNER
+PROJECT_NUMBER = next_issue.PROJECT_NUMBER
 # The tracker whose issues this board derives from. The board also carries
 # legacy issues from `org-zpr/zpr-*` repositories; those share bare numbers
 # with tracker issues, so every per-item decision filters on the content's
 # repository first (PR #47 review).
-TRACKER = f"{next_issue.OWNER}/{next_issue.REPO}"
+TRACKER = f"{next_issue.TRACKER_OWNER}/{next_issue.REPO}"
 # Statuses this script owns. Anything else is someone's work in flight.
 DERIVED = ("Backlog", "Ready")
 
@@ -225,7 +225,7 @@ def main():
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args()
 
-    board = gh_graphql(BOARD_QUERY, owner=OWNER, number=PROJECT_NUMBER)
+    board = gh_graphql(BOARD_QUERY, owner=BOARD_OWNER, number=PROJECT_NUMBER)
     board = board["data"]["user"]["projectV2"]
     # One fetch feeds both derivations: umbrellas and execution order come out
     # of the same sub-issue graph that `select` reads blockers from. Board

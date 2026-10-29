@@ -1,6 +1,6 @@
 ---
 name: zpr-project
-description: Use when working on the zipline fork of ZPR (mkolehmainen/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
+description: Use when working on the zipline fork of ZPR (org-zpr/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
 version: 2.8.0
 license: proprietary
 metadata:
@@ -11,20 +11,20 @@ metadata:
 
 ## When to Use
 
-Load this whenever the task touches ZPR: any `zl-zpr-*` repo under the `mkolehmainen`
-GitHub account,
+Load this whenever the task touches ZPR: any `zl-zpr-*` repo in the `org-zpr`
+organization,
 the visa service, the ZPL compiler or ZPL policy, the adapter / packet handler,
 the `policy.capnp` / `vs.capnp` schemas, or the ZPR RFCs.
 
 ZPR = Zero-trust Packet Routing.
 
 **Fork layout.** The zipline workspace is a set of forks: every `zl-zpr-<name>`
-repository under `mkolehmainen` is a fork of `org-zpr/zpr-<name>` — except
+repository in `org-zpr` is a fork of `org-zpr/zpr-<name>` — except
 `zl-zpr-coredns`, a new non-fork Go repository — and all are
 public. **Branches and PRs live in the forks. Issues do not** — they are filed
-centrally in `mkolehmainen/zipline`, a tracker-only repository with no code, and
-each one names the fork its code belongs in. So a task is `mkolehmainen/zipline#7`
-while its branch and PR are in `mkolehmainen/zl-zpr-visaservice`. A second issue
+centrally in `org-zpr/zl-zipline`, a tracker-only repository with no code, and
+each one names the fork its code belongs in. So a task is `org-zpr/zl-zipline#7`
+while its branch and PR are in `org-zpr/zl-zpr-visaservice`. A second issue
 source, `org-zpr/zipline` (gated by org project #5), works the same way — issue in
 `org-zpr/zipline`, code in the forks; see "Second source" under "Picking the next
 issue". Issues in any `org-zpr/zpr-<name>` repository are **never** work for this
@@ -43,11 +43,13 @@ should ever commit to. Work targets `zipline`. See "Git / PR conventions" for th
 not a fork, so no upstream mirror exists — its working and default branch is
 **`main`**, and branches and PRs there start from and target `main`.
 
-The forks are **partly** repointed (`zipline#17`, PRs open and unmerged at the
-time of writing): the `zpr` crate dependency
-and `zl-zpr-common`'s submodules resolve to `mkolehmainen`, while everything
-sourced from `zpr-utils` and every reusable CI workflow reference still resolve
-to `org-zpr`, both deliberately. `docs/BUILD.md` has the reasoning.
+The forks and the tracker were created under the personal `mkolehmainen`
+account and transferred to `org-zpr` on 2026-10-29 (`org-zpr/zl-zipline#207`;
+the tracker was renamed `zipline` → `zl-zipline`). Old URLs redirect. The
+`Cargo.toml` Git dependencies still spell `github.com/mkolehmainen/zl-zpr-*`
+until they are re-tagged bottom-up; `docs/BUILD.md` has the reasoning. Because
+forks and upstream now share an organization, write access no longer keeps you
+out of `org-zpr/zpr-*`; only the rule below and upstream's branch protection do.
 
 This skill covers **process**: how a task gets from an issue to a merged PR, and
 the traps specific to these repositories. It deliberately does *not* restate the
@@ -139,10 +141,10 @@ Rules, all operator decisions (2026-10-07):
 - **Only `org-zpr/zipline` issues are candidates.** The project also carries legacy
   `org-zpr/zpr-*` issues — never work for this agent. **Never touch an
   `org-zpr/zpr-*` repository**: no branches, no pushes, no PRs. Implementation for
-  an org-zpr/zipline issue lands in the `mkolehmainen/zl-*` forks under all the
+  an org-zpr/zipline issue lands in the `org-zpr/zl-*` forks under all the
   same conventions (base `zipline`, local gate, never merge). The plan comment,
   `/go` polling and PR link comment go on the org-zpr/zipline issue itself.
-- **Tracker precedence:** every ready `mkolehmainen/zipline` issue is picked before
+- **Tracker precedence:** every ready `org-zpr/zl-zipline` issue is picked before
   any org one. Among org candidates the tiebreak is lowest issue number (the org
   project has no ordering field).
 - **Iteration gates by time** (14-day iterations): only current-iteration items are
@@ -174,24 +176,24 @@ are printed as `org-zpr/zipline#N` and carry `"tracker": "org-zpr/zipline"` in
 `--json` output so a driver can route the follow-up conventions correctly.
 
 **Route every per-issue action by the row's source.** Wherever a later section of
-this skill shows `--repo mkolehmainen/zipline`, the operator, or "the board", read it
+this skill shows `--repo org-zpr/zl-zipline`, the operator, or "the board", read it
 through this table — a tracker-only command on an org row acts on an unrelated
 same-numbered tracker issue:
 
 | Per-issue action | Tracker row (`#N`) | Org row (`org-zpr/zipline#N`) |
 |---|---|---|
-| Issue repo: read, claim, plan comment, `/go` poll, PR-link comment | `mkolehmainen/zipline` | `org-zpr/zipline` |
+| Issue repo: read, claim, plan comment, `/go` poll, PR-link comment | `org-zpr/zl-zipline` | `org-zpr/zipline` |
 | Board for Status (`In progress`, `In review`) | user project #1 (`user(login:"mkolehmainen")`) | org project #5 (`organization(login:"org-zpr")`) |
 | Who may give `/go` | `mkolehmainen` only | `mkolehmainen` or an active `org-zpr/core-devs` member |
 | Underway marker | assignment | Status `In progress` / `In review` |
-| Close command (operator's action, never the agent's) | `gh issue close N --repo mkolehmainen/zipline` | `gh issue close N --repo org-zpr/zipline` |
+| Close command (operator's action, never the agent's) | `gh issue close N --repo org-zpr/zl-zipline` | `gh issue close N --repo org-zpr/zipline` |
 
-Code, branches and PRs go to the `mkolehmainen/zl-*` forks for both sources.
+Code, branches and PRs go to the `org-zpr/zl-*` forks for both sources.
 
 The first three conditions are machine-readable ordering, in two places and
 nowhere else:
 
-- **GitHub native issue dependencies.** Every issue in `mkolehmainen/zipline` carries
+- **GitHub native issue dependencies.** Every issue in `org-zpr/zl-zipline` carries
   its blockers in the `blockedBy` dependency list. An issue is **unblocked** when it is
   open, every blocker is closed, and **nobody is assigned**. This is self-maintaining:
   merging a PR and closing its issue unblocks its dependents with no bookkeeping.
@@ -380,7 +382,7 @@ read the issue's comments first:
    `In progress` and branch `<login>/<issue#>-<topic>` off `zipline` in the fork the
    issue names — after checking for an existing remote branch for that issue.
 4. **Post the bite-sized TDD plan as an issue comment, then STOP and wait for the
-   go-ahead** (on the issue in its own repository — `mkolehmainen/zipline` or
+   go-ahead** (on the issue in its own repository — `org-zpr/zl-zipline` or
    `org-zpr/zipline`; approvers per "What counts as the go-ahead"). The comment must follow the plan comment format below —
    open with `## Notes for humans`. This is the checkpoint: a misread issue is cheap to fix in
    a plan comment and expensive to fix in a branch. Do not start implementing on the
@@ -424,14 +426,14 @@ in the conversation. Running unattended there is no conversation, so the go-ahea
 comment **on the issue, authored by an approver, whose body contains `/go`**. Who is an
 approver depends on the issue's source (see the routing table under "Second source"):
 
-- **Tracker issue (`mkolehmainen/zipline`)** — the operator, `mkolehmainen`, only.
+- **Tracker issue (`org-zpr/zl-zipline`)** — the operator, `mkolehmainen`, only.
 - **Org issue (`org-zpr/zipline`)** — the operator, **or** any login for which
   `gh api orgs/org-zpr/teams/core-devs/memberships/<login> -q .state` prints `active`
   (`pending` or a 404 means not an approver).
 
 ```sh
 # Tracker issue: operator-only.
-gh issue view <N> --repo mkolehmainen/zipline \
+gh issue view <N> --repo org-zpr/zl-zipline \
   --json comments -q '.comments[] | select(.author.login=="mkolehmainen") | .body'
 
 # Org issue: list /go authors with timestamps, then keep the operator plus
@@ -530,38 +532,35 @@ What that does and does not mean for assignment:
   you want. Always be explicit:
 
   ```sh
-  gh pr create --repo mkolehmainen/<repo> --base zipline --head <login>/<topic>
+  gh pr create --repo org-zpr/<repo> --base zipline --head <login>/<topic>
   ```
 
-  Running `gh repo set-default mkolehmainen/<repo>` once per clone makes the other
+  Running `gh repo set-default org-zpr/<repo>` once per clone makes the other
   `gh` subcommands target the fork too. If you ever *do* want to send something
   upstream, branch off `main` and say so explicitly — never by accident.
-- **There is no CI on these forks. Actions is disabled on all ten, deliberately.**
-  A PR reports no checks, and that is the intended state, not a fault to chase and
-  not something to wait on. **The local build gate is the only gate** — see
-  "Definition of done".
+- **Actions is enabled on every fork since the move to `org-zpr` (2026-10-29),
+  but CI is not yet a gate.** From 2026-09 until the transfer it was switched off,
+  because none of it could run: `pr-notify.yml` needs `SLACK_ALERT_WEBHOOK_URL`, and
+  every caller of the shared `rust-build-test.yml` / `rust-test.yml` /
+  `go-build-test.yml` reusable workflows needs `ZPR_CICD_RO_TOKEN`, and a
+  personal-account fork inherits no secrets. Inside the organization both secrets
+  are available (`org-zpr/zl-zipline#207`), so the checks now run. Until they have
+  been seen green on these repositories, **the local build gate is still the gate**
+  (see "Definition of done"): quote what CI reported beside it, and never present
+  either as the other. `scripts/fork-ci.sh` still reports and flips the switch.
 
-  It was switched off because none of it could run: `pr-notify.yml` needs
-  `SLACK_ALERT_WEBHOOK_URL`, and every caller of the shared `rust-build-test.yml` /
-  `rust-test.yml` / `go-build-test.yml` reusable workflows needs `ZPR_CICD_RO_TOKEN`,
-  which the reusable workflow declares **required** — and a fork inherits no secrets,
-  so those jobs failed in about two seconds before any step ran. The workflow files
-  are untouched, so nothing in `.github/` diverges from upstream; only the
-  repository-level switch changed. `scripts/fork-ci.sh` reports it and reverses it
-  (`--enable`).
+  Leftovers to recognize rather than fix: `zl-zpr-core#1` carries eight red check
+  runs recorded before the switch-off, which will not clear until that branch moves,
+  and `zl-zpr-core`'s two `adapter.yml` integration jobs are separately gated
+  `if: false` because the fork has no release tarball to download (see
+  `zipline#16`).
 
-  Two leftovers to recognize rather than fix: `zl-zpr-core#1` still carries eight
-  red check runs recorded before the switch — historical, and they will not clear
-  until that branch moves — and `zl-zpr-core`'s two `adapter.yml` integration jobs
-  are separately gated `if: false` because the fork has no release tarball to
-  download (see `zipline#16`).
-
-  If CI is ever turned back on, the upstream reusable workflow is what the forks
-  reference, so a change to `zl-zpr-dev-tools` has no effect until the leaf repos'
-  workflow files are repointed at `mkolehmainen/zl-zpr-dev-tools`. Change CI
-  behaviour there, not in the leaf repos. Note also that the workflows filter pushes
-  to `branches: ["main"]` and put no branch filter on `pull_request`, so PR checks
-  would work while post-merge push builds on `zipline` would stay silent.
+  Most leaf workflows call the upstream reusable workflows in
+  `org-zpr/zpr-dev-tools`; only `zl-zpr-core`'s `adapter.yml` calls
+  `org-zpr/zl-zpr-dev-tools`. A change to `zl-zpr-dev-tools` reaches only that
+  caller. The workflows filter pushes to `branches: ["main"]` and put no branch
+  filter on `pull_request`, so PR checks run while post-merge push builds on
+  `zipline` stay silent.
 - **What to work on comes from "Picking the next issue" above**, not from scanning
   the board. `scripts/my-current-tasks.py` answers a different question — what is
   already assigned and in the current iteration, i.e. what is *underway* — and is the
@@ -588,7 +587,7 @@ What that does and does not mean for assignment:
   `In review` / `Done`** — exact spelling, note the lowercase second word. There is
   no `Todo`. `Backlog` means not cleared to start; `Ready` is the **operator's
   green-light for pickup** (zipline#155) — never set it yourself. Something added
-  to the board arrives in `Backlog` (an automation adds `mkolehmainen/zipline`
+  to the board arrives in `Backlog` (an automation adds `org-zpr/zl-zipline`
   issues on filing) and stays unpickable until the operator flips it to `Ready`;
   if a dependency-free item looks forgotten in `Backlog`, it appears under
   `next-issue.py`'s `awaiting-ready` section, which is the report to surface —
@@ -604,10 +603,10 @@ What that does and does not mean for assignment:
   **the issue comment thread is the primary two-way channel with the team.** Nothing
   pushes issue comments to you, so poll for replies with
   `gh issue view <N> --repo <owner>/<repo> --json comments`. Check which source: an
-  issue is either a `mkolehmainen/zipline` issue (tracker, board user project #1) or an
+  issue is either a `org-zpr/zl-zipline` issue (tracker, board user project #1) or an
   `org-zpr/zipline` issue (second source, board org project #5) — read the issue's URL
   rather than assuming, because their numbers overlap. Either way the branch and PR
-  belong in the `mkolehmainen/zl-zpr-<name>` fork the issue names. Nothing else is a
+  belong in the `org-zpr/zl-zpr-<name>` fork the issue names. Nothing else is a
   work source: a board item from an `org-zpr/zpr-<name>` repository (org project #5
   still carries legacy ones) is **never** work for this agent, and no branch, push, PR
   or comment goes to any `org-zpr/zpr-*` repository, even to resume or clarify.
@@ -618,12 +617,12 @@ What that does and does not mean for assignment:
   the conversation for anything you need an answer to. Never assume silence is assent
   on something that changes design.
 - When you have a PR, **name it in a comment on the issue** (in the issue's own
-  repository — `mkolehmainen/zipline` or `org-zpr/zipline`), set the Status to
+  repository — `org-zpr/zl-zipline` or `org-zpr/zipline`), set the Status to
   `In review` on that source's board (user project #1 or org project #5), and **set the PR's assignee and reviewer per the next two bullets —
   at creation time, not as an afterthought.** The issue comment is the link. A GitHub
   *closing* link is impossible here:
   closing keywords only work when the PR and the issue are in the same repository, and
-  the issues live in `mkolehmainen/zipline` or `org-zpr/zipline` while the PRs live in the forks. So
+  the issues live in `org-zpr/zl-zipline` or `org-zpr/zipline` while the PRs live in the forks. So
   `Closes #17` in a fork PR is an ordinary cross-reference — `closingIssuesReferences`
   stays empty and merging closes nothing. Do not write one; it reads like a link that
   will fire, and it will not. List every PR for the issue in one comment, with what
@@ -637,7 +636,7 @@ What that does and does not mean for assignment:
   never merges.
 
   ```sh
-  gh pr edit <PR> --repo mkolehmainen/<repo> --add-assignee <login>
+  gh pr edit <PR> --repo org-zpr/<repo> --add-assignee <login>
   ```
 - **Request review from the issue author, if and only if they are a `core-devs`
   member.**
@@ -649,11 +648,11 @@ What that does and does not mean for assignment:
   gh api orgs/org-zpr/teams/core-devs/memberships/"$ISSUE_AUTHOR" -q .state
   ```
 
-  `<issue-repo>` is the issue's own repository (`mkolehmainen/zipline` or
+  `<issue-repo>` is the issue's own repository (`org-zpr/zl-zipline` or
   `org-zpr/zipline`), not the fork the PR lives in.
 
   - prints `active` -> member. Run
-    `gh pr edit <PR> --repo mkolehmainen/<repo> --add-reviewer "$ISSUE_AUTHOR"`.
+    `gh pr edit <PR> --repo org-zpr/<repo> --add-reviewer "$ISSUE_AUTHOR"`.
   - prints `pending` -> invited but has not accepted. Treat as **not** a member; do
     not request. Requiring `state == "active"` is deliberate.
   - exits non-zero with `404 Not Found` -> not a member. Do nothing, silently. This is
@@ -685,7 +684,7 @@ merged sits open until the operator closes it by hand. Never wait on an auto-clo
 never read "PRs merged, issue still open" as work outstanding on your side. When the
 last PR for an issue merges, say so plainly and name the close as the operator's next
 action, against **the issue's own repository** — `gh issue close <N> --repo
-mkolehmainen/zipline` for a tracker issue, `gh issue close <N> --repo org-zpr/zipline`
+org-zpr/zl-zipline` for a tracker issue, `gh issue close <N> --repo org-zpr/zipline`
 for an org issue. Issue numbers overlap between the two, so a close aimed at the wrong
 repository silently closes an unrelated issue and leaves the real one open. Until the
 right issue closes, its dependents stay blocked and `next-issue.py` keeps reporting it
@@ -697,9 +696,9 @@ A task is done only when ALL of these hold for the PR:
 
 1. Every review thread is resolved (no unresolved `reviewThreads`).
 2. **The full local build gate passes** — build, `cargo fmt --check`, test,
-   `-D warnings` — with its output quoted in the PR description. This replaces CI:
-   Actions is disabled on every fork, so `gh pr checks` reports nothing and there is
-   no remote gate to wait for. Run the gate from the repository's `Makefile`, except
+   `-D warnings` — with its output quoted in the PR description. CI runs again since
+   the move to `org-zpr` but is not yet a gate (see "Git / PR conventions"), so this
+   is still the condition; quote what `gh pr checks` reported beside it. Run the gate from the repository's `Makefile`, except
    in `zl-zpr-core`, which has no root `make check` (use the CI-equivalent commands in
    `docs/BUILD.md`).
    **Gate escalation:** if the change touches connection authorization or addressing
@@ -735,16 +734,18 @@ A task is done only when ALL of these hold for the PR:
    the run to the operator — never silently downgrade to the unit gate.
 3. `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN` (not `BEHIND`,
    `DIRTY`, or `BLOCKED`). `UNSTABLE` is acceptable **only** when it traces to check
-   runs recorded before Actions was switched off, as on `zl-zpr-core#1`; confirm that
-   before accepting it, and never accept it for a run that postdates the switch.
+   runs recorded before Actions was switched off, as on `zl-zpr-core#1`, or to a
+   CI failure the PR description names and explains as not caused by the PR (while
+   CI is not yet a gate). Confirm which before accepting it.
 4. The board Status is `In review`, every PR for the issue is named in a comment
    on it, and every PR carries its assignee (the merger — see "Git / PR
    conventions"). "Linked" means exactly that comment — see "Git / PR conventions" for why a
    real closing link cannot exist across repositories.
 
 **Never report a check as passing when it did not run**, and never present the local
-gate as CI. Quote what you actually ran. If Actions is ever re-enabled, restore
-"all CI checks pass" as condition 2 rather than leaving this in place.
+gate as CI. Quote what you actually ran. Once CI has been seen green on these
+repositories, restore "all CI checks pass" as condition 2 rather than leaving this
+in place.
 
 **`reviewDecision` is not on that list.** With no reviewer it stays empty forever, so
 requiring `APPROVED` would make every task permanently unfinishable. Hand the PR to
@@ -756,14 +757,14 @@ their call to make, not a gate to wait on. `scripts/my-open-prs.py` still requir
 ### Monitoring for review activity
 
 Nothing pushes review comments to you. **Poll.** `scripts/my-open-prs.py` lists every
-open PR authored by the current `gh` login (override with `--user`) in `mkolehmainen` with
+open PR authored by the current `gh` login (override with `--user`) in the `org-zpr/zl-zpr-*` repositories with
 review decision, mergeability, CI rollup, unresolved threads and comments, and prints
 `READY_FOR_HUMAN_MERGE=True` only when all four done-conditions hold.
 
 Inside a work session, poll directly. One call gives most of the picture:
 
 ```
-gh pr view <N> --repo mkolehmainen/<repo> \
+gh pr view <N> --repo org-zpr/<repo> \
   --json state,mergeable,mergeStateStatus,reviewDecision,reviews,comments,statusCheckRollup
 ```
 
@@ -776,7 +777,7 @@ gh api graphql -f query='
       reviewDecision
       reviewThreads(first:100){ nodes{ isResolved isOutdated path line
         comments(first:20){ nodes{ author{login} body } } } } } } }' \
-  -f owner=mkolehmainen -f repo=<repo> -F num=<N>
+  -f owner=org-zpr -f repo=<repo> -F num=<N>
 ```
 
 Poll on a cadence while a PR of yours is open (roughly every 15–30 min of active work,
@@ -787,14 +788,14 @@ and always re-check before declaring done).
 - Address **every** comment. For each thread either push a change or reply on the
   thread explaining why not — silent dismissal is not acceptable.
 - Reply to an inline thread with
-  `gh api repos/mkolehmainen/<repo>/pulls/<N>/comments/<comment_id>/replies -f body='...'`;
-  general PR discussion with `gh pr comment <N> --repo mkolehmainen/<repo> --body '...'`.
+  `gh api repos/org-zpr/<repo>/pulls/<N>/comments/<comment_id>/replies -f body='...'`;
+  general PR discussion with `gh pr comment <N> --repo org-zpr/<repo> --body '...'`.
 - Re-run the full build gate (build → fmt → test → `-D warnings`) after every change
   round, then push to the same branch. Do not force-push over a reviewer's context
   unless you must rebase; prefer additive commits during review.
 - After pushing fixes, request re-review:
   `gh pr ready <N>` if it was a draft, and
-  `gh pr edit <N> --repo mkolehmainen/<repo> --add-reviewer <login>` / a comment tagging
+  `gh pr edit <N> --repo org-zpr/<repo> --add-reviewer <login>` / a comment tagging
   the reviewer that the feedback is addressed.
 - If a review comment changes the agreed design, note the deviation on the issue.
 - If `mergeStateStatus` is `BEHIND`, update the branch (`gh pr update-branch <N>` or a
@@ -806,10 +807,10 @@ not run `gh pr merge`.
 ## Pointers
 
 - Project board: https://github.com/users/mkolehmainen/projects/1 (`mk zl-zpr
-  project`) for `mkolehmainen/zipline` issues, and https://github.com/orgs/org-zpr/projects/5
+  project`) for `org-zpr/zl-zipline` issues, and https://github.com/orgs/org-zpr/projects/5
   (org project #5 "zipline") for `org-zpr/zipline` issues. The other org-owned boards
   under `org-zpr` (`ref impl`, roadmap) do not track this work.
-- Issue trackers: https://github.com/mkolehmainen/zipline/issues (tracker-only repo;
+- Issue trackers: https://github.com/org-zpr/zl-zipline/issues (tracker-only repo;
   the code lives in the `zl-zpr-*` forks) and https://github.com/org-zpr/zipline/issues
   (second source, private).
 - Start reading: RFC 12 (ZPR overview), RFC 4 (terminology), RFC 15 (ZPL), RFC 16 (identity).

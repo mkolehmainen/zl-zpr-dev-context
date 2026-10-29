@@ -388,7 +388,13 @@ zpr-ext   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "
 cbpf-rs   = { git = "https://github.com/mkolehmainen/zl-zpr-utils.git",  tag = "cbpf-rs-v0.2.0" }
 ```
 
-> **Every ZPR-family URL now points at `mkolehmainen`.** `zipline#17` repointed
+> **Every ZPR-family URL points at the forks.** The forks moved from
+> `mkolehmainen` to `org-zpr` on 2026-10-29 (`org-zpr/zl-zipline#207`); Cargo
+> URLs still spell `github.com/mkolehmainen/zl-zpr-*` and resolve through
+> GitHub's redirect until they are re-tagged bottom-up (`zl-zpr-utils`, then
+> `zl-zpr-common`, then consumers), because changing a consumer's URL alone
+> gives Cargo two sources for a crate a tagged dependency also pulls in.
+> `zipline#17` repointed
 > the `zpr` crate and `zl-zpr-common`'s submodules; `zipline#18` finished the
 > job for everything sourced from `zpr-utils` — `cbpf-rs`, `zpr-ext`,
 > `zpr-utils`, and `cslab`/`rcu` in `zl-zpr-core/adapter/ph` — by repointing
@@ -585,7 +591,7 @@ seconds, not after fifteen minutes of cargo. Findings accumulate into one
 literal workspace members — so a pin carried *transitively* by a git
 dependency (`zpr-utils-v0.2.2`'s own manifest pinning `zpr v0.8.1`) never
 appears in it. A complementary scan
-([zipline#69](https://github.com/mkolehmainen/zipline/issues/69),
+([zipline#69](https://github.com/org-zpr/zl-zipline/issues/69),
 `gates::gate_lock_dual_versions`) reads each repository's resolved
 `Cargo.lock` and reports any ZPR-family crate present at two versions. Its
 finding names the lock and the resolved sources, not the `Cargo.toml` line
@@ -822,21 +828,21 @@ plan text is in git history (the architecture decisions from the same plan are
 in [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) "Design decisions"):
 
 - `git show 44e37d0:docs/plans/2026-09-28-windows.md` — umbrella
-  [zipline#126](https://github.com/mkolehmainen/zipline/issues/126)
+  [zipline#126](https://github.com/org-zpr/zl-zipline/issues/126)
 
 **Crypto stays on `aws-lc-rs` for Windows.** It supports Windows MSVC; the
 build cost is CMake and NASM on the machine (or the
 `aws-lc-sys/prebuilt-nasm` feature). Switching to `ring` for Windows was
 rejected: two crypto libraries in a security product is worse than one
 build-toolchain step.
-([zipline#126](https://github.com/mkolehmainen/zipline/issues/126))
+([zipline#126](https://github.com/org-zpr/zl-zipline/issues/126))
 
 **`ph-cli` builds without `pcap` on Windows.** The `pcap` default feature is
 disabled there (`--no-default-features`), so capture-filter-string compilation
 is unavailable on Windows until Npcap is worth adding
-([zipline#151](https://github.com/mkolehmainen/zipline/issues/151));
+([zipline#151](https://github.com/org-zpr/zl-zipline/issues/151));
 `cbpf-rs` itself is portable.
-([zipline#132](https://github.com/mkolehmainen/zipline/issues/132))
+([zipline#132](https://github.com/org-zpr/zl-zipline/issues/132))
 
 **Mainline capnp; `capnp-ancillary` deleted.** The former `[patch.crates-io]`
 fork (`emilazy/capnproto-rust`) did not compile for Windows and blocked the
@@ -845,10 +851,10 @@ feature was deleted with it — `setCaptureFile` answers Unsupported (no
 capture) or redirects to `capture.sock` (unix). *Superseded:* once the port
 finished, the fork came back fixed for every target and `capture.sock` was
 deleted — see the capnp FD-passing entries below.
-([zipline#134](https://github.com/mkolehmainen/zipline/issues/134))
+([zipline#134](https://github.com/org-zpr/zl-zipline/issues/134))
 
 - `git show c7f15ed:docs/plans/2026-09-29-capnp-fd-passing-unix.md` — umbrella
-  [zipline#140](https://github.com/mkolehmainen/zipline/issues/140)
+  [zipline#140](https://github.com/org-zpr/zl-zipline/issues/140)
 
 **Fork base: stay on capnp 0.26, not rebase onto 0.27 (operator direction,
 2026-09-29).** The FD-passing fork uses emilazy's PR
@@ -856,7 +862,7 @@ capnproto/capnproto-rust#666 (0.26.2 base) plus eight fix/backport commits;
 the four repos moved 0.25 → 0.26 in one round (zipline#135, retargeted from
 0.27). The alternative — rebasing the 13 fork commits onto 0.27.2 — conflicts
 at commit 2 of 13, costs more up front, and diverges further from #666.
-([zipline#141](https://github.com/mkolehmainen/zipline/issues/141))
+([zipline#141](https://github.com/org-zpr/zl-zipline/issues/141))
 
 **Security cost of 0.26 instead of 0.27: nothing security-relevant lost (F1
 audit).** Core, on the fork, has every security fix upstream shipped from
@@ -872,7 +878,7 @@ defence-in-depth fixes, which guard internal APIs that generated code does
 not call with attacker-controlled values. If upstream ships a security fix
 later, follow the fork's
 [`ZIPLINE.md`](https://github.com/mkolehmainen/capnproto-rust/blob/zipline/ZIPLINE.md).
-([zipline#141](https://github.com/mkolehmainen/zipline/issues/141))
+([zipline#141](https://github.com/org-zpr/zl-zipline/issues/141))
 
 **The fork lives at `mkolehmainen/capnproto-rust`, branch `zipline`, pinned by
 `rev`.** Consumers never pin a branch: emilazy's fork was force-pushed once
@@ -882,7 +888,7 @@ control. The fork also carries copies of emilazy's branches so their SHAs
 survive whatever happens upstream. Maintenance rules (fast-forward only, no
 version bumps, cherry-pick fixes with their tests) are in the fork's
 `ZIPLINE.md`, not here.
-([zipline#141](https://github.com/mkolehmainen/zipline/issues/141))
+([zipline#141](https://github.com/org-zpr/zl-zipline/issues/141))
 
 **Feature shape: unconditional patch, unix-gated use.** Cargo cannot scope a
 `[patch]` to a target or feature, and a target-scoped renamed fork package
@@ -895,15 +901,15 @@ returns Unsupported. A mainline (fork-less) build needs two manifest edits —
 delete the patch block *and* delete the feature with its optional
 `capnp-futures` dependency — because Cargo rejects any manifest naming a
 feature mainline `capnp-futures` does not declare.
-([zipline#142](https://github.com/mkolehmainen/zipline/issues/142))
+([zipline#142](https://github.com/org-zpr/zl-zipline/issues/142))
 
 **`capture.sock` is deleted, not kept as a fallback.** Per org-zpr/zpr-core#1399:
 the worker, `--capture-path`, ph-cli `-c/--cap-socket`, the `*_CAP_SOCK`
 integration-test variables and the legacy ancillary helper all went; unix
 capture hands the FD over the existing `setCaptureFile` admin RPC.
-([zipline#142](https://github.com/mkolehmainen/zipline/issues/142))
+([zipline#142](https://github.com/org-zpr/zl-zipline/issues/142))
 
 **Upstreaming the fork's fixes: neither (operator decision, 2026-10-01).**
 The fixes are offered neither to emilazy (capnproto/capnproto-rust#666) nor
 to org-zpr. Recorded verbatim from the operator: "Option (D) — neither."
-([zipline#143](https://github.com/mkolehmainen/zipline/issues/143))
+([zipline#143](https://github.com/org-zpr/zl-zipline/issues/143))
