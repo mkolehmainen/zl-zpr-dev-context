@@ -43,8 +43,8 @@ def test_own_unanswered_thread_does_not_loop():
 
 
 def test_failed_ci_does_not_wake_the_loop():
-    """The regression: fork Actions is disabled, so a FAILURE rollup can only be
-    historical and no push clears it -- keying on it looped forever."""
+    """The regression: a FAILURE rollup the bot cannot clear (historical runs, or
+    zl-zpr-core's release-less integration jobs) looped forever when keyed on."""
     assert mop.needs_work(pr(checksState="FAILURE"), BOT) is False
     assert mop.needs_work(pr(checksState="ERROR"), BOT) is False
 

@@ -43,12 +43,11 @@ all of those check out `zipline` (see "Branch model" below). The exception is
 `zl-zpr-coredns`, which has no upstream: it is a new repository and its working
 branch is `main`.
 
-> **Cross-repository references point at the forks** (`org-zpr/zl-zipline#17`,
-> `#18`), with one transitional exception: the `Cargo.toml` Git dependencies
-> still spell the pre-transfer owner, `github.com/mkolehmainen/zl-zpr-*`, and
-> resolve through GitHub's redirect. Released tags embed those URLs, so they move
-> bottom-up through new tags. Most CI workflows deliberately call the upstream
-> reusable workflows in `org-zpr/zpr-dev-tools`. See "Cross-repository
+> **Cross-repository references point at the forks in `org-zpr`**
+> (`org-zpr/zl-zipline#17`, `#18`, `#207`, `#209`): Cargo Git dependencies,
+> `zl-zpr-common`'s submodules, and `zl-zpr-core`'s `adapter.yml`. Most other CI
+> workflows deliberately call the upstream reusable workflows in
+> `org-zpr/zpr-dev-tools`. See "Cross-repository
 > dependencies" in `BUILD.md` for the detail.
 
 Use `zpr-dev status` to see the state of every checkout at once.
