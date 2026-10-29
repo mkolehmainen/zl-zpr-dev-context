@@ -6,8 +6,8 @@ An issue is PICKABLE when all four hold (zipline#155):
     pickable = open AND unassigned AND all blockers closed AND board Status == Ready
 
 The first three come from the tracker (GitHub native `blockedBy` dependencies
-and assignment); the fourth comes from the project board -- user-owned project
-#1 under mkolehmainen -- and is OPERATOR-OWNED: nothing promotes an issue to
+and assignment); the fourth comes from the project board -- org-owned project
+#6 "zl-zpr" under org-zpr -- and is OPERATOR-OWNED: nothing promotes an issue to
 `Ready` mechanically (board-sync.py only suggests), so pickup is opt-in per
 issue. An issue absent from the board, or on the board with no Status value,
 counts as Backlog and is not pickable (operator decision on zipline#155).
@@ -80,15 +80,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghretry import gh_login, run_gh  # noqa: E402
 
-# The tracker repository and the board that gates it have different owners:
-# the tracker moved to org-zpr on 2026-10-29 (renamed zipline -> zl-zipline,
-# org-zpr/zl-zipline#207), while project #1 is still owned by the personal
-# account. Board items report the tracker's current name, so matching them
-# against the old owner silently drops every tracker item.
+# The tracker moved to org-zpr on 2026-10-29 (renamed zipline -> zl-zipline,
+# org-zpr/zl-zipline#207), and its board moved with it: the gate is now
+# org-owned project #6 "zl-zpr", replacing the personal account's project #1.
+# Board items report the tracker's current name, so matching them against the
+# old owner silently drops every tracker item.
 TRACKER_OWNER = "org-zpr"
 REPO = "zl-zipline"
-BOARD_OWNER = "mkolehmainen"
-PROJECT_NUMBER = 1
+BOARD_OWNER = "org-zpr"
+PROJECT_NUMBER = 6
 
 # Second source (operator decision 2026-10-07): org-zpr/zipline issues, gated
 # by the org-owned project #5 "zipline". The bot login is pinned rather than
@@ -141,15 +141,15 @@ query($owner:String!, $repo:String!, $cursor:String) {
 }
 """
 
-# Board Status per issue. The board is user-owned, so the root field must be
-# `user(login:)` -- `organization(login:)` returns null for it. The content's
+# Board Status per issue. The board is org-owned, so the root field must be
+# `organization(login:)` -- `user(login:)` returns null for it. The content's
 # repository is fetched because the board also carries legacy issues from
 # `org-zpr/zpr-*` repositories: an item is only this tracker's if it lives in
 # TRACKER_OWNER/REPO, and keying by bare number would let a same-numbered foreign item
 # overwrite a tracker issue's Status (PR #47 review).
 BOARD_QUERY = """
 query($owner:String!, $number:Int!, $cursor:String) {
-  user(login:$owner) { projectV2(number:$number) {
+  organization(login:$owner) { projectV2(number:$number) {
     items(first:100, after:$cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -191,7 +191,7 @@ def all_issues():
 
 
 def board_statuses():
-    """Map issue number -> board Status name, from user-owned project #1.
+    """Map issue number -> board Status name, from org-owned project #6.
 
     Only `TRACKER_OWNER/REPO` (tracker) items are mapped: the board also carries
     legacy `org-zpr/zpr-*` issues, and a foreign item sharing a number with a
@@ -208,7 +208,7 @@ def board_statuses():
     cursor, statuses = None, {}
     while True:
         page = gh_graphql(BOARD_QUERY, owner=BOARD_OWNER, number=PROJECT_NUMBER, cursor=cursor)
-        items = page["data"]["user"]["projectV2"]["items"]
+        items = page["data"]["organization"]["projectV2"]["items"]
         for node in items["nodes"]:
             content = node.get("content") or {}
             number = content.get("number")
@@ -226,7 +226,7 @@ def board_statuses():
 # Org project #5 items, with everything the org predicate needs in one query:
 # the issue's own state/assignees/blockers/sub-issues plus the item's Status
 # and Iteration values. The project is org-owned, so the root field is
-# `organization(login:)` -- the mirror image of the user-owned board above.
+# `organization(login:)`, the same as the tracker board above.
 ORG_BOARD_QUERY = """
 query($owner:String!, $number:Int!, $cursor:String) {
   organization(login:$owner) { projectV2(number:$number) {

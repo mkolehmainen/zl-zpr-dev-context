@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reconcile the `mk zl-zpr project` board with the dependency graph.
+"""Reconcile the `zl-zpr` board (org-zpr project #6) with the dependency graph.
 
 Most of the board is documentation derived from two sources of truth -- GitHub
 native `blockedBy` edges and each umbrella's sub-issue order. This script
@@ -7,7 +7,8 @@ reconciles what is still mechanically derivable and *reports* what is not:
 
   Iteration  Every open item lands in the current iteration if it has none.
              Existing values are left alone. This is the only field this
-             script writes.
+             script writes. A board with no Iteration field (project #6 has
+             none) gets no backfill: the plan is always empty there.
   Status     READ-ONLY since zipline#155: `Ready` is operator-owned, because
              pickup is gated on it (pickable = open + unassigned + unblocked
              + Status Ready, see next-issue.py). Backlog->Ready promotion is
@@ -31,8 +32,8 @@ Usage:
   python3 board-sync.py --json       # the plan as JSON
 
 Requires: `gh` authenticated with `repo` and `project` (or `read:project` for a
-dry run). The board is user-owned, so GraphQL must use the `user(login:)` root
-field -- `organization(login:)` returns null for it.
+dry run). The board is org-owned, so GraphQL must use the `organization(login:)`
+root field -- `user(login:)` returns null for it.
 """
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ def gh_graphql(query: str, **variables):
 
 BOARD_QUERY = """
 query($owner:String!, $number:Int!) {
-  user(login:$owner) { projectV2(number:$number) {
+  organization(login:$owner) { projectV2(number:$number) {
     id
     fields(first:30) { nodes {
       ... on ProjectV2SingleSelectField { id name options { id name } }
@@ -92,6 +93,11 @@ query($owner:String!, $number:Int!) {
         ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } } } } } } } }
 }
 """
+
+
+def board_project(payload):
+    """The projectV2 object out of a BOARD_QUERY response (org-owned board)."""
+    return payload["data"]["organization"]["projectV2"]
 
 
 def current_iteration(iterations, today, default_duration=14):
@@ -142,15 +148,19 @@ def build_plan(board, unblocked_unassigned, underway_numbers, today,
     to suggest or report -- only their Iteration is backfilled.
     """
     fields = {f["name"]: f for f in board["fields"]["nodes"] if f}
-    iteration_field = fields["Iteration"]
-    configuration = iteration_field["configuration"]
-    iteration = current_iteration(
-        configuration["iterations"], today, configuration.get("duration") or 14
-    )
-    if iteration is None:
-        raise SystemExit(
-            f"no iteration contains {today}. Add one on the board before syncing."
+    # Project #6 has no Iteration field: nothing to backfill, and no date
+    # window to require. Status reporting below does not depend on it.
+    iteration_field = fields.get("Iteration")
+    iteration = None
+    if iteration_field is not None:
+        configuration = iteration_field["configuration"]
+        iteration = current_iteration(
+            configuration["iterations"], today, configuration.get("duration") or 14
         )
+        if iteration is None:
+            raise SystemExit(
+                f"no iteration contains {today}. Add one on the board before syncing."
+            )
 
     plan, suggestions, skipped = [], [], []
     for item in board["items"]["nodes"]:
@@ -183,7 +193,7 @@ def build_plan(board, unblocked_unassigned, underway_numbers, today,
 
         # Iteration is only ever filled in, never moved: reassigning an item
         # someone deliberately parked in a later iteration would be wrong.
-        if field_value(item, "Iteration") is None:
+        if iteration is not None and field_value(item, "Iteration") is None:
             plan.append({"number": number, "field": "Iteration", "from": None,
                          "to": iteration["title"], "item_id": item["id"],
                          "field_id": iteration_field["id"], "value": iteration["id"],
@@ -226,7 +236,7 @@ def main():
     args = parser.parse_args()
 
     board = gh_graphql(BOARD_QUERY, owner=BOARD_OWNER, number=PROJECT_NUMBER)
-    board = board["data"]["user"]["projectV2"]
+    board = board_project(board)
     # One fetch feeds both derivations: umbrellas and execution order come out
     # of the same sub-issue graph that `select` reads blockers from. Board
     # statuses come from the board fetch above rather than a second query.

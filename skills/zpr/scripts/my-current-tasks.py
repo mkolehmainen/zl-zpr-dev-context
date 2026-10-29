@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""List "mk zl-zpr project" (mkolehmainen project #1) items assigned to a user in the CURRENT iteration.
+"""List `zl-zpr` board (org-zpr project #6) items assigned to a user in the CURRENT iteration.
 
 Current iteration = the iteration in the Iteration field configuration whose
-[startDate, startDate+duration) window contains today.
+[startDate, startDate+duration) window contains today. A board with no
+Iteration field (project #6 has none) has no iteration to filter on, so every
+item assigned to the user is listed.
 
 Usage:
   python3 my-current-tasks.py            # human-readable, assignee = authenticated gh user
@@ -17,13 +19,12 @@ Usage:
         while one is outstanding. Idle output stays byte-stable.
         Off by default so interactive runs stay clean.
 
-The board is owned by a USER, not an organization, so the queries below use the
-`user(login:)` root field. If the board ever moves to an org, swap that for
-`organization(login:)` in both queries and change the two `["user"]` response
-lookups to `["organization"]`.
+The board is owned by an ORGANIZATION (it moved from the personal account's
+project #1 on 2026-10-29), so the queries below use the `organization(login:)`
+root field -- `user(login:)` returns null for an org-owned project.
 
 Requires: gh authenticated with scopes repo and read:project (the broader
-`project` scope also works). read:org is not needed for a user-owned board.
+`project` scope also works).
 """
 import datetime
 import json
@@ -33,8 +34,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghretry import gh_login, run_gh  # noqa: E402
 
-OWNER = "mkolehmainen"
-PROJECT_NUMBER = 1
+OWNER = "org-zpr"
+PROJECT_NUMBER = 6
 
 # The project's "unblocked, not started" Status value. This board uses
 # Backlog / Ready / In progress / In review / Done -- there is no "Todo".
@@ -43,7 +44,7 @@ READY_STATUS = "Ready"
 
 QUERY = """
 query($owner:String!, $num:Int!, $cursor:String) {
-  user(login:$owner) {
+  organization(login:$owner) {
     projectV2(number:$num) {
       title
       items(first:100, after:$cursor) {
@@ -84,11 +85,16 @@ query($owner:String!, $num:Int!, $cursor:String) {
 
 ITER_CFG_QUERY = """
 query($owner:String!, $num:Int!) {
-  user(login:$owner) {
+  organization(login:$owner) {
     projectV2(number:$num) {
-      field(name:"Iteration") {
-        ... on ProjectV2IterationField {
-          configuration { iterations { title startDate duration } }
+      # Not a by-name `field` lookup: on a board without an Iteration field
+      # (project #6) GitHub fails the whole query instead of returning null.
+      fields(first:50) {
+        nodes {
+          ... on ProjectV2IterationField {
+            name
+            configuration { iterations { title startDate duration } }
+          }
         }
       }
     }
@@ -108,11 +114,22 @@ def gh_graphql(query, **variables):
     return json.loads(run_gh(cmd))
 
 
-def current_iteration_title(today=None):
-    today = today or datetime.date.today()
-    d = gh_graphql(ITER_CFG_QUERY, owner=OWNER, num=PROJECT_NUMBER)
-    cfg = d["data"]["user"]["projectV2"]["field"]["configuration"]
-    for it in cfg["iterations"]:
+def project_of(payload):
+    """The projectV2 object out of a QUERY / ITER_CFG_QUERY response."""
+    return payload["data"]["organization"]["projectV2"]
+
+
+def iteration_config(payload):
+    """The Iteration field's iterations, or None if the board has no such field."""
+    for field in project_of(payload)["fields"]["nodes"]:
+        if field and field.get("name") == "Iteration" and field.get("configuration"):
+            return field["configuration"]["iterations"]
+    return None
+
+
+def current_iteration(iterations, today):
+    """(title, first day, last day) of the iteration containing today, else Nones."""
+    for it in iterations:
         start = datetime.date.fromisoformat(it["startDate"])
         end = start + datetime.timedelta(days=it["duration"])
         if start <= today < end:
@@ -124,7 +141,7 @@ def fetch_items():
     cursor, items = None, []
     while True:
         d = gh_graphql(QUERY, owner=OWNER, num=PROJECT_NUMBER, cursor=cursor)
-        page = d["data"]["user"]["projectV2"]["items"]
+        page = project_of(d)["items"]
         items.extend(page["nodes"])
         if not page["pageInfo"]["hasNextPage"]:
             return items
@@ -140,6 +157,31 @@ def field_values(node):
         elif fv.get("__typename") == "ProjectV2ItemFieldIterationValue" and fname == "Iteration":
             iteration = fv.get("title")
     return status, iteration
+
+
+def select_matches(nodes, user, iteration):
+    """Items assigned to `user`; restricted to `iteration` unless it is None
+    (None = the board has no Iteration field, so nothing to restrict by)."""
+    matches = []
+    for node in nodes:
+        content = node.get("content") or {}
+        assignees = [a["login"] for a in (content.get("assignees") or {}).get("nodes", [])]
+        if user not in assignees:
+            continue
+        status, item_iteration = field_values(node)
+        if iteration is not None and item_iteration != iteration:
+            continue
+        matches.append({
+            "number": content.get("number"),
+            "title": content.get("title"),
+            "url": content.get("url"),
+            "state": content.get("state"),
+            "repo": (content.get("repository") or {}).get("name"),
+            "status": status,
+            "iteration": item_iteration,
+            "type": content.get("__typename"),
+        })
+    return matches
 
 
 def retry_marker(matches):
@@ -171,31 +213,17 @@ def main():
     else:
         user = gh_login()
 
-    cur, start, end = current_iteration_title()
-    if cur is None:
-        print("No current iteration matches today's date.", file=sys.stderr)
-        sys.exit(2)
+    iterations = iteration_config(
+        gh_graphql(ITER_CFG_QUERY, owner=OWNER, num=PROJECT_NUMBER))
+    if iterations is None:
+        cur, start, end = None, None, None  # no Iteration field: no filter
+    else:
+        cur, start, end = current_iteration(iterations, datetime.date.today())
+        if cur is None:
+            print("No current iteration matches today's date.", file=sys.stderr)
+            sys.exit(2)
 
-    matches = []
-    for node in fetch_items():
-        content = node.get("content") or {}
-        assignees = [a["login"] for a in (content.get("assignees") or {}).get("nodes", [])]
-        if user not in assignees:
-            continue
-        status, iteration = field_values(node)
-        if iteration != cur:
-            continue
-        matches.append({
-            "number": content.get("number"),
-            "title": content.get("title"),
-            "url": content.get("url"),
-            "state": content.get("state"),
-            "repo": (content.get("repository") or {}).get("name"),
-            "status": status,
-            "iteration": iteration,
-            "type": content.get("__typename"),
-        })
-
+    matches = select_matches(fetch_items(), user, cur)
     matches.sort(key=lambda m: (m["repo"] or "", m["number"] or 0))
 
     if as_json:
@@ -208,7 +236,8 @@ def main():
         print(json.dumps(payload, indent=2))
         return
 
-    print(f"{cur} ({start} -> {end})  assignee={user}  items={len(matches)}")
+    window = f"{cur} ({start} -> {end})" if cur else "no Iteration field (all assigned)"
+    print(f"{window}  assignee={user}  items={len(matches)}")
     if not matches:
         print("  (nothing assigned)")
     for m in matches:

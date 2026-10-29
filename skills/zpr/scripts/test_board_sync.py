@@ -215,6 +215,47 @@ def build(b, ready, underway, today=d("2026-09-03"), umbrellas=frozenset()):
     return bs.build_plan(b, ready, underway, today, umbrellas)
 
 
+# --- the board moved to org project #6 "zl-zpr" (2026-10-29) ----------------
+#
+# Project #6 is org-owned and has no Iteration field at all, so the sync must
+# query through `organization(login:)` and treat Iteration backfill as
+# not-applicable rather than crash on the missing field.
+
+
+def board_without_iteration(items):
+    b = board(items)
+    b["fields"]["nodes"] = [f for f in b["fields"]["nodes"] if f["name"] != "Iteration"]
+    return b
+
+
+def test_board_query_targets_the_org_project():
+    assert bs.BOARD_OWNER == "org-zpr"
+    assert bs.PROJECT_NUMBER == 6
+    assert "organization(login:$owner)" in bs.BOARD_QUERY
+    assert "user(login:" not in bs.BOARD_QUERY
+
+
+def test_board_project_reads_the_organization_root():
+    payload = {"data": {"organization": {"projectV2": {"id": "proj"}}}}
+    assert bs.board_project(payload) == {"id": "proj"}
+
+
+def test_board_without_iteration_field_plans_no_backfill():
+    plan, suggestions, skipped = build(
+        board_without_iteration([item(2, status="Backlog")]), {2}, set())
+    assert plan == []
+    # Status reporting does not depend on Iteration and still works.
+    assert [s["number"] for s in suggestions] == [2]
+    assert skipped == []
+
+
+def test_board_without_iteration_field_has_no_date_requirement():
+    """Without an Iteration field, 'no iteration contains today' cannot apply."""
+    plan, _, _ = build(board_without_iteration([item(2, status="Backlog")]),
+                       {2}, set(), today=d("2027-01-01"))
+    assert plan == []
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

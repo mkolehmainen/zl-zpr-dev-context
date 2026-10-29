@@ -1,7 +1,7 @@
 ---
 name: zpr-project
 description: Use when working on the zipline fork of ZPR (org-zpr/zl-zpr-*) — taking a task from issue to merged PR. Also use on "work on the next issue" / "what is next", which picks the next unblocked issue from the tracker and runs the pickup sequence.
-version: 2.8.0
+version: 2.9.0
 license: proprietary
 metadata:
   tags: [zpr, rust, capnp, networking, zero-trust]
@@ -30,11 +30,11 @@ source, `org-zpr/zipline` (gated by org project #5), works the same way — issu
 issue". Issues in any `org-zpr/zpr-<name>` repository are **never** work for this
 agent, and those repositories are never touched.
 
-The project board for tracker issues is **`mk zl-zpr project`, user-owned project #1
-under `mkolehmainen`** (https://github.com/users/mkolehmainen/projects/1), private. For
-`org-zpr/zipline` issues it is the **org-owned project #5 "zipline"**
-(https://github.com/orgs/org-zpr/projects/5). No other `org-zpr` board tracks this
-work.
+The project board for tracker issues is the **org-owned project #6 "zl-zpr"**
+(https://github.com/orgs/org-zpr/projects/6), private. For `org-zpr/zipline` issues
+it is the **org-owned project #5 "zipline"** (https://github.com/orgs/org-zpr/projects/5).
+No other board tracks this work — in particular not the retired `mk zl-zpr project`
+(user project #1 under `mkolehmainen`), which project #6 replaced on 2026-10-29.
 
 Each fork has two long-lived branches: **`zipline`** is the working branch and the
 repository default, and **`main`** is a read-only mirror of upstream that nothing
@@ -47,7 +47,7 @@ The forks and the tracker were created under the personal `mkolehmainen`
 account and transferred to `org-zpr` on 2026-10-29 (`org-zpr/zl-zipline#207`;
 the tracker was renamed `zipline` → `zl-zipline`). Old URLs redirect, but every
 reference in the code, including the Cargo Git dependencies (`#209`), now names
-`org-zpr`. Because
+`org-zpr`, and the tracker's board moved to org project #6. Because
 forks and upstream now share an organization, write access no longer keeps you
 out of `org-zpr/zpr-*`; only the rule below and upstream's branch protection do.
 
@@ -183,7 +183,7 @@ same-numbered tracker issue:
 | Per-issue action | Tracker row (`#N`) | Org row (`org-zpr/zipline#N`) |
 |---|---|---|
 | Issue repo: read, claim, plan comment, `/go` poll, PR-link comment | `org-zpr/zl-zipline` | `org-zpr/zipline` |
-| Board for Status (`In progress`, `In review`) | user project #1 (`user(login:"mkolehmainen")`) | org project #5 (`organization(login:"org-zpr")`) |
+| Board for Status (`In progress`, `In review`) | org project #6 "zl-zpr" (`organization(login:"org-zpr")`) | org project #5 "zipline" (`organization(login:"org-zpr")`) |
 | Who may give `/go` | `mkolehmainen` only | `mkolehmainen` or an active `org-zpr/core-devs` member |
 | Underway marker | assignment | Status `In progress` / `In review` |
 | Close command (operator's action, never the agent's) | `gh issue close N --repo org-zpr/zl-zipline` | `gh issue close N --repo org-zpr/zipline` |
@@ -279,7 +279,7 @@ python3 scripts/test_next_issue.py     # the selection logic's tests, no network
 It reads state and changes nothing, so it is always safe to run.
 
 **Board upkeep.** `scripts/board-sync.py` backfills `Iteration` for any open item
-that has none, prints Backlog→Ready promotion *suggestions* (open, unassigned,
+that has none (a no-op on project #6, which has no Iteration field), prints Backlog→Ready promotion *suggestions* (open, unassigned,
 unblocked, still `Backlog`) for the operator to act on, and reports drift —
 assigned issues still in a derived status, and Ready-but-blocked pre-authorized
 items. It prints a plan and writes only with `--apply`, and even `--apply` never
@@ -569,19 +569,21 @@ What that does and does not mean for assignment:
   usefully, so a GraphQL query is required. Note it filters on **assignee**: issues
   are unassigned until pickup assigns them, so it reports nothing for work not yet
   started, which is correct rather than a fault.
-- Project facts: the board is **user-owned project #1 under `mkolehmainen`**
-  (`mk zl-zpr project`), private. Because the owner is a user and not an
-  organization, GraphQL queries must use the `user(login:)` root field;
-  `organization(login:)` returns null. Iterations are **14-day, Monday-start**, named
-  `Iteration N`. Most items carry **no** iteration value — only the current-iteration
-  handful do. Reading the board needs `read:project` (`gh auth refresh -s
-  read:project`); the broader `project` scope works too, and `read:org` alone gives
-  "missing required scopes" on any `gh project` call.
+- Project facts: the tracker board is **org-owned project #6 "zl-zpr" under
+  `org-zpr`**, private. Because the owner is an organization, GraphQL queries must
+  use the `organization(login:)` root field; `user(login:)` returns null. It has
+  **no Iteration field** — tracker pickup never gated on iteration, so nothing is
+  lost, but a by-name lookup (`field(name:"Iteration")`) fails the whole query there
+  rather than returning null; read `fields` and pick by name instead. Reading the
+  board needs `read:project` (`gh auth refresh -s read:project`); the broader
+  `project` scope works too, and `read:org` alone gives "missing required scopes" on
+  any `gh project` call. The board it replaced, user project #1 under `mkolehmainen`
+  (`mk zl-zpr project`), is retired: do not read or write it.
 
-  Org project #5 (`org-zpr/zipline` issues) is org-owned, so its queries use the
-  `organization(login:"org-zpr")` root field instead. It has the same five Status
-  values and the same 14-day, Monday-start `Iteration N` field; there, unlike #1,
-  the Iteration value is a pickup gate (see "Second source"). ZprBot1 and ZprBot2 hold
+  Org project #5 (`org-zpr/zipline` issues) is org-owned too, with the same five
+  Status values plus a 14-day, Monday-start `Iteration N` field; there the
+  Iteration value is a pickup gate (see "Second source"). ZprBot1 and ZprBot2 hold
+  Write on both boards for Status updates. ZprBot1 and ZprBot2 hold
   Write on it for Status updates.
 - Status values on this board are **`Backlog` / `Ready` / `In progress` /
   `In review` / `Done`** — exact spelling, note the lowercase second word. There is
@@ -603,7 +605,7 @@ What that does and does not mean for assignment:
   **the issue comment thread is the primary two-way channel with the team.** Nothing
   pushes issue comments to you, so poll for replies with
   `gh issue view <N> --repo <owner>/<repo> --json comments`. Check which source: an
-  issue is either a `org-zpr/zl-zipline` issue (tracker, board user project #1) or an
+  issue is either a `org-zpr/zl-zipline` issue (tracker, board org project #6) or an
   `org-zpr/zipline` issue (second source, board org project #5) — read the issue's URL
   rather than assuming, because their numbers overlap. Either way the branch and PR
   belong in the `org-zpr/zl-zpr-<name>` fork the issue names. Nothing else is a
@@ -618,7 +620,7 @@ What that does and does not mean for assignment:
   on something that changes design.
 - When you have a PR, **name it in a comment on the issue** (in the issue's own
   repository — `org-zpr/zl-zipline` or `org-zpr/zipline`), set the Status to
-  `In review` on that source's board (user project #1 or org project #5), and **set the PR's assignee and reviewer per the next two bullets —
+  `In review` on that source's board (org project #6 or org project #5), and **set the PR's assignee and reviewer per the next two bullets —
   at creation time, not as an afterthought.** The issue comment is the link. A GitHub
   *closing* link is impossible here:
   closing keywords only work when the PR and the issue are in the same repository, and
@@ -806,8 +808,8 @@ not run `gh pr merge`.
 
 ## Pointers
 
-- Project board: https://github.com/users/mkolehmainen/projects/1 (`mk zl-zpr
-  project`) for `org-zpr/zl-zipline` issues, and https://github.com/orgs/org-zpr/projects/5
+- Project board: https://github.com/orgs/org-zpr/projects/6 (org project #6
+  "zl-zpr") for `org-zpr/zl-zipline` issues, and https://github.com/orgs/org-zpr/projects/5
   (org project #5 "zipline") for `org-zpr/zipline` issues. The other org-owned boards
   under `org-zpr` (`ref impl`, roadmap) do not track this work.
 - Issue trackers: https://github.com/org-zpr/zl-zipline/issues (tracker-only repo;
