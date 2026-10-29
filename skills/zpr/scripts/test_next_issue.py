@@ -235,7 +235,7 @@ def test_assigned_is_underway_regardless_of_board_status():
 
 def board_page(*nodes, has_next=False, cursor=None):
     """One page of BOARD_QUERY results, as gh_graphql returns it."""
-    return {"data": {"user": {"projectV2": {"items": {
+    return {"data": {"organization": {"projectV2": {"items": {
         "nodes": list(nodes),
         "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
     }}}}}
@@ -258,6 +258,16 @@ def statuses_from(*pages):
         return next_issue.board_statuses()
     finally:
         next_issue.gh_graphql = original
+
+
+def test_tracker_board_is_org_project_6():
+    """The tracker board moved from user project #1 (mkolehmainen) to org
+    project #6 "zl-zpr" (2026-10-29). An org-owned project is only reachable
+    through `organization(login:)`; `user(login:)` returns null for it."""
+    assert next_issue.BOARD_OWNER == "org-zpr"
+    assert next_issue.PROJECT_NUMBER == 6
+    assert "organization(login:$owner)" in next_issue.BOARD_QUERY
+    assert "user(login:" not in next_issue.BOARD_QUERY
 
 
 def test_foreign_backlog_item_cannot_suppress_a_tracker_ready():
