@@ -546,7 +546,7 @@ What that does and does not mean for assignment:
   personal-account fork inherits no secrets. Inside the organization both secrets
   are available (`org-zpr/zl-zipline#207`), so the checks now run. They have been
   seen fully green on `zl-zpr-core` (`zl-zpr-core#88`, `zipline#208`), so there
-  **CI is the gate**, together with the local netns tier until CI runs all of it
+  **CI is the gate**. Its integration jobs run every script in the netns tier
   (`zipline#210`). In every other fork **the local build gate is still the gate**
   until its CI has been seen green (see "Definition of done"): quote what CI
   reported beside it, and never present either as the other. `scripts/fork-ci.sh` still reports and flips the switch.
@@ -557,7 +557,7 @@ What that does and does not mean for assignment:
   Two CI dependencies live outside the repository, and each one fails a job before
   any code runs (`zipline#208`):
 
-  - `zl-zpr-core`'s five `adapter.yml` integration jobs are not gated. Each one
+  - `zl-zpr-core`'s `adapter.yml` integration jobs are not gated. Each one
     downloads `release-linux-x86_64.tar.gz` for `VISA_SERVICE_RELEASE` from
     `org-zpr/zl-zpr-visaservice` releases. Publish that release before you bump
     the variable, or every job fails at **Download Asset**.
@@ -712,12 +712,12 @@ A task is done only when ALL of these hold for the PR:
 1. Every review thread is resolved (no unresolved `reviewThreads`).
 2. **The build gate passes.** Which gate depends on the repository (see "Git / PR
    conventions"):
-   - **`zl-zpr-core`: all CI checks pass, and the local netns tier passes.**
-     `gh pr checks` reports every check as `pass`, with none pending. CI runs only
-     five of the netns tier's scripts, so also run the full tier
-     (`zpr-dev build --test netns`, as in "Gate escalation" below) on every PR,
-     whatever it touches. Quote both results in the PR description. When CI runs
-     the whole tier (`zipline#210`), drop the local tier from this condition.
+   - **`zl-zpr-core`: all CI checks pass.** `gh pr checks` reports every check as
+     `pass`, with none pending, and the PR description quotes that result. CI runs
+     one `Integration (<script>)` job for every `integration-test/*-test.sh`, the
+     same set as the netns tier (`zipline#210`), against the PR's `ph` and the
+     visa service release named by `VISA_SERVICE_RELEASE`. So for a
+     `zl-zpr-core`-only change those jobs also satisfy "Gate escalation" below.
    - **Every other fork: the full local build gate passes** — build,
      `cargo fmt --check`, test, `-D warnings` — with its output quoted in the PR
      description. CI runs there but is not yet a gate, so quote what `gh pr checks`

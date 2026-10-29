@@ -1213,13 +1213,16 @@ what the *Credential lifetimes and re-authentication* section above describes.
 
 **Not yet:**
 
-- Not every netns end-to-end leg runs in CI. `one-node-oidc-test.sh` and
-  `one-node-oidc-renewal-test.sh` run in `zl-zpr-core`'s `adapter.yml`, and were
-  first seen passing there on 2026-10-29 (`zl-zpr-core#88`,
-  `org-zpr/zl-zipline#208`). `oidc-file-interplay-test.sh` has no CI job, so it
-  is pending the operator's environment (`zl-zpr-core` 02b730d records what was
-  run locally for it — fixture compile, `bash -n`, the fake-IdP smoke test, and
-  the C1-revert `zpdump` RED).
+- CI runs the netns end-to-end legs against the visa service *release*, not
+  against a visa service branch. `one-node-oidc-test.sh` and
+  `one-node-oidc-renewal-test.sh` first passed in `zl-zpr-core` CI on
+  2026-10-29 (`zl-zpr-core#88`, `org-zpr/zl-zipline#208`), and
+  `oidc-file-interplay-test.sh`, `fake-idp-smoke-test.sh` and
+  `attr-query-test.sh` the same day (`zl-zpr-core#89`,
+  `org-zpr/zl-zipline#210`). CI does not have `zpdump`, so the interplay and
+  attribute-query tests skip their `zpdump` pre-check there. A visa service
+  change still needs the local netns tier ("Gate escalation" in
+  `skills/zpr/SKILL.md`).
 - **The renewal ZDP messages are not in the RFC.**
   `RenewAuthenticationRequest = 142` and `RenewAuthenticationResponse = 143`
   are implemented and unit-tested but carry a `TODO: add to RFC 6`

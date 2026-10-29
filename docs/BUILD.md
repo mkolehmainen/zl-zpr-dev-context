@@ -113,9 +113,8 @@ a green local `make test && make check` is a good predictor of a green CI run.
 
 **Actions is enabled on the forks again since the move to `org-zpr`
 (2026-10-29), but CI is a gate only in `zl-zpr-core`,** where it has been seen
-fully green (`zl-zpr-core#88`). CI there runs only five of the netns tier's
-scripts, so the local tier stays part of the gate until it runs all of them
-(`org-zpr/zl-zipline#210`). In every other fork the local gate stays the
+fully green (`zl-zpr-core#88`). CI there runs every script in the netns tier,
+one job per `integration-test/*-test.sh` (`org-zpr/zl-zipline#210`). In every other fork the local gate stays the
 gate until its CI has been seen green, and CI's result is quoted beside it (see
 `skills/zpr/SKILL.md`, "Definition of done"). The `zl-zpr-core` integration
 jobs download the visa service release named by `VISA_SERVICE_RELEASE`, and
