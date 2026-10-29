@@ -112,10 +112,16 @@ CI builds every Rust repository through the shared reusable workflows in
 a green local `make test && make check` is a good predictor of a green CI run.
 
 **Actions is enabled on the forks again since the move to `org-zpr`
-(2026-10-29), but CI is not yet a gate.** Until it has been seen green there,
-the local gate stays the gate and CI's result is quoted beside it (see
+(2026-10-29), but CI is a gate only in `zl-zpr-core`,** where it has been seen
+fully green (`zl-zpr-core#88`). CI there runs only five of the netns tier's
+scripts, so the local tier stays part of the gate until it runs all of them
+(`org-zpr/zl-zipline#210`). In every other fork the local gate stays the
+gate until its CI has been seen green, and CI's result is quoted beside it (see
 `skills/zpr/SKILL.md`, "Definition of done"). The `zl-zpr-core` integration
-jobs still fail for want of a visa service release (`org-zpr/zl-zipline#208`).
+jobs download the visa service release named by `VISA_SERVICE_RELEASE`, and
+the containerized jobs pull the private `ghcr.io/org-zpr/dev-env` image; see
+`skills/zpr/SKILL.md` ("Git / PR conventions") for what each needs
+(`org-zpr/zl-zipline#208`).
 
 From 2026-09 until the transfer, Actions was switched off, because none of that
 CI could run. `pr-notify.yml` needs `SLACK_ALERT_WEBHOOK_URL`, and

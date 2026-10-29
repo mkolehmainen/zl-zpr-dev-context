@@ -1213,14 +1213,13 @@ what the *Credential lifetimes and re-authentication* section above describes.
 
 **Not yet:**
 
-- The netns end-to-end legs have not run in CI: Actions was off on the forks
-  until 2026-10-29, the integration jobs still lack a visa service release
-  (`org-zpr/zl-zipline#208`), and a netns run needs root, so it is pending the operator's
-  environment (`zl-zpr-core` 02b730d records what was run locally for the
-  interplay test — fixture compile, `bash -n`, the fake-IdP smoke test, and
-  the C1-revert `zpdump` RED). `one-node-oidc-renewal-test.sh` has now been
-  observed passing locally in the Docker harness (zipline#86, 2026-09-23 —
-  see the silent re-authentication list above), but still not in CI.
+- Not every netns end-to-end leg runs in CI. `one-node-oidc-test.sh` and
+  `one-node-oidc-renewal-test.sh` run in `zl-zpr-core`'s `adapter.yml`, and were
+  first seen passing there on 2026-10-29 (`zl-zpr-core#88`,
+  `org-zpr/zl-zipline#208`). `oidc-file-interplay-test.sh` has no CI job, so it
+  is pending the operator's environment (`zl-zpr-core` 02b730d records what was
+  run locally for it — fixture compile, `bash -n`, the fake-IdP smoke test, and
+  the C1-revert `zpdump` RED).
 - **The renewal ZDP messages are not in the RFC.**
   `RenewAuthenticationRequest = 142` and `RenewAuthenticationResponse = 143`
   are implemented and unit-tested but carry a `TODO: add to RFC 6`
