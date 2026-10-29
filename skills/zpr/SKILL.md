@@ -550,17 +550,28 @@ What that does and does not mean for assignment:
   either as the other. `scripts/fork-ci.sh` still reports and flips the switch.
 
   Leftovers to recognize rather than fix: `zl-zpr-core#1` carries eight red check
-  runs recorded before the switch-off, which will not clear until that branch moves,
-  and `zl-zpr-core`'s two `adapter.yml` integration jobs are separately gated
-  `if: false` because the fork has no release tarball to download (see
-  `zipline#16`).
+  runs recorded before the switch-off, which will not clear until that branch moves.
+
+  Two CI dependencies live outside the repository, and each one fails a job before
+  any code runs (`zipline#208`):
+
+  - `zl-zpr-core`'s five `adapter.yml` integration jobs are not gated. Each one
+    downloads `release-linux-x86_64.tar.gz` for `VISA_SERVICE_RELEASE` from
+    `org-zpr/zl-zpr-visaservice` releases. Publish that release before you bump
+    the variable, or every job fails at **Download Asset**.
+  - Jobs built on `rust-containerized-build-test.yml` (`zl-zpr-core`'s
+    `libnode.yml`, `zl-zpr-visaservice`'s `vs-tools.yml`) run in the private
+    `ghcr.io/org-zpr/dev-env` image. A repository needs Read access under that
+    package's **Manage Actions access**, or the job fails with
+    `Docker pull failed` / `denied`. Only an org admin can grant it.
 
   Most leaf workflows call the upstream reusable workflows in
   `org-zpr/zpr-dev-tools`; only `zl-zpr-core`'s `adapter.yml` calls
   `org-zpr/zl-zpr-dev-tools`. A change to `zl-zpr-dev-tools` reaches only that
-  caller. The workflows filter pushes to `branches: ["main"]` and put no branch
-  filter on `pull_request`, so PR checks run while post-merge push builds on
-  `zipline` stay silent.
+  caller. No workflow puts a branch filter on `pull_request`, so PR checks run on
+  every PR that touches a workflow's `paths`. Push filters are a different matter: `zl-zpr-core` filters pushes to
+  `zipline` (`zl-zpr-core#88`), but the other forks still filter to
+  `branches: ["main"]`, so their post-merge push builds on `zipline` stay silent.
 - **What to work on comes from "Picking the next issue" above**, not from scanning
   the board. `scripts/my-current-tasks.py` answers a different question — what is
   already assigned and in the current iteration, i.e. what is *underway* — and is the
